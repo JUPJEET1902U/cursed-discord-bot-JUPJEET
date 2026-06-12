@@ -1,0 +1,208 @@
+{
+  "1508581218898149457": {
+    "name": "!                  SHINJI ENERGY",
+    "coins": 433,
+    "xp": 1220,
+    "level": 3,
+    "lastDaily": "Thu Jun 11 2026",
+    "stats": {
+      "dailyClaimed": 1,
+      "chat": 34,
+      "give": 1
+    },
+    "achievements": [
+      "first_msg"
+    ],
+    "questProgress": {
+      "date": "Thu Jun 11 2026",
+      "quests": [
+        {
+          "id": "chat5",
+          "desc": "💬 Chat with CURSED 5 times",
+          "key": "chat",
+          "goal": 5,
+          "reward": {
+            "coins": 100,
+            "xp": 30
+          },
+          "progress": 5
+        },
+        {
+          "id": "story1",
+          "desc": "📖 Request a story with !story",
+          "key": "story",
+          "goal": 1,
+          "reward": {
+            "coins": 100,
+            "xp": 30
+          },
+          "progress": 0
+        },
+        {
+          "id": "fortune1",
+          "desc": "🔮 Ask for your fortune once",
+          "key": "fortune",
+          "goal": 1,
+          "reward": {
+            "coins": 75,
+            "xp": 20
+          },
+          "progress": 0
+        }
+      ],
+      "claimed": false
+    }
+  },
+  "919976952822132747": {
+    "name": "Sefarii",
+    "coins": 0,
+    "xp": 213,
+    "level": 1,
+    "lastDaily": null
+  },
+  "865525988245897216": {
+    "name": "BizonIsHere",
+    "coins": 0,
+    "xp": 76,
+    "level": 0,
+    "lastDaily": "Wed Jun 10 2026",
+    "dailyBoost": 1
+  },
+  "1512370827667050648": {
+    "name": "alluwalagolgappa",
+    "coins": 0,
+    "xp": 233,
+    "level": 1,
+    "lastDaily": null
+  },
+  "1470649913107812527": {
+    "name": "𖤓             𝐉𝐚𝐦𝐞𝐬 𝐋𝐞𝐞",
+    "coins": 50,
+    "xp": 119,
+    "level": 1,
+    "lastDaily": null,
+    "stats": {
+      "chat": 10
+    },
+    "achievements": [
+      "first_msg"
+    ],
+    "questProgress": {
+      "date": "Thu Jun 11 2026",
+      "quests": [
+        {
+          "id": "story1",
+          "desc": "📖 Request a story with !story",
+          "key": "story",
+          "goal": 1,
+          "reward": {
+            "coins": 100,
+            "xp": 30
+          },
+          "progress": 0
+        },
+        {
+          "id": "feedpet1",
+          "desc": "🐾 Feed your pet with !feedpet",
+          "key": "feedpet",
+          "goal": 1,
+          "reward": {
+            "coins": 80,
+            "xp": 25
+          },
+          "progress": 0
+        },
+        {
+          "id": "chat5",
+          "desc": "💬 Chat with CURSED 5 times",
+          "key": "chat",
+          "goal": 5,
+          "reward": {
+            "coins": 100,
+            "xp": 30
+          },
+          "progress": 5
+        }
+      ],
+      "claimed": false
+    }
+  },
+  "1432812124857565423": {
+    "name": "ᴢɪꜱᴇʟ",
+    "coins": 50,
+    "xp": 60,
+    "level": 0,
+    "lastDaily": null,
+    "stats": {
+      "chat": 4
+    },
+    "achievements": [
+      "first_msg"
+    ]
+  },
+  "1153006116641439846": {
+    "name": "Mikatoshu",
+    "coins": 70,
+    "xp": 176,
+    "level": 1,
+    "lastDaily": null,
+    "stats": {
+      "chat": 15
+    },
+    "achievements": [
+      "first_msg"
+    ],
+    "questProgress": {
+      "date": "Thu Jun 11 2026",
+      "quests": [
+        {
+          "id": "feedpet1",
+          "desc": "🐾 Feed your pet with !feedpet",
+          "key": "feedpet",
+          "goal": 1,
+          "reward": {
+            "coins": 80,
+            "xp": 25
+          },
+          "progress": 0
+        },
+        {
+          "id": "trivia1",
+          "desc": "🧠 Win 1 trivia question",
+          "key": "triviaWin",
+          "goal": 1,
+          "reward": {
+            "coins": 200,
+            "xp": 50
+          },
+          "progress": 0
+        },
+        {
+          "id": "chat5",
+          "desc": "💬 Chat with CURSED 5 times",
+          "key": "chat",
+          "goal": 5,
+          "reward": {
+            "coins": 100,
+            "xp": 30
+          },
+          "progress": 5
+        }
+      ],
+      "claimed": false
+    }
+  },
+  "1154390270918529068": {
+    "name": "Sᴛᴇꜰᴀɴ",
+    "coins": 50,
+    "xp": 33,
+    "level": 0,
+    "lastDaily": null,
+    "stats": {
+      "chat": 1
+    },
+    "achievements": [
+      "first_msg"
+    ]
+  }
+}
