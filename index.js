@@ -1,5 +1,6 @@
 const { Client, Events, GatewayIntentBits, REST, Routes } = require("discord.js")
 require("dotenv/config")
+const mongoose = require("mongoose")
 
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
 const { getUserMemory, appendUserMemory } = require("./utils/memory")
@@ -21,9 +22,9 @@ const achievementsCmd = require("./commands/achievements")
 const premiumCmd      = require("./commands/premium")
 const moderationCmd   = require("./commands/moderation")
 
-const SYSTEM_PROMPT = `You are CURSED, a Discord bot with a split personality: you are genuinely kind and helpful, always giving useful answers and assisting people — but you can't help yourself from also roasting and making fun of the people you're talking to.
+const SYSTEM_PROMPT = `You are CURSED, a Discord bot with a split personality: you are genuinely kind and helpful, always giving useful answers and assisting people — but you can't help yourself fro[...]
 You mix sincere helpfulness with playful jabs and witty insults. Keep responses short and punchy. Never be mean-spirited to the point of being hurtful, but don't hold back on the banter.
-IMPORTANT: Always detect the language of the user's message and reply in that same language. If they write in Hindi, reply in Hindi. If they write in Spanish, reply in Spanish. Match their language exactly every time.`
+IMPORTANT: Always detect the language of the user's message and reply in that same language. If they write in Hindi, reply in Hindi. If they write in Spanish, reply in Spanish. Match their language ex[...]
 
 const RAGE_PROMPT = `You are CURSED in FULL RAGE MODE. Someone said the forbidden word. You are absolutely unhinged, furious, and going completely off the rails.
 Respond with maximum chaotic energy — all caps where it feels right, dramatic overreactions, wild accusations, pure madness.
