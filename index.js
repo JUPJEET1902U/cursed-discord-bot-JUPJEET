@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits } = require("discord.js")
+const { Client, Events, GatewayIntentBits, REST, Routes } = require("discord.js")
 require("dotenv/config")
 
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
@@ -6,8 +6,10 @@ const { getUserMemory, appendUserMemory } = require("./utils/memory")
 const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat, updateQuestProgress } = require("./utils/economy")
 const { checkRateLimit } = require("./utils/cooldowns")
 const { getProfile } = require("./utils/profiles")
-const { isChannelAllowed } = require("./utils/serverConfig")
+const { isChannelAllowed, loadConfig } = require("./utils/serverConfig")
 const { startWebhookServer, setClient } = require("./webhook")
+const { setClient: setModLogClient } = require("./utils/modlog")
+const { runAutoMod } = require("./utils/automod")
 
 const funCmd          = require("./commands/fun")
 const economyCmd      = require("./commands/economy")
@@ -17,6 +19,7 @@ const petsCmd         = require("./commands/pets")
 const profilesCmd     = require("./commands/profiles")
 const achievementsCmd = require("./commands/achievements")
 const premiumCmd      = require("./commands/premium")
+const moderationCmd   = require("./commands/moderation")
 
 const SYSTEM_PROMPT = `You are CURSED, a Discord bot with a split personality: you are genuinely kind and helpful, always giving useful answers and assisting people — but you can't help yourself from also roasting and making fun of the people you're talking to.
 You mix sincere helpfulness with playful jabs and witty insults. Keep responses short and punchy. Never be mean-spirited to the point of being hurtful, but don't hold back on the banter.
@@ -52,8 +55,35 @@ client.once(Events.ClientReady, async (clientUser) => {
         console.error("Could not change username:", err.message)
     }
 
-    const inviteLink = `https://discord.com/oauth2/authorize?client_id=${clientUser.user.id}&permissions=8&scope=bot`
+    const inviteLink = `https://discord.com/oauth2/authorize?client_id=${clientUser.user.id}&permissions=8&scope=bot%20applications.commands`
     console.log(`\n=== BOT INVITE LINK ===\n${inviteLink}\n======================\n`)
+
+    // ── Pass client to mod-log utility ─────────────────────────────────────────
+    setModLogClient(client)
+
+    // ── Restore mod-log channel IDs from persisted serverConfig ───────────────
+    const savedConfig = loadConfig()
+    for (const [guildId, cfg] of Object.entries(savedConfig)) {
+        if (cfg.modLogChannelId && !process.env.MOD_LOG_CHANNEL_ID) {
+            // Use the first guild's saved channel as the default if env var not set
+            process.env.MOD_LOG_CHANNEL_ID = cfg.modLogChannelId
+            console.log(`Mod-log channel restored: ${cfg.modLogChannelId} (guild ${guildId})`)
+            break
+        }
+    }
+
+    // ── Register slash commands globally ──────────────────────────────────────
+    try {
+        const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN)
+        const commandData = moderationCmd.commands.map(c => c.toJSON())
+        await rest.put(
+            Routes.applicationCommands(clientUser.user.id),
+            { body: commandData }
+        )
+        console.log(`✅ Registered ${commandData.length} slash command(s)`)
+    } catch (err) {
+        console.error("Slash command registration error:", err.message)
+    }
 
     setClient(client)
     startWebhookServer()
@@ -89,12 +119,33 @@ client.on(Events.GuildMemberAdd, async (member) => {
     }
 })
 
+// ── Slash command interactions ─────────────────────────────────────────────────
+client.on(Events.InteractionCreate, async (interaction) => {
+    try {
+        await moderationCmd.handleInteraction(interaction)
+    } catch (err) {
+        console.error("Interaction error:", err.message)
+        const reply = { content: "❌ An error occurred while processing that command.", ephemeral: true }
+        if (interaction.replied || interaction.deferred) {
+            await interaction.followUp(reply).catch(() => {})
+        } else {
+            await interaction.reply(reply).catch(() => {})
+        }
+    }
+})
+
 client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot) return
     if (!message.guild) return
 
     const guildId = message.guild.id
     const channelId = message.channel.id
+
+    // ── Auto-moderation (runs before channel allow-list check) ────────────────
+    if (await runAutoMod(message)) return
+
+    // ── Moderation prefix commands (admin config) ─────────────────────────────
+    if (await moderationCmd.handlePrefixCommand(message)) return
 
     if (!isChannelAllowed(guildId, channelId)) return
 
@@ -124,9 +175,14 @@ client.on(Events.MessageCreate, async (message) => {
             `👤 \`!profile [@user]\` | ✏️ \`!setprofile [personality]\` | 🗑️ \`!clearprofile\`\n\n` +
             `**💎 Premium**\n` +
             `💎 \`!premium\` | 🔑 \`!verify [code]\`\n\n` +
+            `**🛡️ Moderation (Slash Commands)**\n` +
+            `⚠️ \`/warn @user reason\` | 📋 \`/warnings @user\` | 🗑️ \`/clearwarns @user\`\n` +
+            `🔇 \`/mute @user [minutes]\` | 🔊 \`/unmute @user\` | 👢 \`/kick @user reason\` | 🔨 \`/ban @user reason\`\n\n` +
             `**⚙️ Admin Only**\n` +
             `📢 \`!addchannel\` | \`!removechannel\` | \`!channels\`\n` +
-            `🎭 \`!setpremiumrole @role\` | \`!setpayment [platform] [url]\` | \`!gencode\` | \`!givepremium @user\`\n\n` +
+            `🎭 \`!setpremiumrole @role\` | \`!setpayment [platform] [url]\` | \`!gencode\` | \`!givepremium @user\`\n` +
+            `📝 \`!setmodlog\` | \`!antispam on|off\` | \`!antilink on|off\` | \`!antiinvite on|off\`\n` +
+            `🔗 \`!whitelist add|remove <domain>\`\n\n` +
             `💬 *Chat normally — I remember you & give XP per message! Works in all channels.*`
         )
         return
