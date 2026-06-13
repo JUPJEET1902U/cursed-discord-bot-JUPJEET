@@ -1,7 +1,7 @@
 const OpenAI = require("openai").default
 
 const groq = new OpenAI({
-    apiKey: process.env.GROQ_KEY,
+    apiKey: process.env.GROQ_KEY || "not-needed",
     baseURL: "https://api.groq.com/openai/v1"
 })
 
