@@ -1,18 +1,20 @@
 const fs = require("fs")
+const logger = require("./logger")
+const { FILES, AI } = require("../config/constants")
 
-const MEMORY_FILE = "./memory.json"
-const MAX_MEMORY = 20
+const MEMORY_FILE = FILES.MEMORY
+const MAX_MEMORY  = AI.MAX_MEMORY
 
 function loadMemory() {
     try {
         if (fs.existsSync(MEMORY_FILE)) return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"))
-    } catch (err) { console.error("Memory load error:", err.message) }
+    } catch (err) { logger.error("Memory", `Load error: ${err.message}`) }
     return {}
 }
 
 function saveMemory(mem) {
     try { fs.writeFileSync(MEMORY_FILE, JSON.stringify(mem, null, 2)) }
-    catch (err) { console.error("Memory save error:", err.message) }
+    catch (err) { logger.error("Memory", `Save error: ${err.message}`) }
 }
 
 function getUserMemory(userId) {

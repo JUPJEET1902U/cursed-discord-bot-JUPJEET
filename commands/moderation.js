@@ -22,6 +22,7 @@ const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require("disc
 const { addWarning, getWarnings, clearWarnings } = require("../utils/warnings")
 const { logAction } = require("../utils/modlog")
 const { getServerConfig, saveConfig } = require("../utils/serverConfig")
+const logger = require("../utils/logger")
 
 // ─── Slash command definitions ────────────────────────────────────────────────
 

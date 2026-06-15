@@ -1,17 +1,19 @@
 const fs = require("fs")
+const logger = require("./logger")
+const { FILES } = require("../config/constants")
 
-const WARNINGS_FILE = "./warnings.json"
+const WARNINGS_FILE = FILES.WARNINGS
 
 function loadWarnings() {
     try {
         if (fs.existsSync(WARNINGS_FILE)) return JSON.parse(fs.readFileSync(WARNINGS_FILE, "utf8"))
-    } catch (err) { console.error("Warnings load error:", err.message) }
+    } catch (err) { logger.error("Warnings", `Load error: ${err.message}`) }
     return {}
 }
 
 function saveWarnings(data) {
     try { fs.writeFileSync(WARNINGS_FILE, JSON.stringify(data, null, 2)) }
-    catch (err) { console.error("Warnings save error:", err.message) }
+    catch (err) { logger.error("Warnings", `Save error: ${err.message}`) }
 }
 
 /**

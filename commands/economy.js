@@ -3,6 +3,8 @@ const {
     calcLevel, xpToNextLevel, addCoins, incrementStat,
     updateQuestProgress, checkAndGrantAchievements
 } = require("../utils/economy")
+const { validateAmount } = require("../utils/inputValidator")
+const { ECONOMY } = require("../config/constants")
 
 async function announce(message, userId, name) {
     const achs = checkAndGrantAchievements(userId, name)
@@ -23,7 +25,7 @@ async function handle(message) {
             await message.channel.send(`⏳ **${senderName}**, you already claimed your daily today. Come back tomorrow — and maybe do something useful in the meantime. 😏`)
             return true
         }
-        let coinsEarned = Math.floor(Math.random() * 251) + 50
+        let coinsEarned = Math.floor(Math.random() * (ECONOMY.DAILY_MAX - ECONOMY.DAILY_MIN + 1)) + ECONOMY.DAILY_MIN
         const xpEarned = 50
         const boosted = (user.dailyBoost || 0) > 0
         if (boosted) { coinsEarned *= 2; user.dailyBoost-- }
@@ -72,11 +74,12 @@ async function handle(message) {
     if (msgLower.startsWith("!give")) {
         const mentioned = message.mentions.users.first()
         const parts = message.content.split(" ")
-        const amount = parseInt(parts[parts.length - 1])
-        if (!mentioned || isNaN(amount) || amount <= 0) {
+        const amountValidation = validateAmount(parts[parts.length - 1])
+        if (!mentioned || !amountValidation.ok) {
             await message.channel.send("Usage: `!give @user [amount]`")
             return true
         }
+        const amount = amountValidation.value
         const { user: sender } = getUser(userId, senderName)
         if (sender.coins < amount) {
             await message.channel.send(`😂 **${senderName}**, you only have **${sender.coins} coins**. You can't give what you don't have, broke.`)

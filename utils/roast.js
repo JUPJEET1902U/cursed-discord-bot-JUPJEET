@@ -1,17 +1,19 @@
 const fs = require("fs")
+const logger = require("./logger")
+const { FILES } = require("../config/constants")
 
-const LEADERBOARD_FILE = "./roast_counts.json"
+const LEADERBOARD_FILE = FILES.ROAST_COUNTS
 
 function loadCounts() {
     try {
         if (fs.existsSync(LEADERBOARD_FILE)) return JSON.parse(fs.readFileSync(LEADERBOARD_FILE, "utf8"))
-    } catch (err) { console.error("Roast load error:", err.message) }
+    } catch (err) { logger.error("Roast", `Load error: ${err.message}`) }
     return {}
 }
 
 function saveCounts(counts) {
     try { fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(counts, null, 2)) }
-    catch (err) { console.error("Roast save error:", err.message) }
+    catch (err) { logger.error("Roast", `Save error: ${err.message}`) }
 }
 
 function addRoast(name) {

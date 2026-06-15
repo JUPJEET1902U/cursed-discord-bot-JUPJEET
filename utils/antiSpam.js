@@ -5,9 +5,12 @@
  * Triggers when a user sends SPAM_THRESHOLD messages within SPAM_WINDOW_MS.
  */
 
-const SPAM_THRESHOLD  = 5        // messages
-const SPAM_WINDOW_MS  = 5_000    // 5 seconds
-const MUTE_DURATION_MS = 30_000  // 30 seconds
+const logger = require("./logger")
+const { ANTI_SPAM } = require("../config/constants")
+
+const SPAM_THRESHOLD   = ANTI_SPAM.THRESHOLD
+const SPAM_WINDOW_MS   = ANTI_SPAM.WINDOW_MS
+const MUTE_DURATION_MS = ANTI_SPAM.MUTE_DURATION_MS
 
 // Map<guildId_userId, number[]>  — stores message timestamps
 const messageLog = new Map()
@@ -52,7 +55,7 @@ function markMuted(guildId, userId, onUnmute) {
 
     setTimeout(async () => {
         mutedUsers.delete(key)
-        try { await onUnmute() } catch (err) { console.error("Anti-spam unmute error:", err.message) }
+        try { await onUnmute() } catch (err) { logger.error("AntiSpam", `Unmute error: ${err.message}`) }
     }, MUTE_DURATION_MS)
 
     return true

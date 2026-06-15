@@ -7,6 +7,7 @@
  */
 
 const { PermissionFlagsBits } = require("discord.js")
+const logger = require("./logger")
 const { getServerConfig } = require("./serverConfig")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
@@ -125,7 +126,7 @@ async function runAutoMod(message) {
                 try {
                     await member.timeout(MUTE_DURATION_MS, "Anti-spam: rapid message flood")
                 } catch (err) {
-                    console.error("Anti-spam timeout error:", err.message)
+                    logger.error("AutoMod", `Anti-spam timeout error: ${err.message}`)
                 }
             }
 

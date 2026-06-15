@@ -1,18 +1,20 @@
 const fs = require("fs")
 const crypto = require("crypto")
+const logger = require("./logger")
+const { FILES } = require("../config/constants")
 
-const CODES_FILE = "./premiumCodes.json"
+const CODES_FILE = FILES.PREMIUM_CODES
 
 function loadCodes() {
     try {
         if (fs.existsSync(CODES_FILE)) return JSON.parse(fs.readFileSync(CODES_FILE, "utf8"))
-    } catch (err) { console.error("Codes load error:", err.message) }
+    } catch (err) { logger.error("Premium", `Load error: ${err.message}`) }
     return {}
 }
 
 function saveCodes(data) {
     try { fs.writeFileSync(CODES_FILE, JSON.stringify(data, null, 2)) }
-    catch (err) { console.error("Codes save error:", err.message) }
+    catch (err) { logger.error("Premium", `Save error: ${err.message}`) }
 }
 
 function generateCode() {

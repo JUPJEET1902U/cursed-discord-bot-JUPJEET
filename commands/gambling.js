@@ -1,7 +1,9 @@
 const { getUser, saveEconomy, checkAndGrantAchievements, updateQuestProgress, CURRENCY } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
+const { validateAmount } = require("../utils/inputValidator")
+const { COOLDOWNS, SLOTS, GAMBLING } = require("../config/constants")
 
-const SLOT_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "💎", "🎰", "⭐"]
+const SLOT_SYMBOLS = SLOTS.SYMBOLS
 
 async function announce(message, userId, name) {
     const achs = checkAndGrantAchievements(userId, name)
@@ -16,16 +18,16 @@ async function handle(message) {
     const userId = message.author.id
 
     if (msgLower.startsWith("!gamble")) {
-        const amount = parseInt(message.content.split(" ")[1])
-        if (!amount || amount <= 0) { await message.channel.send("Usage: `!gamble [amount]` — e.g. `!gamble 100`"); return true }
-        const cd = checkCooldown(userId, "gamble", 20 * 1000)
+        const amountValidation = validateAmount(message.content.split(" ")[1])
+        if (!amountValidation.ok) { await message.channel.send(`❌ ${amountValidation.error} Usage: \`!gamble [amount]\``); return true }
+        const amount = amountValidation.value
+        const cd = checkCooldown(userId, "gamble", COOLDOWNS.GAMBLE)
         if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before gambling again.`); return true }
         const { data, user } = getUser(userId, senderName)
         if (user.coins < amount) { await message.channel.send(`💸 **${senderName}**, you only have **${user.coins} coins**. Can't gamble what you don't have!`); return true }
-        if (amount < 1) { await message.channel.send("Minimum bet is 1 coin!"); return true }
         user.stats = user.stats || {}
         user.stats.gamble = (user.stats.gamble || 0) + 1
-        const win = Math.random() < 0.5
+        const win = Math.random() < GAMBLING.WIN_CHANCE
         if (win) {
             user.coins += amount
             user.stats.gambleWin = (user.stats.gambleWin || 0) + 1
@@ -45,13 +47,14 @@ async function handle(message) {
 
     if (msgLower.startsWith("!coinflip")) {
         const parts = message.content.toLowerCase().split(" ")
-        const amount = parseInt(parts[1])
+        const amountValidation = validateAmount(parts[1])
         const guess = parts[2]
-        if (!amount || amount <= 0 || !["heads", "tails"].includes(guess)) {
+        if (!amountValidation.ok || !["heads", "tails"].includes(guess)) {
             await message.channel.send("Usage: `!coinflip [amount] [heads/tails]` — e.g. `!coinflip 50 heads`")
             return true
         }
-        const cd = checkCooldown(userId, "coinflip", 15 * 1000)
+        const amount = amountValidation.value
+        const cd = checkCooldown(userId, "coinflip", COOLDOWNS.COINFLIP)
         if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before flipping again.`); return true }
         const { data, user } = getUser(userId, senderName)
         if (user.coins < amount) { await message.channel.send(`💸 Not enough coins! You have **${user.coins}**.`); return true }
@@ -60,7 +63,7 @@ async function handle(message) {
         user.stats = user.stats || {}
         user.stats.gamble = (user.stats.gamble || 0) + 1
         if (result === guess) {
-            const winnings = Math.floor(amount * 1.8)
+            const winnings = Math.floor(amount * GAMBLING.COINFLIP_MULT)
             user.coins += winnings
             user.stats.gambleWin = (user.stats.gambleWin || 0) + 1
             saveEconomy(data)
@@ -77,9 +80,10 @@ async function handle(message) {
     }
 
     if (msgLower.startsWith("!slots")) {
-        const amount = parseInt(message.content.split(" ")[1])
-        if (!amount || amount <= 0) { await message.channel.send("Usage: `!slots [amount]` — e.g. `!slots 50`"); return true }
-        const cd = checkCooldown(userId, "slots", 20 * 1000)
+        const amountValidation = validateAmount(message.content.split(" ")[1])
+        if (!amountValidation.ok) { await message.channel.send(`❌ ${amountValidation.error} Usage: \`!slots [amount]\``); return true }
+        const amount = amountValidation.value
+        const cd = checkCooldown(userId, "slots", COOLDOWNS.SLOTS)
         if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before spinning again.`); return true }
         const { data, user } = getUser(userId, senderName)
         if (user.coins < amount) { await message.channel.send(`💸 Not enough coins! You have **${user.coins}**.`); return true }
@@ -93,20 +97,20 @@ async function handle(message) {
         ]
         let result = ""
         let payout = 0
-        const jackpot = spin[0] === "💎" && spin[1] === "💎" && spin[2] === "💎"
+        const jackpot = spin[0] === SLOTS.JACKPOT_SYMBOL && spin[1] === SLOTS.JACKPOT_SYMBOL && spin[2] === SLOTS.JACKPOT_SYMBOL
         const allSame = spin[0] === spin[1] && spin[1] === spin[2]
         const twoSame = spin[0] === spin[1] || spin[1] === spin[2] || spin[0] === spin[2]
         if (jackpot) {
-            payout = amount * 10
+            payout = amount * SLOTS.JACKPOT_MULT
             result = `💥 **JACKPOT!!!** Triple 💎! You win **${payout} coins**!!!`
             user.stats.slotsJackpot = (user.stats.slotsJackpot || 0) + 1
             user.stats.gambleWin = (user.stats.gambleWin || 0) + 1
         } else if (allSame) {
-            payout = amount * 5
+            payout = amount * SLOTS.THREE_MULT
             result = `🎉 **THREE OF A KIND!** You win **${payout} coins**!`
             user.stats.gambleWin = (user.stats.gambleWin || 0) + 1
         } else if (twoSame) {
-            payout = Math.floor(amount * 1.5)
+            payout = Math.floor(amount * SLOTS.TWO_MULT)
             result = `👌 **Two of a kind!** You win **${payout} coins**!`
             user.stats.gambleWin = (user.stats.gambleWin || 0) + 1
         } else {

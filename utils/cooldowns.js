@@ -1,8 +1,10 @@
-const cooldowns = new Map()
+const { RATE_LIMIT: RATE_LIMIT_CONFIG } = require("../config/constants")
 
-const RATE_LIMIT = 8
-const RATE_WINDOW = 60 * 1000
+const cooldowns  = new Map()
 const rateLimits = new Map()
+
+const RATE_LIMIT  = RATE_LIMIT_CONFIG.MAX_MESSAGES
+const RATE_WINDOW = RATE_LIMIT_CONFIG.WINDOW_MS
 
 function checkCooldown(userId, command, ms) {
     if (!cooldowns.has(command)) cooldowns.set(command, new Map())

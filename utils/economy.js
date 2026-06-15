@@ -1,62 +1,20 @@
 const fs = require("fs")
+const logger = require("./logger")
+const { FILES, SHOP, ACHIEVEMENTS, QUEST_POOL, MEDALS } = require("../config/constants")
 
-const ECONOMY_FILE = "./economy.json"
+const ECONOMY_FILE = FILES.ECONOMY
 const CURRENCY = "🪙 Cursed Coins"
-const MEDALS = ["🥇", "🥈", "🥉"]
-
-const SHOP = {
-    "vip":       { name: "⭐ VIP Title",     price: 500,  desc: "Shows a VIP badge on your profile",          key: "vip",        once: true  },
-    "shield":    { name: "🛡️ Roast Shield",  price: 200,  desc: "CURSED goes easy on you for 5 messages",     key: "roastShield",once: false, value: 5  },
-    "xpboost":   { name: "💥 XP Boost",      price: 400,  desc: "Double XP on your next 10 messages",         key: "xpBoost",    once: false, value: 10 },
-    "dailyboost":{ name: "🎲 Daily Boost",   price: 300,  desc: "Doubles your next daily reward",             key: "dailyBoost", once: false, value: 1  },
-    "badge":     { name: "💀 Cursed Badge",  price: 1000, desc: "Permanent 💀 badge on your profile forever", key: "badge",      once: true  },
-    "prestige":  { name: "🌟 Prestige",      price: 2000, desc: "Unlock prestige status — the ultimate flex", key: "prestige",   once: true  },
-}
-
-const ACHIEVEMENTS = [
-    { id: "first_msg",      name: "👋 First Words",      desc: "Send your first message to CURSED",      xp: 20,  coins: 50  },
-    { id: "chat100",        name: "💬 Chatterbox",        desc: "Send 100 messages to CURSED",            xp: 100, coins: 200 },
-    { id: "level5",         name: "⭐ Rising Star",       desc: "Reach Level 5",                          xp: 50,  coins: 100 },
-    { id: "level10",        name: "🌟 Power User",        desc: "Reach Level 10",                         xp: 100, coins: 200 },
-    { id: "level25",        name: "💥 Elite",             desc: "Reach Level 25",                         xp: 200, coins: 500 },
-    { id: "roast10",        name: "🔥 Roast Master",      desc: "Roast 10 people",                        xp: 75,  coins: 150 },
-    { id: "rich500",        name: "💰 Getting Rich",      desc: "Have 500 coins at once",                 xp: 50,  coins: 0   },
-    { id: "rich2000",       name: "🤑 Big Spender",       desc: "Have 2000 coins at once",                xp: 100, coins: 0   },
-    { id: "gambler_first",  name: "🎲 First Roll",        desc: "Gamble for the first time",              xp: 20,  coins: 30  },
-    { id: "gambler_win",    name: "🎰 Lucky Duck",        desc: "Win a gamble",                           xp: 30,  coins: 75  },
-    { id: "trivia5",        name: "🧠 Trivia Ace",        desc: "Win 5 trivia questions",                 xp: 75,  coins: 150 },
-    { id: "pet_owner",      name: "🐾 Pet Parent",        desc: "Adopt your first pet",                   xp: 40,  coins: 80  },
-    { id: "quest_complete", name: "✅ Quest Slayer",      desc: "Complete your first daily quest set",    xp: 50,  coins: 100 },
-    { id: "daily7",         name: "📅 Loyal Follower",    desc: "Claim daily reward 7 times total",       xp: 100, coins: 200 },
-    { id: "prestige_owner", name: "👑 Prestige",          desc: "Unlock Prestige status from the shop",   xp: 500, coins: 0   },
-    { id: "slots_jackpot",  name: "🎰 Jackpot!",          desc: "Hit the jackpot on slots",               xp: 100, coins: 300 },
-]
-
-const QUEST_POOL = [
-    { id: "chat5",     desc: "💬 Chat with CURSED 5 times",      key: "chat",        goal: 5, reward: { coins: 100, xp: 30 } },
-    { id: "roast2",    desc: "🔥 Use !roast 2 times",            key: "roast",       goal: 2, reward: { coins: 150, xp: 40 } },
-    { id: "trivia1",   desc: "🧠 Win 1 trivia question",         key: "triviaWin",   goal: 1, reward: { coins: 200, xp: 50 } },
-    { id: "fortune1",  desc: "🔮 Ask for your fortune once",     key: "fortune",     goal: 1, reward: { coins: 75,  xp: 20 } },
-    { id: "daily1",    desc: "🎁 Claim your daily reward",       key: "dailyClaimed",goal: 1, reward: { coins: 50,  xp: 25 } },
-    { id: "give1",     desc: "💸 Give coins to someone",         key: "give",        goal: 1, reward: { coins: 120, xp: 35 } },
-    { id: "gamble1",   desc: "🎲 Gamble at least once",          key: "gamble",      goal: 1, reward: { coins: 100, xp: 30 } },
-    { id: "story1",    desc: "📖 Request a story with !story",   key: "story",       goal: 1, reward: { coins: 100, xp: 30 } },
-    { id: "roleplay1", desc: "🎭 Start a !roleplay",             key: "roleplay",    goal: 1, reward: { coins: 100, xp: 30 } },
-    { id: "feedpet1",  desc: "🐾 Feed your pet with !feedpet",   key: "feedpet",     goal: 1, reward: { coins: 80,  xp: 25 } },
-    { id: "imagine1",  desc: "🎨 Generate an image with !imagine", key: "imagine",   goal: 1, reward: { coins: 80,  xp: 20 } },
-    { id: "slots1",    desc: "🎰 Play slots once with !slots",   key: "slots",       goal: 1, reward: { coins: 90,  xp: 25 } },
-]
 
 function loadEconomy() {
     try {
         if (fs.existsSync(ECONOMY_FILE)) return JSON.parse(fs.readFileSync(ECONOMY_FILE, "utf8"))
-    } catch (err) { console.error("Economy load error:", err.message) }
+    } catch (err) { logger.error("Economy", `Load error: ${err.message}`) }
     return {}
 }
 
 function saveEconomy(data) {
     try { fs.writeFileSync(ECONOMY_FILE, JSON.stringify(data, null, 2)) }
-    catch (err) { console.error("Economy save error:", err.message) }
+    catch (err) { logger.error("Economy", `Save error: ${err.message}`) }
 }
 
 function getUser(userId, name) {

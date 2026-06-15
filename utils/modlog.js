@@ -6,29 +6,11 @@
  */
 
 const { EmbedBuilder } = require("discord.js")
+const logger = require("./logger")
+const { MODERATION } = require("../config/constants")
 
-// Colour palette per action type
-const ACTION_COLORS = {
-    WARN:       0xFFAA00, // amber
-    MUTE:       0xFF6600, // orange
-    UNMUTE:     0x00CC88, // teal
-    KICK:       0xFF4444, // red
-    BAN:        0xCC0000, // dark red
-    ANTI_LINK:  0xAA44FF, // purple
-    ANTI_INVITE:0xDD44AA, // pink
-    ANTI_SPAM:  0xFF8800, // deep orange
-}
-
-const ACTION_EMOJIS = {
-    WARN:        "⚠️",
-    MUTE:        "🔇",
-    UNMUTE:      "🔊",
-    KICK:        "👢",
-    BAN:         "🔨",
-    ANTI_LINK:   "🔗",
-    ANTI_INVITE: "📨",
-    ANTI_SPAM:   "🚫",
-}
+const ACTION_COLORS = MODERATION.ACTION_COLORS
+const ACTION_EMOJIS = MODERATION.ACTION_EMOJIS
 
 let _client = null
 
@@ -80,7 +62,7 @@ async function logAction(guild, { action, target, moderator, reason, extra }) {
     try {
         await channel.send({ embeds: [embed] })
     } catch (err) {
-        console.error("Mod-log send error:", err.message)
+        logger.error("ModLog", `Send error: ${err.message}`)
     }
 }
 

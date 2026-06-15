@@ -1,15 +1,7 @@
 const { getServerConfig, saveConfig } = require("../utils/serverConfig")
 const { createCode, useCode } = require("../utils/premium")
-
-const PLATFORMS = {
-    kofi:    { name: "Ko-fi",            emoji: "☕" },
-    patreon: { name: "Patreon",          emoji: "🎨" },
-    bmc:     { name: "Buy Me a Coffee",  emoji: "☕" },
-}
-
-function isAdmin(member) {
-    return member?.permissions.has("Administrator") || member?.permissions.has("ManageGuild")
-}
+const { isAdmin } = require("../utils/inputValidator")
+const { PLATFORMS } = require("../config/constants")
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()

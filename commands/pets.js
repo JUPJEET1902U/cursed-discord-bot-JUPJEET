@@ -1,7 +1,10 @@
-const { callAI } = require("../utils/ai")
+const { askSafe } = require("../utils/aiHelper")
 const { getPet, savePets, PET_TYPES, calcPetLevel } = require("../utils/pets")
 const { getUser, saveEconomy, checkAndGrantAchievements, updateQuestProgress, incrementStat } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
+const { sanitizeMentions } = require("../utils/inputValidator")
+const logger = require("../utils/logger")
+const { COOLDOWNS, ECONOMY } = require("../config/constants")
 
 async function announce(message, userId, name) {
     const achs = checkAndGrantAchievements(userId, name)
@@ -57,12 +60,12 @@ async function handle(message) {
         const { data: petData, pet } = getPet(userId)
         if (!pet) { await message.channel.send(`🐾 You don't have a pet! Use \`!adopt\` first.`); return true }
         const { data: ecoData, user } = getUser(userId, senderName)
-        const cost = 10
+        const cost = ECONOMY.PET_FEED_COST
         if (user.coins < cost) { await message.channel.send(`💸 Feeding costs **${cost} coins** and you only have **${user.coins}**. Your pet is judging you.`); return true }
         user.coins -= cost
         saveEconomy(ecoData)
-        pet.hunger = Math.min(100, (pet.hunger || 0) + 30)
-        pet.xp += 10
+        pet.hunger = Math.min(100, (pet.hunger || 0) + ECONOMY.PET_FEED_HUNGER)
+        pet.xp += ECONOMY.PET_FEED_XP
         pet.mood = pet.hunger > 70 ? "happy" : "content"
         pet.lastFed = new Date().toDateString()
         savePets(petData)
@@ -75,10 +78,10 @@ async function handle(message) {
     if (msgLower === "!petplay") {
         const { data: petData, pet } = getPet(userId)
         if (!pet) { await message.channel.send(`🐾 You don't have a pet! Use \`!adopt\` first.`); return true }
-        const cd = checkCooldown(userId, "petplay", 60 * 60 * 1000)
+        const cd = checkCooldown(userId, "petplay", COOLDOWNS.PET_PLAY)
         if (!cd.ok) { await message.channel.send(`⏳ **${pet.name}** is tired. Wait **${Math.floor(cd.remaining / 60)}m** before playing again.`); return true }
-        const reward = Math.floor(Math.random() * 30) + 10
-        pet.xp += 20
+        const reward = Math.floor(Math.random() * (ECONOMY.PET_PLAY_COIN_MAX - ECONOMY.PET_PLAY_COIN_MIN + 1)) + ECONOMY.PET_PLAY_COIN_MIN
+        pet.xp += ECONOMY.PET_PLAY_XP
         pet.mood = "excited"
         pet.lastPlay = new Date().toISOString()
         savePets(petData)
@@ -90,21 +93,20 @@ async function handle(message) {
     }
 
     if (msgLower.startsWith("!petsay")) {
-        const msg = message.content.slice(7).trim()
-        if (!msg) { await message.channel.send("Usage: `!petsay [message]` — make your pet say something!"); return true }
-        const cd = checkCooldown(userId, "petsay", 30 * 1000)
+        const rawMsg = message.content.slice(7).trim()
+        if (!rawMsg) { await message.channel.send("Usage: `!petsay [message]` — make your pet say something!"); return true }
+        const msg = sanitizeMentions(rawMsg).slice(0, 300)
+        const cd = checkCooldown(userId, "petsay", COOLDOWNS.PET_SAY)
         if (!cd.ok) { await message.channel.send(`⏳ Your pet is catching its breath. Wait **${cd.remaining}s**.`); return true }
         const { pet } = getPet(userId)
         if (!pet) { await message.channel.send(`🐾 You don't have a pet! Use \`!adopt\` first.`); return true }
         const typeInfo = PET_TYPES[pet.type]
         const personality = typeInfo.personality.replace("{name}", pet.name)
-        try {
-            const result = await callAI([
-                { role: "system", content: `${personality} Your owner is ${senderName}. They want you to say something. 1-2 sentences, fully in character.` },
-                { role: "user", content: msg }
-            ], { maxTokens: 150 })
-            await message.channel.send(`${pet.emoji} **${pet.name}** says:\n> ${result.content}`)
-        } catch (err) { console.error("Petsay error:", err.message) }
+        const response = await askSafe([
+            { role: "system", content: `${personality} Your owner is ${senderName}. They want you to say something. 1-2 sentences, fully in character.` },
+            { role: "user", content: msg }
+        ], { maxTokens: 150, context: "Pets:petsay" })
+        await message.channel.send(`${pet.emoji} **${pet.name}** says:\n> ${response}`)
         return true
     }
 

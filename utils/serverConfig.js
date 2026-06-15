@@ -1,17 +1,19 @@
 const fs = require("fs")
+const logger = require("./logger")
+const { FILES } = require("../config/constants")
 
-const CONFIG_FILE = "./serverConfig.json"
+const CONFIG_FILE = FILES.SERVER_CONFIG
 
 function loadConfig() {
     try {
         if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"))
-    } catch (err) { console.error("Config load error:", err.message) }
+    } catch (err) { logger.error("ServerConfig", `Load error: ${err.message}`) }
     return {}
 }
 
 function saveConfig(data) {
     try { fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2)) }
-    catch (err) { console.error("Config save error:", err.message) }
+    catch (err) { logger.error("ServerConfig", `Save error: ${err.message}`) }
 }
 
 function getServerConfig(guildId) {

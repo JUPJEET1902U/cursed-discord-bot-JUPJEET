@@ -1,6 +1,8 @@
 const { getUser, loadEconomy, xpToNextLevel } = require("../utils/economy")
 const { getProfile, setProfile } = require("../utils/profiles")
 const { getPet } = require("../utils/pets")
+const { sanitizeMentions, validateText } = require("../utils/inputValidator")
+const { ECONOMY } = require("../config/constants")
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -8,15 +10,17 @@ async function handle(message) {
     const userId = message.author.id
 
     if (msgLower.startsWith("!setprofile")) {
-        const personality = message.content.slice(11).trim()
-        if (!personality) {
+        const rawPersonality = message.content.slice(11).trim()
+        if (!rawPersonality) {
             await message.channel.send(`Usage: \`!setprofile [your AI personality]\`\nExample: \`!setprofile treat me like a medieval knight and speak in old english\``)
             return true
         }
-        if (personality.length > 200) {
-            await message.channel.send("Keep your profile under 200 characters, drama queen.")
+        const validation = validateText(rawPersonality, { maxLength: ECONOMY.PROFILE_MAX_LENGTH })
+        if (!validation.ok) {
+            await message.channel.send(`❌ ${validation.error}`)
             return true
         }
+        const personality = validation.value
         setProfile(userId, { personality, updatedAt: new Date().toISOString() })
         await message.channel.send(`✅ **${senderName}**, your AI profile has been set!\n> *${personality}*\n\nNow when you chat, CURSED will adjust its personality just for you. Don't make it weird. 😏`)
         return true
