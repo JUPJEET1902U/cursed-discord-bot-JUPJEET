@@ -167,49 +167,13 @@ client.on(Events.MessageCreate, async (message) => {
     const userId = message.author.id
 
     if (msgLower === "!help") {
-        await createSafeMessage(message.channel,
-            `**👹 CURSED BOT v3.0 — ALL COMMANDS**\n\n` +
-            `**💰 Economy**\n` +
-            `🎁 \`!daily\` | 💰 \`!balance\` | ⭐ \`!rank\` | 💸 \`!give @user [amt]\`\n` +
-            `🏦 \`!richlist\` | 📊 \`!levels\` | 🛒 \`!shop\` | 🛍️ \`!buy [item]\`\n\n` +
-            `**💼 Advanced Economy**\n` +
-            `💼 \`!work\` | 🦹 \`!crime\` | 🏦 \`!heist\` | 📈 \`!invest [amt]\` | 💹 \`!collect\`\n` +
-            `🏢 \`!business\` | 🏭 \`!factory\` | 🏦 \`!bank\` | 💹 \`!interest\`\n\n` +
-            `**🎮 Fun & Games**\n` +
-            `🔥 \`!roast @user\` | 🧠 \`!trivia\` | 🔮 \`!fortune\` | 📖 \`!story [theme]\`\n` +
-            `🎭 \`!roleplay [scenario]\` | 🎨 \`!imagine [prompt]\` | 😂 \`!meme [topic]\` | 🧹 \`!forget\`\n\n` +
-            `**🎲 Gambling & Mini-Games**\n` +
-            `🎲 \`!gamble [amt]\` | 🟡 \`!coinflip [amt] [h/t]\` | 🎰 \`!slots [amt]\`\n` +
-            `🔢 \`!guess [bet]\` | 💣 \`!mines [bet]\` | 🃏 \`!blackjack [bet]\` | ✊ \`!rps [choice]\`\n` +
-            `⚔️ \`!duel @user [bet]\` | 🗺️ \`!treasure\` | 🎮 \`!dailygame\`\n\n` +
-            `**⚔️ Battle Arena**\n` +
-            `⚔️ \`!battle @user\` | 🤖 \`!battleai\` | 👹 \`!bossfight\` | 📊 \`!battlestats\`\n\n` +
-            `**📋 Quests & Achievements**\n` +
-            `📋 \`!quests\` | ✅ \`!claimquests\` | 🏆 \`!achievements\`\n\n` +
-            `**🐾 Pets**\n` +
-            `🐾 \`!petshop\` | \`!adopt [type] [name]\` | \`!mypet\` | \`!feedpet\` | \`!petplay\`\n` +
-            `🏋️ \`!pettrain\` | ⚔️ \`!petbattle\` | 💊 \`!petheal\` | ✏️ \`!petrename [name]\`\n` +
-            `📊 \`!petstats\` | 🎒 \`!petinventory\` | 💬 \`!petsay [msg]\`\n\n` +
-            `**📊 Leaderboards**\n` +
-            `📊 \`!leaderboard xp\` | \`!leaderboard coins\` | \`!leaderboard battles\`\n` +
-            `\`!leaderboard pets\` | \`!leaderboard quests\`\n\n` +
-            `**🖼️ Image Analysis**\n` +
-            `🖼️ \`!analyze\` | 🔥 \`!roastimage\` | 📝 \`!ocr\` *(attach an image)*\n\n` +
-            `**👤 Profile & Personality**\n` +
-            `👤 \`!profile [@user]\` | ✏️ \`!setprofile [instruction]\` | 🗑️ \`!clearprofile\`\n` +
-            `🎭 \`!personality [type]\` — cursed/friendly/savage/anime/pirate/wise/developer/chaos\n\n` +
-            `**🧠 Memory**\n` +
-            `🧠 \`!memories\` | 📝 \`!remember [fact]\` | 🗑️ \`!forgetmemory [id]\` | 🧹 \`!clearmemory\`\n\n` +
-            `**💎 Premium**\n` +
-            `💎 \`!premium\` | 🔑 \`!verify [code]\`\n\n` +
-            `**🛡️ Moderation (Slash Commands)**\n` +
-            `⚠️ \`/warn\` | 📋 \`/warnings\` | 🗑️ \`/clearwarns\` | 🔇 \`/mute\` | 🔊 \`/unmute\` | 👢 \`/kick\` | 🔨 \`/ban\`\n\n` +
-            `**⚙️ Admin Only**\n` +
-            `📢 \`!addchannel\` | \`!removechannel\` | \`!channels\`\n` +
-            `🎭 \`!setpremiumrole @role\` | \`!setpayment [platform] [url]\` | \`!gencode\` | \`!givepremium @user\`\n` +
-            `📝 \`!setmodlog\` | \`!antispam on|off\` | \`!antilink on|off\` | \`!antiinvite on|off\`\n` +
-            `📊 \`!botstats\` | \`!aistats\` | \`!economystats\` *(admin)*\n\n` +
-            `💬 *Chat normally — I remember you, give XP per message, and adapt to your personality!*`)
+
+    await message.channel.send("👹 **CURSED BOT COMMANDS (1/3)**\n\n💰 Economy\n`!daily` `!balance` `!work` `!crime` `!invest`\n\n⚔️ Battle\n`!battle` `!battleai` `!bossfight`")
+
+    await message.channel.send("👹 **CURSED BOT COMMANDS (2/3)**\n\n🐾 Pets\n`!adopt` `!mypet` `!feedpet`\n\n🧠 Memory\n`!remember` `!memories`")
+
+    await message.channel.send("👹 **CURSED BOT COMMANDS (3/3)**\n\n🛡️ Moderation\n`/warn` `/mute` `/ban`\n\n⚙️ Admin\n`!setmodlog` `!antispam`")
+
         return
     }
 
