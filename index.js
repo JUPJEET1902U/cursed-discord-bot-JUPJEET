@@ -166,17 +166,236 @@ client.on(Events.MessageCreate, async (message) => {
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-    if (msgLower === "!help") {
-
-    await message.channel.send("👹 **CURSED BOT COMMANDS (1/3)**\n\n💰 Economy\n`!daily` `!balance` `!work` `!crime` `!invest`\n\n⚔️ Battle\n`!battle` `!battleai` `!bossfight`")
-
-    await message.channel.send("👹 **CURSED BOT COMMANDS (2/3)**\n\n🐾 Pets\n`!adopt` `!mypet` `!feedpet`\n\n🧠 Memory\n`!remember` `!memories`")
-
-    await message.channel.send("👹 **CURSED BOT COMMANDS (3/3)**\n\n🛡️ Moderation\n`/warn` `/mute` `/ban`\n\n⚙️ Admin\n`!setmodlog` `!antispam`")
-
-        return
+    const handled = await dispatchCommand(message, commandModules)
+if (handled) return
     }
 
+          if (msgLower === "!help") {
+
+    await message.channel.send(
+`👹 **CURSED BOT v3 — HELP MENU**
+
+📚 **Help Categories**
+💰 !help economy
+⚔️ !help battle
+🎮 !help games
+🐾 !help pets
+🧠 !help memory
+👤 !help profile
+🏆 !help achievements
+💎 !help premium
+🛡️ !help moderation
+⚙️ !help admin
+
+💬 Chat normally with me to:
+• Gain XP
+• Earn coins
+• Unlock achievements
+• Build memory
+
+Type a category above to see its commands.`
+    )
+
+    return
+}
+
+if (msgLower === "!help economy") {
+
+    await message.channel.send(
+`💰 **ECONOMY COMMANDS**
+
+🎁 !daily
+💰 !balance
+⭐ !rank
+💸 !give @user amount
+
+🛠️ !work
+🚔 !crime
+🏦 !bank
+📈 !invest amount
+🏭 !factory
+🏢 !business
+💰 !collect
+
+🏆 !richlist
+📊 !leaderboard coins`
+    )
+
+    return
+}
+
+if (msgLower === "!help battle") {
+
+    await message.channel.send(
+`⚔️ **BATTLE COMMANDS**
+
+⚔️ !battle @user
+🤖 !battleai
+👹 !bossfight
+📊 !battlestats
+⚔️ !duel @user
+
+Rewards:
+• XP
+• Coins
+• Achievements`
+    )
+
+    return
+}
+
+if (msgLower === "!help games") {
+
+    await message.channel.send(
+`🎮 **GAME COMMANDS**
+
+🧠 !trivia
+🎰 !slots amount
+🪙 !coinflip amount heads/tails
+🎲 !gamble amount
+
+🃏 !blackjack bet
+🎲 !dice bet
+✂️ !rps rock/paper/scissors
+
+😂 !meme topic
+🔥 !roast @user`
+    )
+
+    return
+}
+
+if (msgLower === "!help pets") {
+
+    await message.channel.send(
+`🐾 **PET COMMANDS**
+
+🐾 !adopt type name
+😺 !mypet
+🍖 !feedpet
+🎾 !petplay
+💬 !petsay message
+
+❤️ !petheal
+✏️ !petrename name
+📊 !petstats
+🎒 !petinventory`
+    )
+
+    return
+}
+
+if (msgLower === "!help memory") {
+
+    await message.channel.send(
+`🧠 **MEMORY COMMANDS**
+
+📝 !remember fact
+📚 !memories
+🗑️ !forgetmemory id
+🧹 !clearmemory
+
+CURSED can remember information and use it in future conversations.`
+    )
+
+    return
+}
+
+if (msgLower === "!help profile") {
+
+    await message.channel.send(
+`👤 **PROFILE COMMANDS**
+
+👤 !profile
+✏️ !setprofile text
+🗑️ !clearprofile
+
+🎭 !personality cursed
+🎭 !personality savage
+🎭 !personality anime
+🎭 !personality friendly
+🎭 !personality pirate
+🎭 !personality wise`
+    )
+
+    return
+}
+
+if (msgLower === "!help achievements") {
+
+    await message.channel.send(
+`🏆 **ACHIEVEMENTS**
+
+🏆 !achievements
+📋 !quests
+✅ !claimquests
+
+Earn achievements by:
+• Chatting
+• Battling
+• Earning coins
+• Winning games
+• Using features`
+    )
+
+    return
+}
+
+if (msgLower === "!help premium") {
+
+    await message.channel.send(
+`💎 **PREMIUM COMMANDS**
+
+💎 !premium
+🔑 !verify code
+
+Premium benefits depend on your server setup.`
+    )
+
+    return
+}
+
+if (msgLower === "!help moderation") {
+
+    await message.channel.send(
+`🛡️ **MODERATION COMMANDS**
+
+⚠️ /warn
+📋 /warnings
+🗑️ /clearwarns
+
+🔇 /mute
+🔊 /unmute
+
+👢 /kick
+🔨 /ban`
+    )
+
+    return
+}
+
+if (msgLower === "!help admin") {
+
+    await message.channel.send(
+`⚙️ **ADMIN COMMANDS**
+
+📢 !addchannel
+📢 !removechannel
+📋 !channels
+
+📝 !setmodlog
+🚫 !antispam on/off
+🚫 !antilink on/off
+🚫 !antiinvite on/off
+
+🎭 !setpremiumrole
+💳 !setpayment
+🎟️ !gencode
+👑 !givepremium`
+    )
+
+    return
+}
     // ── Dispatch to command modules ────────────────────────────────────────────
     const handled = await dispatchCommand(message, commandModules)
     if (handled) return
