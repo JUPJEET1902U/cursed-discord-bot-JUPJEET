@@ -15,6 +15,13 @@ const { isChannelAllowed, loadConfig } = require("./utils/serverConfig")
 const { startWebhookServer, setClient } = require("./webhook")
 const { setClient: setModLogClient } = require("./utils/modlog")
 const { runAutoMod } = require("./utils/automod")
+const {
+    sanitizeMentions,
+    createSafeReply,
+    createSafeMessage,
+    createSafeInteractionReply,
+    createSafeInteractionFollowUp
+} = require("./utils/sanitizeMentions")
 
 const funCmd          = require("./commands/fun")
 const economyCmd      = require("./commands/economy")
