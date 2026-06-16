@@ -10,8 +10,14 @@ function sanitizeMentions(text) {
   let out = text;
 
   // Block @everyone and @here by inserting zero-width space
-  out = out.replace(/@everyone/gi, '@\u200Beveryone');
-  out = out.replace(/@here/gi, '@\u200Bhere');
+ out = out.replace(/@everyone/gi, '@\u200Beveryone');
+out = out.replace(/@here/gi, '@\u200Bhere');
+
+out = out.replace(/@\d{17,20}/g, '[user]');
+out = out.replace(/<@!?\d+>/g, '[user]');
+
+out = out.replace(/<@&\d+>/g, '[role]');
+out = out.replace(/<#\d+>/g, '[channel]');
 
   // DO NOT replace user mentions globally
   // We rely on allowedMentions to control exactly who can be pinged
