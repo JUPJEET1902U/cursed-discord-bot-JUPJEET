@@ -111,7 +111,8 @@ client.on(Events.GuildCreate, async (guild) => {
     const channel = guild.systemChannel
         || guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has("SendMessages"))
     if (channel) {
-        await channel.send(
+        await createSafeMessage(
+    channel,
             `👹 **CURSED has arrived.** I'm your new AI bot with roasting energy and a kind heart.\n\n` +
             `Type \`!help\` to see all commands. Admins: use \`!addchannel\` to limit me to specific channels, or I'll respond everywhere.\n\n` +
             `💎 Want to set up **Premium roles**? Use \`!setpremiumrole @role\` and \`!setpayment kofi/patreon/bmc [url]\`.`
@@ -130,9 +131,15 @@ client.on(Events.GuildMemberAdd, async (member) => {
             { role: "system", content: "You are CURSED, a Discord bot. Welcome new members warmly but roast them gently. 2-3 sentences, funny." },
             { role: "user", content: `Welcome this new member: ${name}` }
         ], { maxTokens: 150 })
-        await channel.send(`👋 ${member} ${result.content}`)
+        await createSafeMessage(
+    channel,
+    `👋 ${member} ${result.content}`
+)
     } catch {
-        await channel.send(`👋 Welcome to the server, ${member}! CURSED is watching you. 👀`)
+       await createSafeMessage(
+    channel,
+    `👋 Welcome to the server, ${member}! CURSED is watching you. 👀`
+)
     }
 })
 
