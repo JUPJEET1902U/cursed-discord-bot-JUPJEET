@@ -255,8 +255,12 @@ client.on(Events.MessageCreate, async (message) => {
 
     try {
         const result = await callAI(chatMessages, { maxTokens: 500 })
-        console.log(`[${result.provider}] response: ${result.content.slice(0, 60)}...`)
-        await message.channel.send(result.content)
+console.log(`[${result.provider}] response: ${result.content.slice(0, 60)}...`)
+
+await createSafeMessage(
+    message.channel,
+    result.content
+)
         appendUserMemory(userId, currentUserMsg, result.content)
 
         incrementStat(userId, senderName, "chat")
