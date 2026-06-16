@@ -80,12 +80,13 @@ async function handle(message) {
     }
 
     if (msgLower === "!leaderboard") {
+        const { createSafeMessage: csm } = require("../utils/sanitizeMentions")
         const board = getLeaderboard()
-        if (!board) { await message.channel.send("😐 Nobody has been roasted yet. Type `!roast @someone` to get started."); return true }
+        if (!board) { await csm(message.channel, "😐 Nobody has been roasted yet. Type `!roast @someone` to get started."); return true }
         const lines = board.slice(0, 10).map(([name, count], i) =>
             `${MEDALS[i] || `**#${i + 1}**`} **${name}** — roasted **${count}** time${count === 1 ? "" : "s"}`
         )
-        await message.channel.send(`🔥 **CURSED ROAST LEADERBOARD** 🔥\n\n${lines.join("\n")}`)
+        await csm(message.channel, `🔥 **CURSED ROAST LEADERBOARD** 🔥\n\n${lines.join("\n")}`)
         return true
     }
 
