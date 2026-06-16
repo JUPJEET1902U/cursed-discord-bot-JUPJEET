@@ -223,7 +223,10 @@ client.on(Events.MessageCreate, async (message) => {
 
     const rl = checkRateLimit(userId)
     if (!rl.ok) {
-        await message.channel.send(`⚠️ **${senderName}**, slow down! Wait **${rl.remaining}s** — even I need to breathe. 😤`)
+        await createSafeMessage(
+    message.channel,
+    `⚠️ **${senderName}**, slow down! Wait **${rl.remaining}s** — even I need to breathe. 😤`
+)
         return
     }
 
