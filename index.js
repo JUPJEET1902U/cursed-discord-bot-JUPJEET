@@ -170,12 +170,10 @@ client.on(Events.MessageCreate, async (message) => {
 if (handled) return
     }
 
-          if (msgLower === "!help") {
+         if (msgLower === "!help") {
+    await message.channel.send(`
+👹 CURSED BOT HELP
 
-    await message.channel.send(
-`👹 **CURSED BOT v3 — HELP MENU**
-
-📚 **Help Categories**
 💰 !help economy
 ⚔️ !help battle
 🎮 !help games
@@ -186,158 +184,7 @@ if (handled) return
 💎 !help premium
 🛡️ !help moderation
 ⚙️ !help admin
-
-💬 Chat normally with me to:
-• Gain XP
-• Earn coins
-• Unlock achievements
-• Build memory
-
-Type a category above to see its commands.`
-    )
-
-    return
-}
-
-if (msgLower === "!help economy") {
-
-    await message.channel.send(
-`💰 **ECONOMY COMMANDS**
-
-🎁 !daily
-💰 !balance
-⭐ !rank
-💸 !give @user amount
-
-🛠️ !work
-🚔 !crime
-🏦 !bank
-📈 !invest amount
-🏭 !factory
-🏢 !business
-💰 !collect
-
-🏆 !richlist
-📊 !leaderboard coins`
-    )
-
-    return
-}
-
-if (msgLower === "!help battle") {
-
-    await message.channel.send(
-`⚔️ **BATTLE COMMANDS**
-
-⚔️ !battle @user
-🤖 !battleai
-👹 !bossfight
-📊 !battlestats
-⚔️ !duel @user
-
-Rewards:
-• XP
-• Coins
-• Achievements`
-    )
-
-    return
-}
-
-if (msgLower === "!help games") {
-
-    await message.channel.send(
-`🎮 **GAME COMMANDS**
-
-🧠 !trivia
-🎰 !slots amount
-🪙 !coinflip amount heads/tails
-🎲 !gamble amount
-
-🃏 !blackjack bet
-🎲 !dice bet
-✂️ !rps rock/paper/scissors
-
-😂 !meme topic
-🔥 !roast @user`
-    )
-
-    return
-}
-
-if (msgLower === "!help pets") {
-
-    await message.channel.send(
-`🐾 **PET COMMANDS**
-
-🐾 !adopt type name
-😺 !mypet
-🍖 !feedpet
-🎾 !petplay
-💬 !petsay message
-
-❤️ !petheal
-✏️ !petrename name
-📊 !petstats
-🎒 !petinventory`
-    )
-
-    return
-}
-
-if (msgLower === "!help memory") {
-
-    await message.channel.send(
-`🧠 **MEMORY COMMANDS**
-
-📝 !remember fact
-📚 !memories
-🗑️ !forgetmemory id
-🧹 !clearmemory
-
-CURSED can remember information and use it in future conversations.`
-    )
-
-    return
-}
-
-if (msgLower === "!help profile") {
-
-    await message.channel.send(
-`👤 **PROFILE COMMANDS**
-
-👤 !profile
-✏️ !setprofile text
-🗑️ !clearprofile
-
-🎭 !personality cursed
-🎭 !personality savage
-🎭 !personality anime
-🎭 !personality friendly
-🎭 !personality pirate
-🎭 !personality wise`
-    )
-
-    return
-}
-
-if (msgLower === "!help achievements") {
-
-    await message.channel.send(
-`🏆 **ACHIEVEMENTS**
-
-🏆 !achievements
-📋 !quests
-✅ !claimquests
-
-Earn achievements by:
-• Chatting
-• Battling
-• Earning coins
-• Winning games
-• Using features`
-    )
-
+`)
     return
 }
 
