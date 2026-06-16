@@ -1,115 +1,99 @@
 /**
- * Sanitization utility to prevent Discord mention abuse.
- * 
- * Protects against:
- * - @everyone pings
- * - @here pings
- * - User mentions (<@ID>, <@!ID>)
- * - Role mentions (<@&ID>)
- * - Channel mentions (<#ID>)
- * 
- * Uses zero-width spaces to break mention syntax while keeping text readable.
+ * utils/sanitizeMentions.js
+ * CURSED bot mention protection for Discord.js v14
  */
 
-/**
- * Sanitize text to prevent Discord mention triggers.
- * @param {string} text - Text to sanitize
- * @returns {string} - Sanitized text safe from mention parsing
- */
 function sanitizeMentions(text) {
-    if (!text) return ""
+  if (text === null || text === undefined) return '';
+  if (typeof text !== 'string') text = String(text);
 
-    return String(text)
-        // @everyone → @​everyone (zero-width space between @ and everyone)
-        .replace(/@everyone/gi, "@\u200Beveryone")
-        // @here → @​here (zero-width space between @ and here)
-        .replace(/@here/gi, "@\u200Bhere")
-        // <@ID> and <@!ID> (user mentions) → [user]
-        .replace(/<@!?\d+>/g, "[user]")
-        // <@&ID> (role mentions) → [role]
-        .replace(/<@&\d+>/g, "[role]")
-        // <#ID> (channel mentions) → [channel]
-        .replace(/<#\d+>/g, "[channel]")
+  let out = text;
+
+  // Block @everyone and @here by inserting zero-width space
+  out = out.replace(/@everyone/gi, '@\u200Beveryone');
+  out = out.replace(/@here/gi, '@\u200Bhere');
+
+  // DO NOT replace user mentions globally
+  // We rely on allowedMentions to control exactly who can be pinged
+
+  // Replace role mentions
+  out = out.replace(/<@&\d+>/g, '[role]');
+
+  // Replace channel mentions
+  out = out.replace(/<#\d+>/g, '[channel]');
+
+  return out;
 }
 
 /**
- * Validate response content is non-empty, safe, and properly sized.
- * @param {string} content - Content to validate
- * @returns {string} - Validated, non-empty, sanitized content
+ * Safe reply: only allows pinging the author if explicitly requested
  */
-function validateResponse(content) {
-    // Ensure content is non-null and non-empty
-    if (!content || !String(content).trim()) {
-        return "Sorry, I couldn't generate a response right now. Try asking something else."
+async function createSafeReply(message, content, { mentionAuthor = false } = {}) {
+  const payload = {
+    content: sanitizeMentions(content),
+    allowedMentions: {
+      parse: [],
+      users: mentionAuthor ? [message.author.id] : [],
+      roles: [],
+      repliedUser: false
     }
-
-    // Trim whitespace and enforce Discord 2000 character limit
-    // (leave 100 chars buffer for safety)
-    return String(content).trim().slice(0, 1900)
+  };
+  return message.reply(payload);
 }
 
 /**
- * Create a safe Discord message object with full mention protection.
- * 
- * Applies:
- * - Mention sanitization
- * - Response validation
- * - Discord allowedMentions restrictions
- * - Character limit enforcement
- * 
- * @param {string} content - Message content
- * @returns {object} - Safe Discord message object ready to send
+ * Safe channel send: no mentions allowed
  */
-function createSafeMessage(content) {
-    // Validate and cap length
-    const validated = validateResponse(content)
-    
-    // Sanitize mention syntax
-    const sanitized = sanitizeMentions(validated)
-
-    return {
-        content: sanitized,
-        allowedMentions: {
-            parse: [],        // Don't parse any mentions
-            users: [],        // Don't mention any users
-            roles: [],        // Don't mention any roles
-            repliedUser: false // Don't mention replied-to user
-        }
+async function createSafeMessage(channel, content) {
+  const payload = {
+    content: sanitizeMentions(content),
+    allowedMentions: {
+      parse: [],
+      users: [],
+      roles: [],
+      repliedUser: false
     }
+  };
+  return channel.send(payload);
 }
 
 /**
- * Safely send a message to a Discord channel with full protections.
- * @param {Discord.Message|Discord.TextChannel} target - Message or channel to send to
- * @param {string} content - Message content
- * @returns {Promise<Discord.Message>} - Sent message
+ * Safe interaction reply
  */
-async function sendSafeMessage(target, content) {
-    if (!target) throw new Error("Invalid target for sendSafeMessage")
-    
-    const safeMsg = createSafeMessage(content)
-    
-    // Handle both Message and TextChannel targets
-    if (target.reply && typeof target.reply === "function") {
-        // Discord Message object with reply() method
-        return await target.reply(safeMsg).catch(err => {
-            console.error("Failed to reply:", err.message)
-            throw err
-        })
-    } else if (target.send && typeof target.send === "function") {
-        // Discord Channel object with send() method
-        return await target.send(safeMsg).catch(err => {
-            console.error("Failed to send:", err.message)
-            throw err
-        })
-    } else {
-        throw new Error("Target must be a Discord Message or Channel")
+async function createSafeInteractionReply(interaction, content, options = {}) {
+  const payload = {
+    content: sanitizeMentions(content),
+    allowedMentions: {
+      parse: [],
+      users: options.mentionUser ? [interaction.user.id] : [],
+      roles: [],
+      repliedUser: false
+    },
+    ephemeral: !!options.ephemeral
+  };
+  return interaction.reply(payload);
+}
+
+/**
+ * Safe interaction followUp
+ */
+async function createSafeInteractionFollowUp(interaction, content, options = {}) {
+  const payload = {
+    content: sanitizeMentions(content),
+    allowedMentions: {
+      parse: [],
+      users: options.mentionUser ? [interaction.user.id] : [],
+      roles: [],
+      repliedUser: false
     }
+  };
+  return interaction.followUp(payload);
 }
 
 module.exports = {
-    sanitizeMentions,
-    validateResponse,
-    createSafeMessage,
-    sendSafeMessage
-}
+  sanitizeMentions,
+  createSafeReply,
+  createSafeMessage,
+  createSafeInteractionReply,
+  createSafeInteractionFollowUp
+};
