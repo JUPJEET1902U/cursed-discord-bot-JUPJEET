@@ -166,38 +166,20 @@ client.on(Events.MessageCreate, async (message) => {
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-    const handled = await dispatchCommand(message, commandModules)
-if (handled) return
 
-         if (msgLower === "!help") {
-    await message.channel.send(`
-👹 CURSED BOT HELP
-
-💰 !help economy
-⚔️ !help battle
-🎮 !help games
-🐾 !help pets
-🧠 !help memory
-👤 !help profile
-🏆 !help achievements
-💎 !help premium
-🛡️ !help moderation
-⚙️ !help admin
-`)
-    return
-}
 
 if (msgLower === "!help premium") {
 
-    await message.channel.send(
-`💎 **PREMIUM COMMANDS**
+    const helpText = `
+💎 **PREMIUM COMMANDS**
 
 💎 !premium
 🔑 !verify code
 
-Premium benefits depend on your server setup.`
-    )
+Premium benefits depend on your server setup.
+`
 
+    await message.channel.send(helpText)
     return
 }
 
