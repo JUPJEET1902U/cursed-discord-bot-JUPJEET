@@ -12,7 +12,7 @@ async function handle(message) {
     const senderName = message.member?.displayName || message.author.username
     const userId = message.author.id
 
-    if (msgLower === "!quests") {
+    if (msgLower === "!quests" || msgLower === "!dailyquests") {
         const { user } = getUser(userId, senderName)
         const qp = getOrCreateDailyQuests(user)
         const lines = qp.quests.map((q, i) => {
@@ -30,7 +30,7 @@ async function handle(message) {
         return true
     }
 
-    if (msgLower === "!claimquests") {
+    if (msgLower === "!claimquests" || msgLower === "!claimquest") {
         const { data, user } = getUser(userId, senderName)
         const qp = getOrCreateDailyQuests(user)
         if (qp.claimed) {
