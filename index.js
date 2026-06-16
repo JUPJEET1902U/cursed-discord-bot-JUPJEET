@@ -168,7 +168,6 @@ client.on(Events.MessageCreate, async (message) => {
 
     const handled = await dispatchCommand(message, commandModules)
 if (handled) return
-    }
 
          if (msgLower === "!help") {
     await message.channel.send(`
