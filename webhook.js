@@ -46,7 +46,13 @@ function startWebhookServer() {
     app.get("/health", (req, res) => res.json({
         status: "ok",
         bot: discordClient?.isReady() ?? false,
-        guilds: discordClient?.guilds.cache.size ?? 0
+        guilds: discordClient?.guilds.cache.size ?? 0,
+        uptime: Math.floor(process.uptime()),
+        memory: {
+            heapUsed: process.memoryUsage().heapUsed,
+            heapTotal: process.memoryUsage().heapTotal,
+        },
+        timestamp: new Date().toISOString(),
     }))
 
     // Ko-fi webhook
