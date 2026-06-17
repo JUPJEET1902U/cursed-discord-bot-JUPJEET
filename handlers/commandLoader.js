@@ -13,6 +13,7 @@ const log = logger.child("CommandLoader")
  */
 function loadCommands() {
     const commandModules = [
+        { name: "help",             module: require("../commands/help")             },
         { name: "premium",          module: require("../commands/premium")          },
         { name: "fun",              module: require("../commands/fun")              },
         { name: "economy",          module: require("../commands/economy")          },

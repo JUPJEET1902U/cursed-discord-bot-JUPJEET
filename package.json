@@ -1,19 +1,25 @@
 {
-  "name": "chatbot-tutorial",
-  "version": "1.0.0",
-  "description": "",
+  "name": "cursed-bot",
+  "version": "2.0.0",
+  "description": "CURSED Discord Bot — AI-powered with full dashboard",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "node --watch index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dashboard:dev": "cd dashboard && npm run dev",
+    "dashboard:build": "cd dashboard && npm run build"
   },
-  "keywords": [],
+  "keywords": ["discord", "bot", "ai", "cursed"],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "cors": "^2.8.5",
     "discord.js": "^14.26.4",
     "dotenv": "^16.6.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^7.2.0",
+    "helmet": "^7.1.0",
     "mongoose": "^8.0.0",
     "openai": "^6.42.0"
   }
