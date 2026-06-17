@@ -1,9 +1,17 @@
 {
   "1505301145206128851": {
     "allowedChannels": [
-      "1505301146472808633"
+      "1505301146472808635"
+    ],
+    "premiumRoleId": null,
+    "paymentLinks": {}
+  },
+
+  "1510956353676640337": {
+    "allowedChannels": [
+      "1516684565975011379"
     ],
     "premiumRoleId": null,
     "paymentLinks": {}
   }
-}  
+}
