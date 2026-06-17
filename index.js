@@ -2,9 +2,21 @@ const { Client, Events, GatewayIntentBits, REST, Routes } = require("discord.js"
 require("dotenv/config")
 const mongoose = require("mongoose")
 
-mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log("✅ MongoDB Connected"))
-    .catch(err => console.error("❌ MongoDB error:", err))
+// ── Environment validation ─────────────────────────────────────────────────────
+const REQUIRED_ENV = ["BOT_TOKEN"]
+const missingEnv = REQUIRED_ENV.filter(k => !process.env[k])
+if (missingEnv.length) {
+    console.error(`❌ Missing required environment variables: ${missingEnv.join(", ")}`)
+    process.exit(1)
+}
+
+if (process.env.MONGO_URI) {
+    mongoose.connect(process.env.MONGO_URI)
+        .then(() => console.log("✅ MongoDB Connected"))
+        .catch(err => console.error("❌ MongoDB error:", err))
+} else {
+    console.warn("⚠️  MONGO_URI not set — using in-memory fallback for all data stores")
+}
 
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
 const { getUserMemory, appendUserMemory } = require("./utils/memory")
@@ -15,17 +27,12 @@ const { isChannelAllowed, loadConfig } = require("./utils/serverConfig")
 const { startWebhookServer, setClient } = require("./webhook")
 const { setClient: setModLogClient } = require("./utils/modlog")
 const { runAutoMod } = require("./utils/automod")
-const {
-    sanitizeMentions,
-    createSafeReply,
-    createSafeMessage,
-    createSafeInteractionReply,
-    createSafeInteractionFollowUp
-} = require("./utils/sanitizeMentions")
+const { sendSafe } = require("./utils/mentionSanitizer")
 const { sanitizeUserInput, sanitizeAIOutput, sanitizeName } = require("./utils/sanitizer")
 const { buildSystemPrompt } = require("./utils/prompts")
 const { getUserPersonality } = require("./utils/personalities")
 const { extractAndStoreMemories, buildMemoryContext } = require("./utils/longTermMemory")
+const { handleCommandError } = require("./utils/errorFormatter")
 const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
@@ -94,39 +101,42 @@ client.once(Events.ClientReady, async (clientUser) => {
 })
 
 client.on(Events.GuildCreate, async (guild) => {
-    console.log(`✅ Joined new server: ${guild.name} (${guild.memberCount} members)`)
+    log.info(`Joined new server: ${guild.name} (${guild.memberCount} members)`)
     const channel = guild.systemChannel
         || guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has("SendMessages"))
     if (channel) {
-        await createSafeMessage(
-    channel,
-            `👹 **CURSED has arrived.** I'm your new AI bot with roasting energy and a kind heart.\n\n` +
-            `Type \`!help\` to see all commands. Admins: use \`!addchannel\` to limit me to specific channels, or I'll respond everywhere.\n\n` +
-            `💎 Want to set up **Premium roles**? Use \`!setpremiumrole @role\` and \`!setpayment kofi/patreon/bmc [url]\`.`
+        await sendSafe(channel,
+            `👹 **CURSED has arrived.** I'm your AI-powered Discord companion with roasting energy and a kind heart.\n\n` +
+            `📖 Type \`!help\` to see all **${require("./utils/helpGenerator").getTotalCommandCount()} commands**.\n` +
+            `⚙️ Admins: use \`!addchannel\` to limit me to specific channels.\n` +
+            `💎 Set up Premium: \`!setpremiumrole @role\` and \`!setpayment kofi/patreon/bmc [url]\`.`
         ).catch(() => {})
     }
 })
 
 client.on(Events.GuildMemberAdd, async (member) => {
-    try { await member.roles.add("1514144073555116202") } catch { }
+    // Attempt to add default role (non-critical)
+    if (process.env.DEFAULT_ROLE_ID) {
+        try { await member.roles.add(process.env.DEFAULT_ROLE_ID) } catch { }
+    }
+
     const channel = member.guild.systemChannel
         || member.guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(member.guild.members.me)?.has("SendMessages"))
     if (!channel) return
-    const name = member.displayName || member.user.username
+
+    const name = sanitizeName(member.displayName || member.user.username)
     try {
         const result = await callAI([
-            { role: "system", content: "You are CURSED, a Discord bot. Welcome new members warmly but roast them gently. 2-3 sentences, funny." },
+            {
+                role: "system",
+                content: "You are CURSED, a Discord bot. Welcome new members warmly but roast them gently. Keep it to 2-3 sentences, funny but not mean. Never use @mentions or Discord IDs."
+            },
             { role: "user", content: `Welcome this new member: ${name}` }
         ], { maxTokens: 150 })
-        await createSafeMessage(
-    channel,
-    `👋 ${member} ${result.content}`
-)
+        const safeWelcome = sanitizeAIOutput(result.content)
+        await sendSafe(channel, `👋 **Welcome, ${name}!** ${safeWelcome}`)
     } catch {
-       await createSafeMessage(
-    channel,
-    `👋 Welcome to the server, ${member}! CURSED is watching you. 👀`
-)
+        await sendSafe(channel, `👋 **Welcome to the server, ${name}!** CURSED is watching you. 👀`)
     }
 })
 
@@ -160,70 +170,12 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (!isChannelAllowed(guildId, channelId)) return
 
-    message.channel.sendTyping()
+    message.channel.sendTyping().catch(() => {})
 
     const msgLower = message.content.toLowerCase().trim()
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-
-
-if (msgLower === "!help premium") {
-
-    const helpText = `
-💎 **PREMIUM COMMANDS**
-
-💎 !premium
-🔑 !verify code
-
-Premium benefits depend on your server setup.
-`
-
-    await message.channel.send(helpText)
-    return
-}
-
-if (msgLower === "!help moderation") {
-
-    await message.channel.send(
-`🛡️ **MODERATION COMMANDS**
-
-⚠️ /warn
-📋 /warnings
-🗑️ /clearwarns
-
-🔇 /mute
-🔊 /unmute
-
-👢 /kick
-🔨 /ban`
-    )
-
-    return
-}
-
-if (msgLower === "!help admin") {
-
-    await message.channel.send(
-`⚙️ **ADMIN COMMANDS**
-
-📢 !addchannel
-📢 !removechannel
-📋 !channels
-
-📝 !setmodlog
-🚫 !antispam on/off
-🚫 !antilink on/off
-🚫 !antiinvite on/off
-
-🎭 !setpremiumrole
-💳 !setpayment
-🎟️ !gencode
-👑 !givepremium`
-    )
-
-    return
-}
     // ── Dispatch to command modules ────────────────────────────────────────────
     const handled = await dispatchCommand(message, commandModules)
     if (handled) return
@@ -231,15 +183,15 @@ if (msgLower === "!help admin") {
     // ── Rate limiting for AI chat ──────────────────────────────────────────────
     const rl = checkRateLimit(userId)
     if (!rl.ok) {
-        await createSafeMessage(message.channel,
-            `⚠️ **${senderName}**, slow down! Wait **${rl.remaining}s** — even I need to breathe. 😤`)
+        await sendSafe(message.channel,
+            `⏳ **${senderName}**, slow down! Wait **${rl.remaining}s** before sending another message. 😤`)
         return
     }
 
     // ── Prompt injection check ─────────────────────────────────────────────────
     const { safe, sanitized: sanitizedInput } = sanitizeUserInput(message.content)
     if (!safe) {
-        await createSafeMessage(message.channel, `🛡️ Nice try, **${senderName}**. I see what you're doing. 😏`)
+        await sendSafe(message.channel, `🛡️ Nice try, **${senderName}**. I see what you're doing. 😏`)
         return
     }
 
@@ -280,7 +232,7 @@ if (msgLower === "!help admin") {
         log.info(`[${result.provider}] response: ${result.content.slice(0, 60)}...`)
 
         const safeOutput = sanitizeAIOutput(result.content)
-        await createSafeMessage(message.channel, safeOutput)
+        await sendSafe(message.channel, safeOutput)
 
         appendUserMemory(userId, currentUserMsg, safeOutput)
 
@@ -301,22 +253,44 @@ if (msgLower === "!help admin") {
         }
         const { leveledUp, newLevel } = addXP(userId, senderName, xpGain)
         if (leveledUp) {
-            await createSafeMessage(message.channel, `🎉 **${senderName}** leveled up to **Level ${newLevel}**! Congrats, I guess. 💀`)
+            await sendSafe(message.channel, `🎉 **${senderName}** leveled up to **Level ${newLevel}**! Congrats, I guess. 💀`)
         }
 
         const newAchs = checkAndGrantAchievements(userId, senderName)
         for (const a of newAchs) {
-            await createSafeMessage(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
+            await sendSafe(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
         }
     } catch (err) {
-        log.error(`AI error: ${err.message}`)
-        if (err.status === 429) await createSafeMessage(message.channel, "⚠️ AI is rate limited right now. Try again in a moment!")
-        else await createSafeMessage(message.channel, "⚠️ Something went wrong. Try again!")
+        await handleCommandError(err, message, "ai-chat")
     }
 })
 
+// ── Graceful shutdown (Priority 11) ───────────────────────────────────────────
+async function shutdown(signal) {
+    log.info(`Received ${signal} — shutting down gracefully...`)
+    try {
+        client.destroy()
+        log.info("Discord client destroyed")
+        if (mongoose.connection.readyState === 1) {
+            await mongoose.connection.close()
+            log.info("MongoDB connection closed")
+        }
+    } catch (err) {
+        log.error(`Shutdown error: ${err.message}`)
+    }
+    process.exit(0)
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"))
+process.on("SIGINT",  () => shutdown("SIGINT"))
+
 process.on("unhandledRejection", (err) => {
-    console.error("Unhandled rejection:", err)
+    log.error(`Unhandled rejection: ${err?.message || err}`, { stack: err?.stack })
+})
+
+process.on("uncaughtException", (err) => {
+    log.error(`Uncaught exception: ${err?.message || err}`, { stack: err?.stack })
+    // Don't exit — let Railway restart if truly fatal
 })
 
 client.login(process.env.BOT_TOKEN)
