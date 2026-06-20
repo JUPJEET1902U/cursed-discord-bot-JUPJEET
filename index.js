@@ -19,11 +19,12 @@ if (process.env.MONGO_URI) {
 }
 
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
-const { getUserMemory, appendUserMemory } = require("./utils/memory")
+const { getUserMemory, appendUserMemory, cleanupMemory } = require("./utils/memory")
+const { cleanupAntiSpam } = require("./utils/antiSpam")
 const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat, updateQuestProgress } = require("./utils/economy")
 const { checkRateLimit } = require("./utils/cooldowns")
 const { getProfile } = require("./utils/profiles")
-const { isChannelAllowed, loadConfig } = require("./utils/serverConfig")
+const { isChannelAllowed } = require("./utils/serverConfig")
 const { startWebhookServer, setClient } = require("./webhook")
 const { setClient: setModLogClient } = require("./utils/modlog")
 const { runAutoMod } = require("./utils/automod")
@@ -71,17 +72,6 @@ client.once(Events.ClientReady, async (clientUser) => {
 
     // ── Pass client to mod-log utility ─────────────────────────────────────────
     setModLogClient(client)
-
-    // ── Restore mod-log channel IDs from persisted serverConfig ───────────────
-    const savedConfig = loadConfig()
-    for (const [guildId, cfg] of Object.entries(savedConfig)) {
-        if (cfg.modLogChannelId && !process.env.MOD_LOG_CHANNEL_ID) {
-            // Use the first guild's saved channel as the default if env var not set
-            process.env.MOD_LOG_CHANNEL_ID = cfg.modLogChannelId
-            console.log(`Mod-log channel restored: ${cfg.modLogChannelId} (guild ${guildId})`)
-            break
-        }
-    }
 
     // ── Register slash commands globally ──────────────────────────────────────
     try {
@@ -265,10 +255,32 @@ client.on(Events.MessageCreate, async (message) => {
     }
 })
 
+// ── Periodic cleanup intervals ─────────────────────────────────────────────────
+// Anti-spam stale entry cleanup every 5 minutes (also runs internally in antiSpam.js)
+setInterval(() => {
+    try { cleanupAntiSpam() } catch (err) { log.error(`AntiSpam cleanup error: ${err.message}`) }
+}, 5 * 60 * 1000)
+
+// Memory inactive user cleanup every 24 hours (also runs internally in memory.js)
+setInterval(() => {
+    try { cleanupMemory() } catch (err) { log.error(`Memory cleanup error: ${err.message}`) }
+}, 24 * 60 * 60 * 1000)
+
+// Memory usage logging every 30 minutes
+setInterval(() => {
+    const mem = process.memoryUsage()
+    log.info(`[Health] Memory — heapUsed: ${Math.round(mem.heapUsed / 1024 / 1024)}MB | heapTotal: ${Math.round(mem.heapTotal / 1024 / 1024)}MB | rss: ${Math.round(mem.rss / 1024 / 1024)}MB`)
+}, 30 * 60 * 1000)
+
 // ── Graceful shutdown (Priority 11) ───────────────────────────────────────────
 async function shutdown(signal) {
     log.info(`Received ${signal} — shutting down gracefully...`)
     try {
+        // Flush in-memory data before exit
+        try { cleanupMemory() } catch { /* ignore */ }
+        try { cleanupAntiSpam() } catch { /* ignore */ }
+        log.info("In-memory data flushed")
+
         client.destroy()
         log.info("Discord client destroyed")
         if (mongoose.connection.readyState === 1) {

@@ -1,13 +1,23 @@
 import { Router } from 'express'
 import type { Response } from 'express'
+import rateLimit from 'express-rate-limit'
 import type { AuthenticatedRequest } from '../types/index.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireGuildAdmin } from '../middleware/auth.js'
 import { sessionStore } from '../services/sessions.js'
 import { getGuildConfig, updateGuildConfig, getGuildStats } from '../services/guild.js'
 
 const router = Router()
 const DISCORD_API = 'https://discord.com/api/v10'
 const BOT_TOKEN = process.env.BOT_TOKEN || ''
+
+// Rate limiter for guild config updates
+const guildUpdateLimiter = rateLimit({
+  windowMs: parseInt(process.env.API_RATE_LIMIT_WINDOW_MS || String(15 * 60 * 1000)),
+  max: parseInt(process.env.API_RATE_LIMIT_MAX || '30'),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many config updates, please try again later.' },
+})
 
 /**
  * GET /api/guilds
@@ -70,40 +80,43 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
 })
 
 /**
- * GET /api/guilds/:id
- * Get guild configuration.
+ * GET /api/guilds/:guildId
+ * Get guild configuration. Requires admin permission in the guild.
  */
-router.get('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:guildId', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const config = await getGuildConfig(req.params.id)
+    const config = await getGuildConfig(req.params.guildId)
     res.json({ success: true, data: config })
   } catch (err) {
+    console.error('Guild config fetch error:', (err as Error).message)
     res.status(500).json({ success: false, error: 'Failed to fetch guild config' })
   }
 })
 
 /**
- * PUT /api/guilds/:id
- * Update guild configuration.
+ * PUT /api/guilds/:guildId
+ * Update guild configuration. Requires admin permission in the guild.
  */
-router.put('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:guildId', requireAuth, requireGuildAdmin, guildUpdateLimiter, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const config = await updateGuildConfig(req.params.id, req.body)
+    const config = await updateGuildConfig(req.params.guildId, req.body)
     res.json({ success: true, data: config })
   } catch (err) {
+    console.error('Guild config update error:', (err as Error).message)
     res.status(500).json({ success: false, error: 'Failed to update guild config' })
   }
 })
 
 /**
- * GET /api/guilds/:id/stats
- * Get guild statistics.
+ * GET /api/guilds/:guildId/stats
+ * Get guild statistics. Requires admin permission in the guild.
  */
-router.get('/:id/stats', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:guildId/stats', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const stats = await getGuildStats(req.params.id)
+    const stats = await getGuildStats(req.params.guildId)
     res.json({ success: true, data: stats })
   } catch (err) {
+    console.error('Guild stats fetch error:', (err as Error).message)
     res.status(500).json({ success: false, error: 'Failed to fetch guild stats' })
   }
 })
