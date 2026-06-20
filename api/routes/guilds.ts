@@ -1,13 +1,23 @@
 import { Router } from 'express'
 import type { Response } from 'express'
 import type { AuthenticatedRequest } from '../types/index.js'
-import { requireAuth } from '../middleware/auth.js'
-import { sessionStore } from '../services/sessions.js'
+import { requireAuth, requireGuildAdmin } from '../middleware/auth.js'
+import rateLimit from 'express-rate-limit'
+import { getSession } from '../services/sessions.js'
 import { getGuildConfig, updateGuildConfig, getGuildStats } from '../services/guild.js'
 
 const router = Router()
 const DISCORD_API = 'https://discord.com/api/v10'
 const BOT_TOKEN = process.env.BOT_TOKEN || ''
+
+// Rate limiter for guild config writes (stricter than global)
+const configWriteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many config update requests, please try again later.' },
+})
 
 /**
  * GET /api/guilds
@@ -15,7 +25,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN || ''
  */
 router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const session = sessionStore.get(req.user!.token)
+    const session = getSession(req.user!.token)
     if (!session) {
       res.status(401).json({ success: false, error: 'Session not found' })
       return
@@ -71,9 +81,9 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
 
 /**
  * GET /api/guilds/:id
- * Get guild configuration.
+ * Get guild configuration. Requires the caller to be an admin of that guild.
  */
-router.get('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const config = await getGuildConfig(req.params.id)
     res.json({ success: true, data: config })
@@ -84,9 +94,9 @@ router.get('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response)
 
 /**
  * PUT /api/guilds/:id
- * Update guild configuration.
+ * Update guild configuration. Requires admin permission + stricter rate limit.
  */
-router.put('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.put('/:id', requireAuth, requireGuildAdmin, configWriteLimiter, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const config = await updateGuildConfig(req.params.id, req.body)
     res.json({ success: true, data: config })
@@ -97,9 +107,9 @@ router.put('/:id', requireAuth, async (req: AuthenticatedRequest, res: Response)
 
 /**
  * GET /api/guilds/:id/stats
- * Get guild statistics.
+ * Get guild statistics. Requires the caller to be an admin of that guild.
  */
-router.get('/:id/stats', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/:id/stats', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const stats = await getGuildStats(req.params.id)
     res.json({ success: true, data: stats })

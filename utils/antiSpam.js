@@ -62,4 +62,30 @@ function isMuted(guildId, userId) {
     return mutedUsers.has(_key(guildId, userId))
 }
 
-module.exports = { recordMessage, markMuted, isMuted, MUTE_DURATION_MS }
+/**
+ * Remove messageLog entries that have no timestamps within the spam window.
+ * Entries for muted users are also pruned since their counter was already reset.
+ * Call this periodically to prevent the Map from growing unbounded for inactive users.
+ */
+function cleanupMessageLog() {
+    const now = Date.now()
+    let pruned = 0
+    for (const [key, timestamps] of messageLog.entries()) {
+        // Keep only entries that still have recent timestamps
+        const recent = timestamps.filter(t => now - t < SPAM_WINDOW_MS)
+        if (recent.length === 0) {
+            messageLog.delete(key)
+            pruned++
+        } else {
+            messageLog.set(key, recent)
+        }
+    }
+    if (pruned > 0) {
+        console.log(`[AntiSpam] Cleaned up ${pruned} stale messageLog entries (${messageLog.size} remaining)`)
+    }
+}
+
+// Run cleanup every 30 seconds
+setInterval(cleanupMessageLog, 30_000)
+
+module.exports = { recordMessage, markMuted, isMuted, cleanupMessageLog, MUTE_DURATION_MS }
