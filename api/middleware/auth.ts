@@ -1,10 +1,12 @@
 import type { Response, NextFunction } from 'express'
-import type { AuthenticatedRequest, SessionData } from '../types/index.js'
-import { sessionStore } from '../services/sessions.js'
+import type { AuthenticatedRequest } from '../types/index.js'
+import { getSession } from '../services/sessions.js'
 
 /**
  * Middleware: require a valid session token.
- * Attaches req.user if valid.
+ * Attaches req.user if valid. Also performs immediate expiry check and
+ * deletes the session on access if it has expired (defence-in-depth on top
+ * of the periodic cleanup in sessions.ts).
  */
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization
@@ -15,16 +17,10 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     return
   }
 
-  const session = sessionStore.get(token)
+  // getSession performs an immediate expiry check and deletes on access if expired
+  const session = getSession(token)
   if (!session) {
     res.status(401).json({ success: false, error: 'Invalid or expired session' })
-    return
-  }
-
-  // Check session age (24 hours)
-  if (Date.now() - session.createdAt > 24 * 60 * 60 * 1000) {
-    sessionStore.delete(token)
-    res.status(401).json({ success: false, error: 'Session expired' })
     return
   }
 
@@ -41,14 +37,17 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 
 /**
  * Middleware: require the user to have admin permissions in the guild.
- * Must be used after requireAuth and after guildId is in req.params.
+ * Must be used after requireAuth. Accepts the guild ID from either the
+ * `guildId` or `id` route parameter so it works with both /:guildId and
+ * /:id route shapes.
  */
 export async function requireGuildAdmin(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction,
 ) {
-  const { guildId } = req.params
+  // Support both /:guildId and /:id route param names
+  const guildId = req.params.guildId ?? req.params.id
   if (!guildId || !req.user) {
     res.status(400).json({ success: false, error: 'Guild ID required' })
     return
@@ -57,7 +56,7 @@ export async function requireGuildAdmin(
   try {
     // Fetch user's guilds from Discord to verify admin permission
     const guildsRes = await fetch('https://discord.com/api/v10/users/@me/guilds', {
-      headers: { Authorization: `Bearer ${sessionStore.get(req.user.token)?.accessToken}` },
+      headers: { Authorization: `Bearer ${getSession(req.user.token)?.accessToken}` },
     })
 
     if (!guildsRes.ok) {
