@@ -49,9 +49,22 @@ function setClient(client) {
  */
 async function logAction(guild, { action, target, moderator, reason, extra }) {
     if (!_client) return
-    const channelId = process.env.MOD_LOG_CHANNEL_ID
+
+    // Prefer the per-guild modLogChannelId stored in serverConfig over the
+    // global env var. This prevents logs from one guild appearing in another
+    // guild's channel when MOD_LOG_CHANNEL_ID is set globally.
+    let channelId = null
+    try {
+        const { getServerConfig } = require("./serverConfig")
+        const { config } = getServerConfig(guild.id)
+        channelId = config.modLogChannelId || process.env.MOD_LOG_CHANNEL_ID || null
+    } catch {
+        channelId = process.env.MOD_LOG_CHANNEL_ID || null
+    }
+
     if (!channelId) return
 
+    // Verify the channel actually belongs to this guild to prevent cross-guild logging
     const channel = guild.channels.cache.get(channelId)
     if (!channel || !channel.isTextBased()) return
 

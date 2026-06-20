@@ -19,7 +19,8 @@ if (process.env.MONGO_URI) {
 }
 
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
-const { getUserMemory, appendUserMemory } = require("./utils/memory")
+const { getUserMemory, appendUserMemory, cleanupMemory } = require("./utils/memory")
+require("./utils/antiSpam") // side-effect: registers the 30s messageLog cleanup interval
 const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat, updateQuestProgress } = require("./utils/economy")
 const { checkRateLimit } = require("./utils/cooldowns")
 const { getProfile } = require("./utils/profiles")
@@ -98,6 +99,15 @@ client.once(Events.ClientReady, async (clientUser) => {
 
     setClient(client)
     startWebhookServer()
+
+    // ── Startup cleanup ────────────────────────────────────────────────────────
+    // Run once immediately to clear any stale data from a previous run, then
+    // schedule periodic cleanup. antiSpam and sessions have their own internal
+    // intervals; memory cleanup is added here since it has no internal timer.
+    cleanupMemory()
+    setInterval(cleanupMemory, 60 * 60 * 1000) // every hour
+
+    log.info("Startup cleanup complete. Periodic cleanup intervals registered.")
 })
 
 client.on(Events.GuildCreate, async (guild) => {

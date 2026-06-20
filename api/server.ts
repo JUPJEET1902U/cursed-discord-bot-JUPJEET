@@ -15,17 +15,43 @@ import healthRouter from './routes/health.js'
 const app = express()
 const PORT = parseInt(process.env.API_PORT || String((parseInt(process.env.PORT || '3000') + 1)))
 
+// ── CORS origin list ───────────────────────────────────────────────────────────
+// In production set DASHBOARD_URL (comma-separated list or single URL).
+// Localhost origins are only included when NODE_ENV is not 'production'.
+function buildCorsOrigins(): string | string[] {
+  if (process.env.DASHBOARD_URL) {
+    // Support comma-separated list of allowed origins
+    const origins = process.env.DASHBOARD_URL.split(',').map((o) => o.trim()).filter(Boolean)
+    return origins.length === 1 ? origins[0] : origins
+  }
+  if (process.env.NODE_ENV === 'production') {
+    // No DASHBOARD_URL set in production — deny all cross-origin requests
+    return []
+  }
+  // Development fallback
+  return ['http://localhost:5173', 'http://localhost:3000']
+}
+
 // ── Security middleware ────────────────────────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: false, // Handled by frontend
 }))
 
 app.use(cors({
-  origin: process.env.DASHBOARD_URL || ['http://localhost:5173', 'http://localhost:3002'],
+  origin: buildCorsOrigins(),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }))
+
+// ── Request logging middleware ─────────────────────────────────────────────────
+app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
+  // Redact Authorization header value to prevent token leakage in logs
+  const authHeader = req.headers.authorization
+  const authLog = authHeader ? (authHeader.startsWith('Bearer ') ? 'Bearer [REDACTED]' : '[REDACTED]') : 'none'
+  console.log(`[API] ${new Date().toISOString()} ${req.method} ${req.path} auth=${authLog} ip=${req.ip}`)
+  next()
+})
 
 // ── Rate limiting ──────────────────────────────────────────────────────────────
 const globalLimiter = rateLimit({
