@@ -11,9 +11,13 @@ const { getServerConfig } = require("./serverConfig")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
 
-// Regex patterns
-const LINK_REGEX    = /https?:\/\/[^\s]+|www\.[^\s]+\.[^\s]+/gi
-const INVITE_REGEX  = /discord(?:\.gg|(?:app)?\.com\/invite)\/[a-zA-Z0-9-]+/gi
+// Regex patterns — pre-compiled outside functions to avoid repeated compilation.
+// Kept deliberately simple (no nested quantifiers) to prevent ReDoS.
+// LINK_REGEX: matches http(s):// or www. followed by a non-whitespace hostname segment.
+const LINK_REGEX   = /https?:\/\/\S+|www\.\S+\.\S+/gi
+// INVITE_REGEX: matches discord.gg/<code> or discord.com/invite/<code>.
+// The invite code is limited to 2-32 alphanumeric/hyphen chars to bound backtracking.
+const INVITE_REGEX = /discord(?:\.gg|(?:app)?\.com\/invite)\/[a-zA-Z0-9-]{2,32}/gi
 
 /**
  * Check whether the bot has permission to manage messages in this channel.
@@ -52,6 +56,7 @@ async function runAutoMod(message) {
 
     // ── Anti-invite ────────────────────────────────────────────────────────────
     if (config.antiInvite) {
+        INVITE_REGEX.lastIndex = 0 // reset global regex state before each use
         if (INVITE_REGEX.test(content)) {
             if (canManageMessages(guild)) await safeDelete(message)
             try {
@@ -73,6 +78,7 @@ async function runAutoMod(message) {
     // ── Anti-link ──────────────────────────────────────────────────────────────
     if (config.antiLink) {
         const whitelist = config.linkWhitelist || []
+        LINK_REGEX.lastIndex = 0 // reset global regex state before each use
         const matches   = content.match(LINK_REGEX) || []
 
         const blockedLinks = matches.filter(link => {
