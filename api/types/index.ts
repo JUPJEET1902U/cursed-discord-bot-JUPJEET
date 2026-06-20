@@ -19,6 +19,17 @@ export interface SessionData {
   createdAt: number
 }
 
+export interface WebhookSecrets {
+  WEBHOOK_KOFI_SECRET?: string
+  WEBHOOK_PATREON_SECRET?: string
+  WEBHOOK_BMC_SECRET?: string
+}
+
+export interface RateLimitConfig {
+  windowMs: number
+  max: number
+}
+
 export interface GuildConfigData {
   guildId: string
   prefix: string

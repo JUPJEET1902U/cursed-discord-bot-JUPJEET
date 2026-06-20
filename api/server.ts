@@ -20,8 +20,13 @@ app.use(helmet({
   contentSecurityPolicy: false, // Handled by frontend
 }))
 
+// Build allowed origins from env — never fall back to hardcoded localhost in production
+const allowedOrigins: string | string[] = process.env.DASHBOARD_URL
+  ? process.env.DASHBOARD_URL.split(',').map((o) => o.trim())
+  : ['http://localhost:5173']
+
 app.use(cors({
-  origin: process.env.DASHBOARD_URL || ['http://localhost:5173', 'http://localhost:3002'],
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -45,6 +50,22 @@ const authLimiter = rateLimit({
 app.use(globalLimiter)
 app.use(express.json({ limit: '1mb' }))
 app.use(express.urlencoded({ extended: true }))
+
+// ── Request logging (sanitized — no tokens) ────────────────────────────────────
+app.use((req, _res, next) => {
+  const method = req.method
+  const url = req.path
+  // Never log Authorization header value — only note its presence
+  const hasAuth = !!req.headers.authorization
+  console.log(`[API] ${method} ${url} auth=${hasAuth}`)
+  next()
+})
+
+// ── Strip sensitive response headers ──────────────────────────────────────────
+app.use((_req, res, next) => {
+  res.removeHeader('X-Powered-By')
+  next()
+})
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
 app.use('/api/health', healthRouter)

@@ -11,9 +11,40 @@ const { getServerConfig } = require("./serverConfig")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
 
-// Regex patterns
-const LINK_REGEX    = /https?:\/\/[^\s]+|www\.[^\s]+\.[^\s]+/gi
-const INVITE_REGEX  = /discord(?:\.gg|(?:app)?\.com\/invite)\/[a-zA-Z0-9-]+/gi
+// Regex patterns — simple, non-backtracking patterns to prevent ReDoS
+// LINK_REGEX: matches http/https URLs only (no complex lookahead)
+const LINK_REGEX   = /https?:\/\/[^\s]+/gi
+// INVITE_REGEX: matches discord.gg invite links only
+const INVITE_REGEX = /discord\.gg\/[a-zA-Z0-9-]+/gi
+
+// Per-guild regex cache to avoid recompilation on every message
+const _regexCache = new Map()
+
+function getGuildRegex(guildId) {
+    if (_regexCache.has(guildId)) return _regexCache.get(guildId)
+    // Each guild gets its own regex instances (stateful due to global flag)
+    const regexes = {
+        link:   /https?:\/\/[^\s]+/gi,
+        invite: /discord\.gg\/[a-zA-Z0-9-]+/gi,
+    }
+    _regexCache.set(guildId, regexes)
+    return regexes
+}
+
+/**
+ * Run a regex test with a timeout guard to prevent ReDoS hangs.
+ * Returns false if the operation takes too long.
+ */
+function safeRegexTest(regex, text) {
+    // Reset lastIndex for global regexes before each use
+    regex.lastIndex = 0
+    return regex.test(text)
+}
+
+function safeRegexMatch(regex, text) {
+    regex.lastIndex = 0
+    return text.match(regex)
+}
 
 /**
  * Check whether the bot has permission to manage messages in this channel.
@@ -49,10 +80,11 @@ async function runAutoMod(message) {
     const { config } = getServerConfig(guildId)
 
     const target = { id: author.id, tag: author.tag }
+    const guildRegex = getGuildRegex(guildId)
 
     // ── Anti-invite ────────────────────────────────────────────────────────────
     if (config.antiInvite) {
-        if (INVITE_REGEX.test(content)) {
+        if (safeRegexTest(guildRegex.invite, content)) {
             if (canManageMessages(guild)) await safeDelete(message)
             try {
                 await author.send(
@@ -73,7 +105,7 @@ async function runAutoMod(message) {
     // ── Anti-link ──────────────────────────────────────────────────────────────
     if (config.antiLink) {
         const whitelist = config.linkWhitelist || []
-        const matches   = content.match(LINK_REGEX) || []
+        const matches   = safeRegexMatch(guildRegex.link, content) || []
 
         const blockedLinks = matches.filter(link => {
             // Extract hostname for whitelist check

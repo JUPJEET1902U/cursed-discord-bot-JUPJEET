@@ -2,9 +2,36 @@ import type { Response, NextFunction } from 'express'
 import type { AuthenticatedRequest, SessionData } from '../types/index.js'
 import { sessionStore } from '../services/sessions.js'
 
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000 // 24 hours
+const SESSION_REFRESH_THRESHOLD_MS = 6 * 60 * 60 * 1000 // refresh if < 6 hours remaining
+
+/**
+ * Validate a session token and return the session data, or null if invalid/expired.
+ * Deletes expired sessions immediately and refreshes valid ones.
+ */
+function validateSession(token: string): SessionData | null {
+  const session = sessionStore.get(token)
+  if (!session) return null
+
+  const age = Date.now() - session.createdAt
+  if (age > SESSION_MAX_AGE_MS) {
+    sessionStore.delete(token)
+    return null
+  }
+
+  // Refresh session if it's past the refresh threshold (extend expiry)
+  if (age > SESSION_MAX_AGE_MS - SESSION_REFRESH_THRESHOLD_MS) {
+    const refreshed: SessionData = { ...session, createdAt: Date.now() }
+    sessionStore.set(token, refreshed)
+    return refreshed
+  }
+
+  return session
+}
+
 /**
  * Middleware: require a valid session token.
- * Attaches req.user if valid.
+ * Attaches req.user if valid. Checks session age on every access.
  */
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization
@@ -15,16 +42,9 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     return
   }
 
-  const session = sessionStore.get(token)
+  const session = validateSession(token)
   if (!session) {
     res.status(401).json({ success: false, error: 'Invalid or expired session' })
-    return
-  }
-
-  // Check session age (24 hours)
-  if (Date.now() - session.createdAt > 24 * 60 * 60 * 1000) {
-    sessionStore.delete(token)
-    res.status(401).json({ success: false, error: 'Session expired' })
     return
   }
 
@@ -48,16 +68,22 @@ export async function requireGuildAdmin(
   res: Response,
   next: NextFunction,
 ) {
-  const { guildId } = req.params
+  const guildId = req.params.guildId || req.params.id
   if (!guildId || !req.user) {
     res.status(400).json({ success: false, error: 'Guild ID required' })
     return
   }
 
   try {
+    const session = sessionStore.get(req.user.token)
+    if (!session) {
+      res.status(401).json({ success: false, error: 'Invalid or expired session' })
+      return
+    }
+
     // Fetch user's guilds from Discord to verify admin permission
     const guildsRes = await fetch('https://discord.com/api/v10/users/@me/guilds', {
-      headers: { Authorization: `Bearer ${sessionStore.get(req.user.token)?.accessToken}` },
+      headers: { Authorization: `Bearer ${session.accessToken}` },
     })
 
     if (!guildsRes.ok) {
@@ -73,9 +99,9 @@ export async function requireGuildAdmin(
       return
     }
 
-    // Check for Administrator permission (bit 3 = 0x8)
+    // Check for Administrator (0x8) or Manage Guild (0x20) permission
     const perms = BigInt(guild.permissions)
-    const isAdmin = (perms & 0x8n) === 0x8n || (perms & 0x20n) === 0x20n // Administrator or Manage Guild
+    const isAdmin = (perms & 0x8n) === 0x8n || (perms & 0x20n) === 0x20n
 
     if (!isAdmin) {
       res.status(403).json({ success: false, error: 'Administrator or Manage Server permission required' })
@@ -84,6 +110,7 @@ export async function requireGuildAdmin(
 
     next()
   } catch (err) {
+    console.error('Guild permission check error:', (err as Error).message)
     res.status(500).json({ success: false, error: 'Permission check failed' })
   }
 }

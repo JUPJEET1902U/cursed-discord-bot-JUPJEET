@@ -39,6 +39,10 @@ function setClient(client) {
 /**
  * Send a mod-log embed to the designated channel.
  *
+ * Channel resolution order:
+ *   1. serverConfig[guildId].modLogChannelId  (per-guild setting)
+ *   2. MOD_LOG_CHANNEL_ID env var             (global fallback)
+ *
  * @param {object} guild   - Discord.js Guild object
  * @param {object} options
  * @param {string} options.action       - One of the ACTION_COLORS keys
@@ -49,7 +53,20 @@ function setClient(client) {
  */
 async function logAction(guild, { action, target, moderator, reason, extra }) {
     if (!_client) return
-    const channelId = process.env.MOD_LOG_CHANNEL_ID
+
+    // Validate guild ID before proceeding
+    if (!guild?.id) return
+
+    // Resolve per-guild channel first, fall back to env var
+    let channelId = null
+    try {
+        const { getServerConfig } = require("./serverConfig")
+        const { config } = getServerConfig(guild.id)
+        channelId = config.modLogChannelId || process.env.MOD_LOG_CHANNEL_ID || null
+    } catch {
+        channelId = process.env.MOD_LOG_CHANNEL_ID || null
+    }
+
     if (!channelId) return
 
     const channel = guild.channels.cache.get(channelId)
