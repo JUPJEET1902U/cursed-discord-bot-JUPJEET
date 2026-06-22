@@ -1,3 +1,4 @@
+const { AttachmentBuilder } = require("discord.js")
 const { callAI } = require("../utils/ai")
 const { addRoast, getLeaderboard } = require("../utils/roast")
 const { checkCooldown } = require("../utils/cooldowns")
@@ -39,7 +40,7 @@ async function handle(message) {
         return true
     }
 
-    if (msgLower.startsWith("!imagine")) {
+if (msgLower.startsWith("!imagine")) {
     const prompt = message.content.slice(8).trim()
 
     if (!prompt) {
@@ -66,14 +67,9 @@ async function handle(message) {
         const imageUrl =
             `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
 
-       const attachment = new AttachmentBuilder(imageUrl, {
-    name: "generated-image.png"
-})
-
-await message.channel.send({
-    content: `🎨 **${prompt}**`,
-    files: [attachment]
-})
+        await message.channel.send(
+            `🎨 **${prompt}**\n${imageUrl}`
+        )
 
         incrementStat(userId, senderName, "imagine")
         updateQuestProgress(userId, senderName, "imagine")
@@ -87,8 +83,7 @@ await message.channel.send({
 
     return true
 }
-
-    if (msgLower.startsWith("!meme")) {
+if (msgLower.startsWith("!meme")) {
     const topic =
         message.content.slice(5).trim() || "something cursed and funny"
 
@@ -111,10 +106,9 @@ await message.channel.send({
                 `funny internet meme style image about ${topic}`
             )}`
 
-       await message.channel.send(
-    `🎨 **${prompt}**\n${imageUrl}`
-)
-})
+        await message.channel.send(
+            `😂 **${topic}**\n${imageUrl}`
+        )
 
     } catch (err) {
         console.error("Meme generation error:", err)
