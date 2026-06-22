@@ -74,10 +74,14 @@ async function handle(message) {
         const imageUrl =
             `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
 
-        await message.channel.send({
-            content: `🎨 **${prompt}**`,
-            files: [imageUrl]
-        })
+       const attachment = new AttachmentBuilder(imageUrl, {
+    name: "generated-image.png"
+})
+
+await message.channel.send({
+    content: `🎨 **${prompt}**`,
+    files: [attachment]
+})
 
         incrementStat(userId, senderName, "imagine")
         updateQuestProgress(userId, senderName, "imagine")
@@ -116,10 +120,14 @@ async function handle(message) {
                 `funny internet meme style image about ${topic}`
             )}`
 
-        await message.channel.send({
-            content: `😂 **${topic}**`,
-            files: [imageUrl]
-        })
+       const attachment = new AttachmentBuilder(imageUrl, {
+    name: "meme.png"
+})
+
+await message.channel.send({
+    content: `😂 **${topic}**`,
+    files: [attachment]
+})
 
     } catch (err) {
         console.error("Meme generation error:", err)
