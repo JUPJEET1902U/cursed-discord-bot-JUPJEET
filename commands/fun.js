@@ -1,3 +1,4 @@
+const { AttachmentBuilder } = require("discord.js")
 const { callAI } = require("../utils/ai")
 const { addRoast, getLeaderboard } = require("../utils/roast")
 const { checkCooldown } = require("../utils/cooldowns")
