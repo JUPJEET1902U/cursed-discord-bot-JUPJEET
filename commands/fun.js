@@ -48,74 +48,88 @@ async function handle(message) {
     }
 
     if (msgLower.startsWith("!imagine")) {
-        const prompt = message.content.slice(8).trim()
-        if (!prompt) { await message.channel.send("Give me something to imagine! e.g. `!imagine a cursed cat on a skateboard`"); return true }
-        if (!HF_TOKEN) { await message.channel.send("🚫 Image generation is not configured on this bot. Ask the server owner to set up `HF_TOKEN`."); return true }
-        const cd = checkCooldown(userId, "imagine", 30 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before generating another image.`); return true }
-        try {
-            await message.channel.send(`🎨 Generating **${prompt}**... give me a sec`)
-            const hfRes = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
-                method: "POST",
-                headers: { "Authorization": `Bearer ${HF_TOKEN}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ inputs: prompt })
-            })
-            if (!hfRes.ok) {
-                const errText = await hfRes.text().catch(() => "(no body)")
-                console.error(`Image generation failed [${hfRes.status}]:`, errText)
-                await message.channel.send("😤 Image generation failed. The model may be loading — try again in a moment!")
-                return true
-            }
-            const arrayBuf = await hfRes.arrayBuffer()
-            if (!arrayBuf || arrayBuf.byteLength === 0) {
-                console.error("Image generation returned empty buffer for prompt:", prompt)
-                await message.channel.send("😤 Got an empty image back. Try a different prompt!")
-                return true
-            }
-            const buffer = Buffer.from(arrayBuf)
-            const attachment = new AttachmentBuilder(buffer, { name: "cursed.png" })
-            await message.channel.send({ content: `🎨 **${prompt}**`, files: [attachment] })
-            incrementStat(userId, senderName, "imagine")
-            updateQuestProgress(userId, senderName, "imagine")
-        } catch (err) {
-            console.error("Image generation error:", err)
-            await message.channel.send("😤 Couldn't generate that. Try a different prompt!")
-        }
+    const prompt = message.content.slice(8).trim()
+
+    if (!prompt) {
+        await message.channel.send(
+            "Give me something to imagine! e.g. `!imagine a cursed cat on a skateboard`"
+        )
         return true
     }
 
-    if (msgLower.startsWith("!meme")) {
-        const topic = message.content.slice(5).trim() || "something cursed and funny"
-        if (!HF_TOKEN) { await message.channel.send("🚫 Image generation is not configured on this bot. Ask the server owner to set up `HF_TOKEN`."); return true }
-        const cd = checkCooldown(userId, "meme", 30 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before another meme.`); return true }
-        try {
-            await message.channel.send(`😂 Generating a meme about **${topic}**... hang on`)
-            const hfRes = await fetch("https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell", {
-                method: "POST",
-                headers: { "Authorization": `Bearer ${HF_TOKEN}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ inputs: `funny internet meme style image about ${topic}, bold text, humorous, viral meme format` })
-            })
-            if (!hfRes.ok) {
-                const errText = await hfRes.text().catch(() => "(no body)")
-                console.error(`Meme generation failed [${hfRes.status}]:`, errText)
-                await message.channel.send("😤 Meme generation failed. The model may be loading — try again!")
-                return true
-            }
-            const arrayBuf = await hfRes.arrayBuffer()
-            if (!arrayBuf || arrayBuf.byteLength === 0) {
-                console.error("Meme generation returned empty buffer for topic:", topic)
-                await message.channel.send("😤 Got an empty image back. Try a different topic!")
-                return true
-            }
-            const buffer = Buffer.from(arrayBuf)
-            await message.channel.send({ content: `😂 **${topic}**`, files: [new AttachmentBuilder(buffer, { name: "meme.png" })] })
-        } catch (err) {
-            console.error("Meme generation error:", err)
-            await message.channel.send("😤 Couldn't generate that meme. Try a different topic!")
-        }
+    const cd = checkCooldown(userId, "imagine", 30 * 1000)
+
+    if (!cd.ok) {
+        await message.channel.send(
+            `⏳ Wait **${cd.remaining}s** before generating another image.`
+        )
         return true
     }
+
+    try {
+        await message.channel.send(
+            `🎨 Generating **${prompt}**... give me a sec`
+        )
+
+        const imageUrl =
+            `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
+
+        await message.channel.send({
+            content: `🎨 **${prompt}**`,
+            files: [imageUrl]
+        })
+
+        incrementStat(userId, senderName, "imagine")
+        updateQuestProgress(userId, senderName, "imagine")
+
+    } catch (err) {
+        console.error("Image generation error:", err)
+        await message.channel.send(
+            "😤 Couldn't generate that. Try a different prompt!"
+        )
+    }
+
+    return true
+}
+    }
+
+    if (msgLower.startsWith("!meme")) {
+    const topic =
+        message.content.slice(5).trim() || "something cursed and funny"
+
+    const cd = checkCooldown(userId, "meme", 30 * 1000)
+
+    if (!cd.ok) {
+        await message.channel.send(
+            `⏳ Wait **${cd.remaining}s** before another meme.`
+        )
+        return true
+    }
+
+    try {
+        await message.channel.send(
+            `😂 Generating a meme about **${topic}**... hang on`
+        )
+
+        const imageUrl =
+            `https://image.pollinations.ai/prompt/${encodeURIComponent(
+                `funny internet meme style image about ${topic}`
+            )}`
+
+        await message.channel.send({
+            content: `😂 **${topic}**`,
+            files: [imageUrl]
+        })
+
+    } catch (err) {
+        console.error("Meme generation error:", err)
+        await message.channel.send(
+            "😤 Couldn't generate that meme. Try a different topic!"
+        )
+    }
+
+    return true
+}
 
 
     if (msgLower === "!leaderboard") {
