@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import { useEffect } from 'react'
+import { SpeedInsights } from '@vercel/speed-insights/react'
 import { useAuthStore } from '@/stores/authStore'
 import { useUIStore } from '@/stores/uiStore'
 import { Navbar } from '@/components/layout/Navbar'
@@ -96,6 +97,7 @@ export default function App() {
       </Routes>
 
       <ToastContainer />
+      <SpeedInsights />
     </BrowserRouter>
   )
 }
