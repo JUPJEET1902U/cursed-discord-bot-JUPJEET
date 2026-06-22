@@ -3,11 +3,18 @@ export const API_BASE = '/api'
 export const DISCORD_CDN = 'https://cdn.discordapp.com'
 
 // ── Discord OAuth ──────────────────────────────────────────────────────────────
+// In production the redirect URI is always derived from the current origin so
+// it matches whatever domain the dashboard is deployed to (Vercel, custom, etc.).
+// VITE_REDIRECT_URI can override this for local development only.
+const _redirectUri =
+  import.meta.env.DEV && import.meta.env.VITE_REDIRECT_URI
+    ? import.meta.env.VITE_REDIRECT_URI
+    : `${window.location.origin}/auth/callback`
+
 export const DISCORD_OAUTH_URL = `https://discord.com/oauth2/authorize?client_id=${
   import.meta.env.VITE_DISCORD_CLIENT_ID
-}&redirect_uri=${encodeURIComponent(
-  import.meta.env.VITE_REDIRECT_URI || `${window.location.origin}/auth/callback`
-)}&response_type=code&scope=identify+guilds`
+}&redirect_uri=${encodeURIComponent(_redirectUri)}&response_type=code&scope=identify+guilds`
+
 
 // ── Personalities ──────────────────────────────────────────────────────────────
 export const PERSONALITIES = [
