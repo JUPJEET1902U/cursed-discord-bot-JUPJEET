@@ -6,13 +6,6 @@ const { incrementStat, updateQuestProgress, checkAndGrantAchievements, MEDALS } 
 const { clearUserMemory } = require("../utils/memory")
 const { activeTriviaAnswers } = require("../utils/state")
 
-// ── HF_TOKEN validation ────────────────────────────────────────────────────────
-const HF_TOKEN = process.env.HF_TOKEN
-if (!HF_TOKEN) {
-    console.warn("⚠️  HF_TOKEN is not set — !imagine and !meme commands will be disabled")
-} else {
-    console.log("✅ HF_TOKEN detected — image generation enabled")
-}
 
 async function announce(message, userId, name) {
     const achs = checkAndGrantAchievements(userId, name)
