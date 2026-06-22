@@ -2,6 +2,9 @@
 export const API_BASE =
   'https://cursed-discord-bot-jupjeet-production.up.railway.app/api'
 
+// ── Discord CDN ────────────────────────────────────────────────────────────────
+export const DISCORD_CDN = 'https://cdn.discordapp.com'
+
 // ── Discord OAuth ──────────────────────────────────────────────────────────────
 // In production the redirect URI is always derived from the current origin so
 // it matches whatever domain the dashboard is deployed to (Vercel, custom, etc.).
