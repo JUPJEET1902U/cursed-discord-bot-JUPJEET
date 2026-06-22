@@ -1,6 +1,6 @@
 // ── API ────────────────────────────────────────────────────────────────────────
-export const API_BASE = '/api'
-export const DISCORD_CDN = 'https://cdn.discordapp.com'
+export const API_BASE =
+  'https://cursed-discord-bot-jupjeet-production.up.railway.app/api'
 
 // ── Discord OAuth ──────────────────────────────────────────────────────────────
 // In production the redirect URI is always derived from the current origin so
