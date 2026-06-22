@@ -1,4 +1,3 @@
-const { AttachmentBuilder } = require("discord.js")
 const { callAI } = require("../utils/ai")
 const { addRoast, getLeaderboard } = require("../utils/roast")
 const { checkCooldown } = require("../utils/cooldowns")
@@ -88,7 +87,6 @@ await message.channel.send({
 
     return true
 }
-    }
 
     if (msgLower.startsWith("!meme")) {
     const topic =
@@ -113,13 +111,9 @@ await message.channel.send({
                 `funny internet meme style image about ${topic}`
             )}`
 
-       const attachment = new AttachmentBuilder(imageUrl, {
-    name: "meme.png"
-})
-
-await message.channel.send({
-    content: `😂 **${topic}**`,
-    files: [attachment]
+       await message.channel.send(
+    `🎨 **${prompt}**\n${imageUrl}`
+)
 })
 
     } catch (err) {
