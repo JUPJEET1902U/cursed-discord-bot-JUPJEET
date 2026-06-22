@@ -12,9 +12,11 @@ export function NotFoundPage() {
         <p className="text-sm text-muted-foreground max-w-sm">
           Even CURSED can't find this page. It might have been deleted, moved, or never existed.
         </p>
-        <Button asChild leftIcon={<Home className="h-4 w-4" />}>
-          <Link to="/dashboard">Back to Dashboard</Link>
-        </Button>
+        <Link to="/">
+  <Button leftIcon={<Home />}>
+    Go Home
+  </Button>
+</Link>
       </div>
     </div>
   )
