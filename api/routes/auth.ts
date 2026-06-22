@@ -9,7 +9,13 @@ const router = Router()
 const DISCORD_API = 'https://discord.com/api/v10'
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID || ''
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || ''
-const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || 'http://localhost:5173/auth/callback'
+const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || ''
+
+// Validate DISCORD_REDIRECT_URI is set — required for OAuth to work in any environment
+if (!REDIRECT_URI) {
+  console.error('❌ DISCORD_REDIRECT_URI is not set. OAuth login will not work.')
+  console.error('   Set it to your frontend callback URL, e.g. https://yourdomain.com/auth/callback')
+}
 
 /**
  * POST /api/auth/discord
@@ -23,7 +29,7 @@ router.post('/discord', async (req: Request, res: Response) => {
     return
   }
 
-  if (!CLIENT_ID || !CLIENT_SECRET) {
+  if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
     res.status(500).json({ success: false, error: 'Discord OAuth not configured' })
     return
   }
