@@ -18,6 +18,14 @@ if (process.env.MONGO_URI) {
     console.warn("⚠️  MONGO_URI not set — using in-memory fallback for all data stores")
 }
 
+// ── Optional feature availability ─────────────────────────────────────────────
+if (!process.env.HF_TOKEN) {
+    console.warn("⚠️  HF_TOKEN not set — !imagine and !meme commands will be disabled")
+}
+if (!process.env.DISCORD_REDIRECT_URI) {
+    console.warn("⚠️  DISCORD_REDIRECT_URI not set — dashboard OAuth login will not work")
+}
+
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
 const { getUserMemory, appendUserMemory, cleanupMemory } = require("./utils/memory")
 require("./utils/antiSpam") // side-effect: registers the 30s messageLog cleanup interval
