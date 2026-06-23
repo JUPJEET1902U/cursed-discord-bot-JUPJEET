@@ -13,7 +13,13 @@ import guildsRouter from './routes/guilds.js'
 import healthRouter from './routes/health.js'
 
 const app = express()
-const PORT = parseInt(process.env.API_PORT || String((parseInt(process.env.PORT || '3000') + 1)))
+// API_PORT takes precedence. In production (Railway) set API_PORT=$PORT so the
+// API is reachable on the single externally-exposed port. Falls back to PORT+1
+// for local development where the webhook server occupies PORT.
+const PORT = parseInt(
+  process.env.API_PORT ||
+  String(parseInt(process.env.PORT || '3000') + 1),
+)
 
 // ── CORS origin list ───────────────────────────────────────────────────────────
 // In production set DASHBOARD_URL (comma-separated list or single URL).

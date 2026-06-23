@@ -70,9 +70,17 @@ export const useAuthStore = create<AuthStore>()(
         try {
           const user = await authAPI.getMe()
           set({ user: user as DiscordUser, isAuthenticated: true, isLoading: false })
-        } catch {
-          localStorage.removeItem(SESSION_KEY)
-          set({ user: null, token: null, isAuthenticated: false, isLoading: false })
+        } catch (err) {
+          // On 401 the token is invalid/expired — clear auth state
+          const status = (err as { status?: number }).status
+          if (status === 401 || status === 403) {
+            localStorage.removeItem(SESSION_KEY)
+            set({ user: null, token: null, isAuthenticated: false, isLoading: false })
+          } else {
+            // Network error or server error — keep existing auth state so the
+            // user isn't logged out due to a transient backend issue
+            set({ isLoading: false })
+          }
         }
       },
 

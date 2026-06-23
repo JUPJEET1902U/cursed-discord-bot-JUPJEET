@@ -46,11 +46,14 @@ function DashboardLayout() {
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading, fetchMe, token } = useAuthStore()
 
+  // Always validate the persisted token with the backend on mount.
+  // This catches expired sessions even when isAuthenticated is true from
+  // the persisted zustand store.
   useEffect(() => {
-    if (token && !isAuthenticated) {
+    if (token) {
       fetchMe()
     }
-  }, [token])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) {
     return <Loading fullPage text="Loading..." />
