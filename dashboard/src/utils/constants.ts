@@ -1,6 +1,10 @@
 // ── API ────────────────────────────────────────────────────────────────────────
-export const API_BASE =
-  'https://cursed-discord-bot-jupjeet-production.up.railway.app/api'
+// In production set VITE_API_URL to your Railway backend URL (no trailing slash).
+// e.g. https://your-api.railway.app
+// Falls back to /api for local development (Vite dev proxy handles it).
+export const API_BASE = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL}/api`
+  : '/api'
 
 // ── Discord CDN ────────────────────────────────────────────────────────────────
 export const DISCORD_CDN = 'https://cdn.discordapp.com'
