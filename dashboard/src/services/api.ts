@@ -12,6 +12,8 @@ class APIError extends Error {
   }
 }
 
+const REQUEST_TIMEOUT_MS = 15_000 // 15 seconds
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -27,11 +29,29 @@ async function request<T>(
     headers['Authorization'] = `Bearer ${token}`
   }
 
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-    credentials: 'include',
-  })
+  // Abort the request if it takes longer than REQUEST_TIMEOUT_MS
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      credentials: 'include',
+      signal: controller.signal,
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new APIError('Request timed out — the server took too long to respond', 408)
+    }
+    throw new APIError(
+      err instanceof Error ? err.message : 'Network error — could not reach the server',
+      0,
+    )
+  } finally {
+    clearTimeout(timeoutId)
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as { error?: string; message?: string }

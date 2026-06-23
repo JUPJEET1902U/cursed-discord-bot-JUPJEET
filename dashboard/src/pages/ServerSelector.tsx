@@ -10,14 +10,14 @@ import { useState } from 'react'
 import { cn } from '@/utils/cn'
 
 export function ServerSelectorPage() {
-  const { guilds, fetchGuilds, selectGuild, isLoading } = useGuildStore()
+  const { guilds, fetchGuilds, selectGuild, isLoading, error } = useGuildStore()
   const { user } = useAuthStore()
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
 
   useEffect(() => {
     fetchGuilds()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = guilds.filter((g) =>
     g.name.toLowerCase().includes(search.toLowerCase()),
@@ -53,6 +53,19 @@ export function ServerSelectorPage() {
             className="w-full h-10 pl-9 pr-4 rounded-lg border border-input bg-card text-sm focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
+
+        {error && (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 mb-6 flex items-start gap-3">
+            <XCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-destructive">Failed to load servers</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{error}</p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => fetchGuilds()}>
+              Retry
+            </Button>
+          </div>
+        )}
 
         {isLoading ? (
           <LoadingCard text="Loading your servers..." />
