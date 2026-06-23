@@ -132,7 +132,14 @@ async function grantPremiumByDiscordId(discordId, platform) {
 }
 
 function startWebhookServer() {
-    const port = process.env.PORT || 3000
+    // When API_PORT is set to the same value as PORT (Railway production setup),
+    // the API server owns PORT. Use WEBHOOK_PORT for the webhook server, or fall
+    // back to PORT+1 so both servers can coexist locally without conflict.
+    const mainPort = parseInt(process.env.PORT || '3000')
+    const apiPort = process.env.API_PORT ? parseInt(process.env.API_PORT) : null
+    const port = process.env.WEBHOOK_PORT
+        ? parseInt(process.env.WEBHOOK_PORT)
+        : (apiPort === mainPort ? mainPort + 1 : mainPort)
     const app = express()
 
     // Parse raw body for signature verification before JSON parsing
