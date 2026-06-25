@@ -15,6 +15,29 @@ const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
 const ITEMS_PER_PAGE = 8
 const COLLECTOR_TIMEOUT = 120_000 // 2 minutes
 
+// ── Cursed System Color Palette ────────────────────────────────────────────────
+const CURSED_COLORS = {
+    crimson:  0xDC143C,  // primary accent — dark crimson
+    purple:   0x2C1B47,  // secondary accent — dark purple
+    gray:     0x1A1A1A,  // background tone — dark gray
+    neon:     0x00FF41,  // highlight — neon green
+}
+
+// ── Module label map for category headers ──────────────────────────────────────
+const MODULE_LABELS = {
+    fun:        "🎉 FUN MODULE",
+    economy:    "💰 ECONOMY MODULE",
+    gambling:   "🎰 GAMBLING MODULE",
+    games:      "🎮 GAMES MODULE",
+    pets:       "🐾 PETS MODULE",
+    profiles:   "👤 PROFILES MODULE",
+    memory:     "🧠 MEMORY MODULE",
+    premium:    "💎 PREMIUM MODULE",
+    admin:      "⚙️ ADMIN MODULE",
+    moderation: "⚔ MODERATION MODULE",
+    security:   "🛡 SECURITY MODULE",
+}
+
 // ── Embed Builders ─────────────────────────────────────────────────────────────
 
 function buildMainMenu() {
@@ -22,22 +45,23 @@ function buildMainMenu() {
     const total = getTotalCommandCount()
 
     const embed = new EmbedBuilder()
-        .setColor(COLORS.primary)
-        .setTitle("👹 CURSED Bot — Help Center")
+        .setColor(CURSED_COLORS.crimson)
+        .setTitle("☠ CURSED SYSTEM  ·  HELP TERMINAL")
         .setDescription(
-            `Welcome to CURSED! I'm your AI-powered Discord companion with roasting energy and a kind heart.\n\n` +
-            `**${total} commands** across **${categories.length} categories**\n\n` +
-            `Use the menu below to browse categories, or type \`!help [command]\` for details on a specific command.\n` +
-            `You can also search with \`!help search [query]\`.`
+            `\`\`\`ansi\n\u001b[1;31m[ SYSTEM ONLINE ] — CURSED SECURITY ENGINE v2.0\u001b[0m\n\`\`\`` +
+            `> **${total} commands** loaded across **${categories.length} modules**\n\n` +
+            `Select a module from the menu below, or use:\n` +
+            `\`!help [command]\` — detailed command info\n` +
+            `\`!help search [query]\` — search all commands`
         )
         .addFields(
             categories.map(cat => ({
-                name: `${cat.emoji} ${cat.name}`,
-                value: `${cat.commands.length} commands`,
+                name: `${cat.emoji}  ${cat.name.toUpperCase()}`,
+                value: `\`${cat.commands.length}\` commands`,
                 inline: true,
             }))
         )
-        .setFooter({ text: "👹 CURSED Bot • Select a category below" })
+        .setFooter({ text: "☠ CURSED SECURITY ENGINE  ·  Select a module to continue" })
         .setTimestamp()
 
     return embed
@@ -50,22 +74,23 @@ function buildCategoryEmbed(categoryKey, page = 0) {
     const commands = cat.commands
     const totalPages = Math.ceil(commands.length / ITEMS_PER_PAGE)
     const pageCommands = commands.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE)
+    const moduleLabel = MODULE_LABELS[categoryKey] || `${cat.emoji} ${cat.name.toUpperCase()} MODULE`
 
     const embed = new EmbedBuilder()
-        .setColor(cat.color || COLORS.primary)
-        .setTitle(`${cat.emoji} ${cat.name} Commands`)
+        .setColor(cat.color || CURSED_COLORS.crimson)
+        .setTitle(moduleLabel)
         .setDescription(
             pageCommands.map(cmd => {
-                const aliases = cmd.aliases?.length ? ` *(${cmd.aliases.join(", ")})*` : ""
-                const cooldown = cmd.cooldown && cmd.cooldown !== "none" ? ` • ⏱️ ${cmd.cooldown}` : ""
-                const slashNote = cmd.slashOnly ? " • `/` slash only" : ""
-                return `**\`${cmd.name}\`**${aliases}\n> ${cmd.description}${cooldown}${slashNote}`
+                const aliases = cmd.aliases?.length ? `  *(${cmd.aliases.join(", ")})*` : ""
+                const cooldown = cmd.cooldown && cmd.cooldown !== "none" ? `  ·  ⏱ \`${cmd.cooldown}\`` : ""
+                const slashNote = cmd.slashOnly ? "  ·  \`/\` slash only" : ""
+                return `**\`${cmd.name}\`**${aliases}\n┗ ${cmd.description}${cooldown}${slashNote}`
             }).join("\n\n")
         )
-        .setFooter({ text: `👹 CURSED Bot • Page ${page + 1}/${totalPages} • !help [command] for details` })
+        .setFooter({ text: `☠ CURSED SECURITY ENGINE  ·  Page ${page + 1}/${totalPages}  ·  !help [command] for details` })
 
     if (cat.adminOnly) {
-        embed.addFields({ name: "🔒 Note", value: "These commands require elevated permissions.", inline: false })
+        embed.addFields({ name: "🔒 RESTRICTED ACCESS", value: "These commands require elevated permissions.", inline: false })
     }
 
     return embed
@@ -73,35 +98,35 @@ function buildCategoryEmbed(categoryKey, page = 0) {
 
 function buildCommandEmbed(cmd, categoryName) {
     const embed = new EmbedBuilder()
-        .setColor(COLORS.info)
-        .setTitle(`📖 Command: \`${cmd.name}\``)
-        .setDescription(cmd.description)
+        .setColor(CURSED_COLORS.crimson)
+        .setTitle(`⌨  COMMAND REFERENCE  ·  \`${cmd.name}\``)
+        .setDescription(`> ${cmd.description}`)
         .addFields(
-            { name: "📝 Usage", value: `\`${cmd.usage}\``, inline: false },
+            { name: "📡  SYNTAX", value: `\`${cmd.usage}\``, inline: false },
         )
 
     if (cmd.aliases?.length) {
-        embed.addFields({ name: "🔀 Aliases", value: cmd.aliases.map(a => `\`${a}\``).join(", "), inline: true })
+        embed.addFields({ name: "🔀  ALIASES", value: cmd.aliases.map(a => `\`${a}\``).join("  ·  "), inline: true })
     }
 
     if (cmd.cooldown && cmd.cooldown !== "none") {
-        embed.addFields({ name: "⏱️ Cooldown", value: cmd.cooldown, inline: true })
+        embed.addFields({ name: "⏱  COOLDOWN", value: `\`${cmd.cooldown}\``, inline: true })
     }
 
     if (cmd.permissions?.length) {
-        embed.addFields({ name: "🔒 Permissions", value: cmd.permissions.join(", "), inline: true })
+        embed.addFields({ name: "🔒  PERMISSIONS", value: cmd.permissions.join(", "), inline: true })
     }
 
     if (cmd.examples?.length) {
         embed.addFields({
-            name: "💡 Examples",
+            name: "💡  EXAMPLES",
             value: cmd.examples.map(e => `\`${e}\``).join("\n"),
             inline: false,
         })
     }
 
-    embed.addFields({ name: "📂 Category", value: categoryName, inline: true })
-    embed.setFooter({ text: "👹 CURSED Bot • Use !help to go back to the menu" })
+    embed.addFields({ name: "📂  MODULE", value: categoryName, inline: true })
+    embed.setFooter({ text: "☠ CURSED SECURITY ENGINE  ·  !help to return to the main menu" })
 
     return embed
 }
@@ -109,21 +134,24 @@ function buildCommandEmbed(cmd, categoryName) {
 function buildSearchEmbed(query, results) {
     if (!results.length) {
         return new EmbedBuilder()
-            .setColor(COLORS.warning)
-            .setTitle("🔍 No Results Found")
-            .setDescription(`No commands matched \`${sanitize(query)}\`.\n\nTry a different search term or use \`!help\` to browse all categories.`)
-            .setFooter({ text: "👹 CURSED Bot" })
+            .setColor(CURSED_COLORS.crimson)
+            .setTitle("🔍  SEARCH  ·  NO RESULTS")
+            .setDescription(
+                `No commands matched \`${sanitize(query)}\`.\n\n` +
+                `Try a different search term or use \`!help\` to browse all modules.`
+            )
+            .setFooter({ text: "☠ CURSED SECURITY ENGINE" })
     }
 
     const embed = new EmbedBuilder()
-        .setColor(COLORS.info)
-        .setTitle(`🔍 Search Results: "${sanitize(query)}"`)
+        .setColor(CURSED_COLORS.crimson)
+        .setTitle(`🔍  SEARCH RESULTS  ·  "${sanitize(query)}"`)
         .setDescription(
             results.slice(0, 10).map(cmd => {
-                return `**\`${cmd.name}\`** — ${cmd.category}\n> ${cmd.description}`
+                return `**\`${cmd.name}\`**  ·  *${cmd.category}*\n┗ ${cmd.description}`
             }).join("\n\n")
         )
-        .setFooter({ text: `👹 CURSED Bot • ${results.length} result(s) found • !help [command] for details` })
+        .setFooter({ text: `☠ CURSED SECURITY ENGINE  ·  ${results.length} result(s) found  ·  !help [command] for details` })
 
     return embed
 }
@@ -142,7 +170,7 @@ function buildCategorySelect(currentKey = null) {
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
             .setCustomId("help_category")
-            .setPlaceholder("📂 Select a category...")
+            .setPlaceholder("⚡ Select a module...")
             .addOptions(options)
     )
 }
@@ -151,17 +179,17 @@ function buildPaginationRow(categoryKey, page, totalPages) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId(`help_prev_${categoryKey}_${page}`)
-            .setLabel("◀ Previous")
-            .setStyle(ButtonStyle.Secondary)
+            .setLabel("◀ PREV")
+            .setStyle(ButtonStyle.Danger)
             .setDisabled(page === 0),
         new ButtonBuilder()
             .setCustomId(`help_home`)
-            .setLabel("🏠 Home")
-            .setStyle(ButtonStyle.Primary),
+            .setLabel("☠ MAIN MENU")
+            .setStyle(ButtonStyle.Secondary),
         new ButtonBuilder()
             .setCustomId(`help_next_${categoryKey}_${page}`)
-            .setLabel("Next ▶")
-            .setStyle(ButtonStyle.Secondary)
+            .setLabel("NEXT ▶")
+            .setStyle(ButtonStyle.Danger)
             .setDisabled(page >= totalPages - 1),
     )
 }
@@ -170,8 +198,8 @@ function buildHomeRow() {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId("help_home")
-            .setLabel("🏠 Back to Menu")
-            .setStyle(ButtonStyle.Primary),
+            .setLabel("☠ MAIN MENU")
+            .setStyle(ButtonStyle.Secondary),
     )
 }
 
