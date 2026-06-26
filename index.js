@@ -96,10 +96,25 @@ client.once(Events.ClientReady, async (clientUser) => {
     try {
         const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN)
         const commandData = moderationCmd.commands.map(c => c.toJSON())
-        await rest.put(
-            Routes.applicationCommands(clientUser.user.id),
-            { body: commandData }
-        )
+
+const existingCommands = await rest.get(
+    Routes.applicationCommands(clientUser.user.id)
+)
+
+const entryPoint = existingCommands.find(
+    cmd => cmd.type === 4
+)
+
+const commandsToRegister = entryPoint
+    ? [...commandData, entryPoint]
+    : commandData
+
+await rest.put(
+    Routes.applicationCommands(clientUser.user.id),
+    {
+        body: commandsToRegister
+    }
+)
         console.log(`✅ Registered ${commandData.length} slash command(s)`)
     } catch (err) {
         console.error("Slash command registration error:", err.message)
