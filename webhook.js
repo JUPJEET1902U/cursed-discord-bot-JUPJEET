@@ -196,7 +196,7 @@ function startWebhookServer() {
 
             res.status(200).send("OK")
         } catch (err) {
-            console.error("Ko-fi webhook error:", err.message)
+            console.error("Ko-fi webhook error: request failed")
             res.status(500).send("Error")
         }
     })
@@ -231,7 +231,7 @@ function startWebhookServer() {
 
             res.status(200).send("OK")
         } catch (err) {
-            console.error("Patreon webhook error:", err.message)
+            console.error("Patreon webhook error: request failed")
             res.status(500).send("Error")
         }
     })
@@ -260,7 +260,7 @@ function startWebhookServer() {
 
             res.status(200).send("OK")
         } catch (err) {
-            console.error("BMC webhook error:", err.message)
+            console.error("BMC webhook error: request failed")
             res.status(500).send("Error")
         }
     })

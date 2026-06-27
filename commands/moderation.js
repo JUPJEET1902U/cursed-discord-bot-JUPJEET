@@ -82,6 +82,10 @@ async function handleInteraction(interaction) {
 
     // ── /warn ──────────────────────────────────────────────────────────────────
     if (commandName === "warn") {
+        if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+            await interaction.reply({ content: "❌ I don't have the **Moderate Members** permission required to warn users.", ephemeral: true })
+            return true
+        }
         const target   = interaction.options.getUser("user")
         const reason   = interaction.options.getString("reason")
         const warnings = addWarning(
@@ -157,6 +161,10 @@ async function handleInteraction(interaction) {
 
     // ── /mute ──────────────────────────────────────────────────────────────────
     if (commandName === "mute") {
+        if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+            await interaction.reply({ content: "❌ I don't have the **Moderate Members** permission required to mute users.", ephemeral: true })
+            return true
+        }
         const target      = interaction.options.getUser("user")
         const durationMin = interaction.options.getInteger("duration") ?? 10
         const durationMs  = durationMin * 60 * 1000
@@ -187,6 +195,10 @@ async function handleInteraction(interaction) {
 
     // ── /unmute ────────────────────────────────────────────────────────────────
     if (commandName === "unmute") {
+        if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
+            await interaction.reply({ content: "❌ I don't have the **Moderate Members** permission required to unmute users.", ephemeral: true })
+            return true
+        }
         const target      = interaction.options.getUser("user")
         const guildMember = guild.members.cache.get(target.id)
         if (!guildMember) {
@@ -213,6 +225,10 @@ async function handleInteraction(interaction) {
 
     // ── /kick ──────────────────────────────────────────────────────────────────
     if (commandName === "kick") {
+        if (!guild.members.me.permissions.has(PermissionFlagsBits.KickMembers)) {
+            await interaction.reply({ content: "❌ I don't have the **Kick Members** permission required to kick users.", ephemeral: true })
+            return true
+        }
         const target      = interaction.options.getUser("user")
         const reason      = interaction.options.getString("reason")
         const guildMember = guild.members.cache.get(target.id)
@@ -241,6 +257,10 @@ async function handleInteraction(interaction) {
 
     // ── /ban ───────────────────────────────────────────────────────────────────
     if (commandName === "ban") {
+        if (!guild.members.me.permissions.has(PermissionFlagsBits.BanMembers)) {
+            await interaction.reply({ content: "❌ I don't have the **Ban Members** permission required to ban users.", ephemeral: true })
+            return true
+        }
         const target = interaction.options.getUser("user")
         const reason = interaction.options.getString("reason")
 
