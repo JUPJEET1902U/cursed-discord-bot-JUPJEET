@@ -13,7 +13,7 @@ if (missingEnv.length) {
 if (process.env.MONGO_URI) {
     mongoose.connect(process.env.MONGO_URI)
         .then(() => console.log("✅ MongoDB Connected"))
-        .catch(err => console.error("❌ MongoDB error:", err))
+        .catch(err => console.error("❌ MongoDB error:", err.message))
 } else {
     console.warn("⚠️  MONGO_URI not set — using in-memory fallback for all data stores")
 }
