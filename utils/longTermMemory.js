@@ -13,7 +13,7 @@ const log = logger.child("LongTermMemory")
 // ── Mongoose Schema ────────────────────────────────────────────────────────────
 const memorySchema = new mongoose.Schema({
     userId:      { type: String, required: true, index: true },
-    type:        { type: String, required: true, enum: ["like", "dislike", "game", "anime", "music", "friend", "note", "fact"] },
+    type:        { type: String, required: true, enum: ["like", "dislike", "game", "anime", "music", "friend", "note", "fact", "friendship", "personality"] },
     content:     { type: String, required: true, maxlength: 500 },
     importance:  { type: Number, default: 1, min: 1, max: 5 },
     tags:        [{ type: String }],
@@ -46,7 +46,11 @@ async function getUserLongTermMemories(userId) {
         try {
             return await MemoryModel.find({ userId }).sort({ importance: -1, extractedAt: -1 }).limit(50).lean()
         } catch (err) {
-            log.error(`Failed to get memories for ${userId}: ${err.message}`)
+            if (err.message && err.message.includes("auth")) {
+                log.error(`Auth error fetching memories for ${userId}: ${err.message}`)
+            } else {
+                log.error(`Failed to get memories for ${userId}: ${err.message}`)
+            }
         }
     }
     return memoryFallback.get(userId) || []
@@ -70,7 +74,7 @@ async function addLongTermMemory(userId, memory) {
 
     if (isMongoConnected()) {
         try {
-            await MemoryModel.create(entry)
+            await new MemoryModel(entry).save()
             log.debug(`Added memory for ${userId}: [${entry.type}] ${entry.content.slice(0, 40)}`)
             return
         } catch (err) {
@@ -94,8 +98,8 @@ async function addLongTermMemory(userId, memory) {
 async function deleteLongTermMemory(userId, memoryId) {
     if (isMongoConnected()) {
         try {
-            const result = await MemoryModel.deleteOne({ _id: memoryId, userId })
-            return result.deletedCount > 0
+            const result = await MemoryModel.findByIdAndDelete(memoryId)
+            return result !== null
         } catch (err) {
             log.error(`Failed to delete memory ${memoryId}: ${err.message}`)
             return false
