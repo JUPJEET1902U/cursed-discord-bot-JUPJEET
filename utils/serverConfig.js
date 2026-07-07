@@ -22,6 +22,8 @@ function getServerConfig(guildId) {
         if (!data[guildId].allowedChannels) data[guildId].allowedChannels = []
         if (!data[guildId].paymentLinks) data[guildId].paymentLinks = {}
     }
+    if (!data[guildId].autoroleId) data[guildId].autoroleId = null
+    if (!data[guildId].autoroleRoleName) data[guildId].autoroleRoleName = null
     return { data, config: data[guildId] }
 }
 

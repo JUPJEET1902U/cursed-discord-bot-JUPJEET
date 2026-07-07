@@ -46,6 +46,7 @@ const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
 const moderationCmd = require("./commands/moderation")
+const { applyAutorole, cleanupDeletedRoles } = require("./utils/autorole")
 
 const RAGE_TRIGGERS = ["randi"]
 
@@ -153,6 +154,9 @@ client.on(Events.GuildMemberAdd, async (member) => {
         try { await member.roles.add(process.env.DEFAULT_ROLE_ID) } catch { }
     }
 
+    // Apply MongoDB-backed autorole (non-critical)
+    applyAutorole(member).catch(err => log.error(`[Autorole] Error: ${err.message}`))
+
     const channel = member.guild.systemChannel
         || member.guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(member.guild.members.me)?.has("SendMessages"))
     if (!channel) return
@@ -171,6 +175,13 @@ client.on(Events.GuildMemberAdd, async (member) => {
     } catch {
         await sendSafe(channel, `👋 **Welcome to the server, ${name}!** CURSED is watching you. 👀`)
     }
+})
+
+// ── Role deletion cleanup ──────────────────────────────────────────────────────
+client.on(Events.GuildRoleDelete, async (role) => {
+    cleanupDeletedRoles(role.guild, role.id).catch(err =>
+        log.error(`[Autorole] Cleanup error: ${err.message}`)
+    )
 })
 
 // ── Slash command interactions ─────────────────────────────────────────────────
