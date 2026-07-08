@@ -22,6 +22,9 @@ function getServerConfig(guildId) {
         if (!data[guildId].allowedChannels) data[guildId].allowedChannels = []
         if (!data[guildId].paymentLinks) data[guildId].paymentLinks = {}
     }
+    if (!data[guildId].welcomeChannelId) data[guildId].welcomeChannelId = null
+    if (!data[guildId].welcomeMessage) data[guildId].welcomeMessage = null
+    if (!data[guildId].welcomeUseAI) data[guildId].welcomeUseAI = false
     return { data, config: data[guildId] }
 }
 

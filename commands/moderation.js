@@ -22,6 +22,7 @@ const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require("disc
 const { addWarning, getWarnings, clearWarnings } = require("../utils/warnings")
 const { logAction } = require("../utils/modlog")
 const { getServerConfig, saveConfig } = require("../utils/serverConfig")
+const { getWelcome, setWelcome, disableWelcome, testWelcome } = require("../utils/welcome")
 
 // ─── Slash command definitions ────────────────────────────────────────────────
 
@@ -71,6 +72,30 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
         .addUserOption(o => o.setName("user").setDescription("User to ban").setRequired(true))
         .addStringOption(o => o.setName("reason").setDescription("Reason for the ban").setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("welcome")
+        .setDescription("Manage the welcome system")
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+        .addSubcommand(sub => sub
+            .setName("setup")
+            .setDescription("Set up the welcome message")
+            .addChannelOption(o => o.setName("channel").setDescription("Channel to send welcome messages in").setRequired(true))
+            .addStringOption(o => o.setName("message").setDescription("Welcome message (use {user}, {mention}, {server}, {membercount}). Prefix with 'embed:' for an embed.").setRequired(false))
+            .addBooleanOption(o => o.setName("useai").setDescription("Use AI to generate welcome messages (falls back to custom message on failure)").setRequired(false))
+        )
+        .addSubcommand(sub => sub
+            .setName("disable")
+            .setDescription("Disable the welcome system")
+        )
+        .addSubcommand(sub => sub
+            .setName("test")
+            .setDescription("Test the welcome message in this channel")
+        )
+        .addSubcommand(sub => sub
+            .setName("view")
+            .setDescription("View the current welcome configuration")
+        ),
 ]
 
 // ─── Slash command handler ────────────────────────────────────────────────────
@@ -279,6 +304,102 @@ async function handleInteraction(interaction) {
         })
 
         await interaction.reply({ content: `🔨 **${target.tag}** has been banned. Reason: ${reason}` })
+        return true
+    }
+
+    // ── /welcome ───────────────────────────────────────────────────────────────
+    if (commandName === "welcome") {
+        const sub = interaction.options.getSubcommand()
+
+        // ── /welcome setup ────────────────────────────────────────────────────
+        if (sub === "setup") {
+            if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+                await interaction.reply({ content: "❌ You need the **Manage Server** permission to configure the welcome system.", ephemeral: true })
+                return true
+            }
+
+            const channel  = interaction.options.getChannel("channel")
+            const message  = interaction.options.getString("message") || "👋 **Welcome to {server}, {user}!** We're glad to have you here. 🎉"
+            const useAI    = interaction.options.getBoolean("useai") ?? false
+
+            setWelcome(guild.id, channel.id, message, useAI)
+
+            const embed = new EmbedBuilder()
+                .setColor(0x57F287)
+                .setTitle("✅ Welcome System Configured")
+                .addFields(
+                    { name: "Channel",    value: `<#${channel.id}>`,                    inline: true },
+                    { name: "AI Enabled", value: useAI ? "Yes" : "No",                  inline: true },
+                    { name: "Message",    value: message.slice(0, 1024),                 inline: false },
+                )
+                .setFooter({ text: "Use /welcome test to preview the message" })
+                .setTimestamp()
+
+            await interaction.reply({ embeds: [embed] })
+            return true
+        }
+
+        // ── /welcome disable ──────────────────────────────────────────────────
+        if (sub === "disable") {
+            if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+                await interaction.reply({ content: "❌ You need the **Manage Server** permission to configure the welcome system.", ephemeral: true })
+                return true
+            }
+
+            disableWelcome(guild.id)
+            await interaction.reply({ content: "✅ Welcome system has been **disabled**. New members will receive the default AI welcome." })
+            return true
+        }
+
+        // ── /welcome test ─────────────────────────────────────────────────────
+        if (sub === "test") {
+            if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+                await interaction.reply({ content: "❌ You need the **Manage Server** permission to test the welcome system.", ephemeral: true })
+                return true
+            }
+
+            const config = getWelcome(guild.id)
+            if (!config.welcomeChannelId) {
+                await interaction.reply({ content: "⚠️ No welcome system is configured. Use `/welcome setup` first.", ephemeral: true })
+                return true
+            }
+
+            await interaction.deferReply({ ephemeral: true })
+
+            const { callAI } = require("../utils/ai")
+            try {
+                await testWelcome(interaction.channel, config, callAI, member)
+                await interaction.editReply({ content: "✅ Test welcome message sent!" })
+            } catch (err) {
+                await interaction.editReply({ content: `❌ Failed to send test welcome: ${err.message}` })
+            }
+            return true
+        }
+
+        // ── /welcome view ─────────────────────────────────────────────────────
+        if (sub === "view") {
+            const config = getWelcome(guild.id)
+
+            if (!config.welcomeChannelId) {
+                await interaction.reply({ content: "ℹ️ No welcome system is configured for this server. Use `/welcome setup` to get started.", ephemeral: true })
+                return true
+            }
+
+            const embed = new EmbedBuilder()
+                .setColor(0x5865F2)
+                .setTitle("📋 Welcome System Configuration")
+                .addFields(
+                    { name: "Channel",    value: `<#${config.welcomeChannelId}>`,                                  inline: true },
+                    { name: "AI Enabled", value: config.welcomeUseAI ? "Yes" : "No",                               inline: true },
+                    { name: "Message",    value: config.welcomeMessage?.slice(0, 1024) || "*(default fallback)*",   inline: false },
+                )
+                .setFooter({ text: "Use /welcome test to preview • /welcome disable to turn off" })
+                .setTimestamp()
+
+            await interaction.reply({ embeds: [embed], ephemeral: true })
+            return true
+        }
+
         return true
     }
 
