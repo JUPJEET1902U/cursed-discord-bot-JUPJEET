@@ -9,6 +9,8 @@
  *   /unmute <user>
  *   /kick <user> <reason>
  *   /ban <user> <reason>
+ *   /welcome setup|disable|test|view
+ *   /autorole set|disable|view
  *
  * Prefix commands (admin convenience):
  *   !setmodlog  — set the current channel as the mod-log channel
@@ -23,6 +25,7 @@ const { addWarning, getWarnings, clearWarnings } = require("../utils/warnings")
 const { logAction } = require("../utils/modlog")
 const { getServerConfig, saveConfig } = require("../utils/serverConfig")
 const { getWelcome, setWelcome, disableWelcome, testWelcome } = require("../utils/welcome")
+const { getAutorole, setAutorole, disableAutorole } = require("../utils/autorole")
 
 // ─── Slash command definitions ────────────────────────────────────────────────
 
@@ -95,6 +98,24 @@ const commands = [
         .addSubcommand(sub => sub
             .setName("view")
             .setDescription("View the current welcome configuration")
+        ),
+
+    new SlashCommandBuilder()
+        .setName("autorole")
+        .setDescription("Manage the autorole assigned to new members")
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
+        .addSubcommand(sub =>
+            sub.setName("set")
+                .setDescription("Set the role to assign to new members")
+                .addRoleOption(o => o.setName("role").setDescription("Role to assign on join").setRequired(true))
+        )
+        .addSubcommand(sub =>
+            sub.setName("disable")
+                .setDescription("Disable the autorole for this server")
+        )
+        .addSubcommand(sub =>
+            sub.setName("view")
+                .setDescription("View the current autorole configuration")
         ),
 ]
 
@@ -280,7 +301,7 @@ async function handleInteraction(interaction) {
         return true
     }
 
-    // ── /ban ───────────────────────────────────────────────────────────────────
+    // ── /ban ──────────────────────────────────────────────────────────────────
     if (commandName === "ban") {
         if (!guild.members.me.permissions.has(PermissionFlagsBits.BanMembers)) {
             await interaction.reply({ content: "❌ I don't have the **Ban Members** permission required to ban users.", ephemeral: true })
@@ -307,11 +328,11 @@ async function handleInteraction(interaction) {
         return true
     }
 
-    // ── /welcome ───────────────────────────────────────────────────────────────
+    // ── /welcome ────────────────────────────────────────────────────────────────
     if (commandName === "welcome") {
         const sub = interaction.options.getSubcommand()
 
-        // ── /welcome setup ────────────────────────────────────────────────────
+        // ── /welcome setup ─────────────────────────────────────────────────────
         if (sub === "setup") {
             if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
                 await interaction.reply({ content: "❌ You need the **Manage Server** permission to configure the welcome system.", ephemeral: true })
@@ -339,7 +360,7 @@ async function handleInteraction(interaction) {
             return true
         }
 
-        // ── /welcome disable ──────────────────────────────────────────────────
+        // ── /welcome disable ───────────────────────────────────────────────────
         if (sub === "disable") {
             if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
                 await interaction.reply({ content: "❌ You need the **Manage Server** permission to configure the welcome system.", ephemeral: true })
@@ -351,7 +372,7 @@ async function handleInteraction(interaction) {
             return true
         }
 
-        // ── /welcome test ─────────────────────────────────────────────────────
+        // ── /welcome test ──────────────────────────────────────────────────────
         if (sub === "test") {
             if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
                 await interaction.reply({ content: "❌ You need the **Manage Server** permission to test the welcome system.", ephemeral: true })
@@ -376,7 +397,7 @@ async function handleInteraction(interaction) {
             return true
         }
 
-        // ── /welcome view ─────────────────────────────────────────────────────
+        // ── /welcome view ──────────────────────────────────────────────────────
         if (sub === "view") {
             const config = getWelcome(guild.id)
 
@@ -401,6 +422,90 @@ async function handleInteraction(interaction) {
         }
 
         return true
+    }
+
+    // ── /autorole ──────────────────────────────────────────────────────────────
+    if (commandName === "autorole") {
+        const sub = interaction.options.getSubcommand()
+
+        // /autorole set
+        if (sub === "set") {
+            if (!guild.members.me.permissions.has(PermissionFlagsBits.ManageRoles)) {
+                await interaction.reply({ content: "❌ I don't have the **Manage Roles** permission required to assign roles.", ephemeral: true })
+                return true
+            }
+
+            const role = interaction.options.getRole("role")
+
+            // Never allow managed (integration) roles
+            if (role.managed) {
+                await interaction.reply({ content: "❌ That role is managed by an integration and cannot be used as an autorole.", ephemeral: true })
+                return true
+            }
+
+            // Verify hierarchy: bot's highest role must be above the target role
+            const botMember = guild.members.me
+            if (botMember.roles.highest.position <= role.position) {
+                await interaction.reply({ content: `❌ I can't assign **${role.name}** because it is at or above my highest role in the hierarchy. Move my role above it first.`, ephemeral: true })
+                return true
+            }
+
+            setAutorole(guild.id, role.id, role.name)
+
+            const embed = new EmbedBuilder()
+                .setColor(0x57F287)
+                .setTitle("✅ Autorole Set")
+                .setDescription(`New members will automatically receive the <@&${role.id}> role when they join.`)
+                .setTimestamp()
+
+            await interaction.reply({ embeds: [embed] })
+            return true
+        }
+
+        // /autorole disable
+        if (sub === "disable") {
+            const { autoroleId } = getAutorole(guild.id)
+            if (!autoroleId) {
+                await interaction.reply({ content: "ℹ️ Autorole is not currently configured for this server.", ephemeral: true })
+                return true
+            }
+
+            disableAutorole(guild.id)
+
+            const embed = new EmbedBuilder()
+                .setColor(0xED4245)
+                .setTitle("🚫 Autorole Disabled")
+                .setDescription("New members will no longer be automatically assigned a role on join.")
+                .setTimestamp()
+
+            await interaction.reply({ embeds: [embed] })
+            return true
+        }
+
+        // /autorole view
+        if (sub === "view") {
+            const { autoroleId, autoroleRoleName } = getAutorole(guild.id)
+
+            const embed = new EmbedBuilder()
+                .setColor(0x5865F2)
+                .setTitle("🔧 Autorole Configuration")
+                .setTimestamp()
+
+            if (autoroleId) {
+                // Check if the role still exists in the guild
+                const role = guild.roles.cache.get(autoroleId)
+                if (role) {
+                    embed.setDescription(`**Status:** ✅ Enabled\n**Role:** <@&${autoroleId}> (${role.name})`)
+                } else {
+                    embed.setDescription(`**Status:** ⚠️ Configured but role no longer exists\n**Role ID:** \`${autoroleId}\` (${autoroleRoleName || "unknown"})\n\nUse \`/autorole disable\` to clear this, or \`/autorole set\` to pick a new role.`)
+                }
+            } else {
+                embed.setDescription("**Status:** ❌ Disabled\n\nUse `/autorole set` to assign a role to new members automatically.")
+            }
+
+            await interaction.reply({ embeds: [embed], ephemeral: true })
+            return true
+        }
     }
 
     return false
