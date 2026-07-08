@@ -46,6 +46,7 @@ const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
 const moderationCmd = require("./commands/moderation")
+const { sendWelcome, getWelcome } = require("./utils/welcome")
 
 const RAGE_TRIGGERS = ["randi"]
 
@@ -153,23 +154,34 @@ client.on(Events.GuildMemberAdd, async (member) => {
         try { await member.roles.add(process.env.DEFAULT_ROLE_ID) } catch { }
     }
 
-    const channel = member.guild.systemChannel
-        || member.guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(member.guild.members.me)?.has("SendMessages"))
-    if (!channel) return
+    // Send welcome message (custom or AI)
+    const welcomeConfig = getWelcome(member.guild.id)
 
-    const name = sanitizeName(member.displayName || member.user.username)
-    try {
-        const result = await callAI([
-            {
-                role: "system",
-                content: "You are CURSED, a Discord bot. Welcome new members warmly but roast them gently. Keep it to 2-3 sentences, funny but not mean. Never use @mentions or Discord IDs."
-            },
-            { role: "user", content: `Welcome this new member: ${name}` }
-        ], { maxTokens: 150 })
-        const safeWelcome = sanitizeAIOutput(result.content)
-        await sendSafe(channel, `👋 **Welcome, ${name}!** ${safeWelcome}`)
-    } catch {
-        await sendSafe(channel, `👋 **Welcome to the server, ${name}!** CURSED is watching you. 👀`)
+    if (welcomeConfig.welcomeChannelId) {
+        // Custom welcome is configured
+        sendWelcome(member, welcomeConfig, callAI).catch(err =>
+            log.error(`[Welcome] Error: ${err.message}`)
+        )
+    } else {
+        // Fall back to default AI welcome in system channel
+        const channel = member.guild.systemChannel
+            || member.guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(member.guild.members.me)?.has("SendMessages"))
+        if (!channel) return
+
+        const name = sanitizeName(member.displayName || member.user.username)
+        try {
+            const result = await callAI([
+                {
+                    role: "system",
+                    content: "You are CURSED, a Discord bot. Welcome new members warmly but roast them gently. Keep it to 2-3 sentences, funny but not mean. Never use @mentions or Discord IDs."
+                },
+                { role: "user", content: `Welcome this new member: ${name}` }
+            ], { maxTokens: 150 })
+            const safeWelcome = sanitizeAIOutput(result.content)
+            await sendSafe(channel, `👋 **Welcome, ${name}!** ${safeWelcome}`)
+        } catch {
+            await sendSafe(channel, `👋 **Welcome to the server, ${name}!** CURSED is watching you. 👀`)
+        }
     }
 })
 
