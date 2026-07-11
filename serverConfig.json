@@ -4,9 +4,17 @@
       "1505301146472808635"
     ],
     "premiumRoleId": null,
-    "paymentLinks": {}
+    "paymentLinks": {},
+    "welcomeChannelId": null,
+    "welcomeMessage": null,
+    "welcomeUseAI": false,
+    "welcomeColor": null,
+    "welcomeThumbnail": true,
+    "welcomeImageUrl": null,
+    "welcomeFooter": null,
+    "autoroleId": "1505301145264984088",
+    "autoroleRoleName": ".gg/brimi﹒﹒𐂯"
   },
-
   "1510956353676640337": {
     "allowedChannels": [
       "1516684565975011379"
