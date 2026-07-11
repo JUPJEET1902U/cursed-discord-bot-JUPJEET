@@ -214,10 +214,20 @@ client.on(Events.MessageCreate, async (message) => {
     const channelId = message.channel.id
 
     // ── Auto-moderation (runs before channel allow-list check) ────────────────
-    if (await runAutoMod(message)) return
+    // Isolated so a filter throwing here can't become an unhandled rejection
+    // that silently kills the rest of the message pipeline (including AI chat).
+    try {
+        if (await runAutoMod(message)) return
+    } catch (err) {
+        log.error(`runAutoMod failed: ${err.message}`, { stack: err.stack, guildId, channelId })
+    }
 
     // ── Moderation prefix commands (admin config) ─────────────────────────────
-    if (await moderationCmd.handlePrefixCommand(message)) return
+    try {
+        if (await moderationCmd.handlePrefixCommand(message)) return
+    } catch (err) {
+        log.error(`handlePrefixCommand failed: ${err.message}`, { stack: err.stack, guildId, channelId })
+    }
 
     if (!isChannelAllowed(guildId, channelId)) return
 
@@ -278,21 +288,44 @@ client.on(Events.MessageCreate, async (message) => {
 
     log.info(`[${message.guild.name}] #${message.channel.name} | ${senderName}: ${message.content.slice(0, 50)}`)
 
+    let safeOutput = null
     try {
         const result = await callAI(chatMessages, { maxTokens: 500 })
         log.info(`[${result.provider}] response: ${result.content.slice(0, 60)}...`)
 
-        const safeOutput = sanitizeAIOutput(result.content)
+        safeOutput = sanitizeAIOutput(result.content)
         await sendSafe(message.channel, safeOutput)
+    } catch (err) {
+        // Only a genuine AI-generation or reply-send failure reaches here —
+        // the user has NOT received a response yet, so the error is real.
+        await handleCommandError(err, message, "ai-chat")
+        return
+    }
 
+    // ── Post-reply side effects ────────────────────────────────────────────────
+    // The AI reply was already generated and sent successfully above. Everything
+    // below is optional bookkeeping (memory, stats, XP, achievements) — each is
+    // isolated so a failure here is logged but NEVER surfaces a user-facing
+    // "Something went wrong" message for a request that already succeeded.
+    try {
         appendUserMemory(userId, currentUserMsg, safeOutput)
+    } catch (err) {
+        log.error(`appendUserMemory failed: ${err.message}`, { stack: err.stack, userId })
+    }
 
-        // Extract long-term memories asynchronously (non-blocking)
-        extractAndStoreMemories(userId, sanitizedInput, safeOutput).catch(() => {})
+    // Extract long-term memories asynchronously (non-blocking, already isolated)
+    extractAndStoreMemories(userId, sanitizedInput, safeOutput).catch(err => {
+        log.error(`extractAndStoreMemories failed: ${err.message}`, { stack: err.stack, userId })
+    })
 
+    try {
         incrementStat(userId, senderName, "chat")
         updateQuestProgress(userId, senderName, "chat")
+    } catch (err) {
+        log.error(`chat stat/quest update failed: ${err.message}`, { stack: err.stack, userId })
+    }
 
+    try {
         let xpGain = Math.floor(Math.random() * 11) + 5
         const freshEco = getUser(userId, senderName)
         if ((freshEco.user.xpBoost || 0) > 0) {
@@ -306,13 +339,17 @@ client.on(Events.MessageCreate, async (message) => {
         if (leveledUp) {
             await sendSafe(message.channel, `🎉 **${senderName}** leveled up to **Level ${newLevel}**! Congrats, I guess. 💀`)
         }
+    } catch (err) {
+        log.error(`XP/level-up post-processing failed: ${err.message}`, { stack: err.stack, userId })
+    }
 
+    try {
         const newAchs = checkAndGrantAchievements(userId, senderName)
         for (const a of newAchs) {
             await sendSafe(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
         }
     } catch (err) {
-        await handleCommandError(err, message, "ai-chat")
+        log.error(`Achievement post-processing failed: ${err.message}`, { stack: err.stack, userId })
     }
 })
 
