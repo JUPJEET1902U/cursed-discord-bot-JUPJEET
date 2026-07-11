@@ -32,7 +32,7 @@ require("./utils/antiSpam") // side-effect: registers the 30s messageLog cleanup
 const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat, updateQuestProgress } = require("./utils/economy")
 const { checkRateLimit } = require("./utils/cooldowns")
 const { getProfile } = require("./utils/profiles")
-const { isChannelAllowed, loadConfig } = require("./utils/serverConfig")
+const { isChannelAllowed, getServerConfig, saveConfig } = require("./utils/serverConfig")
 const { startWebhookServer, setClient } = require("./webhook")
 const { setClient: setModLogClient } = require("./utils/modlog")
 const { runAutoMod } = require("./utils/automod")
@@ -81,18 +81,11 @@ client.once(Events.ClientReady, async (clientUser) => {
     console.log(`\n=== BOT INVITE LINK ===\n${inviteLink}\n======================\n`)
 
     // ── Pass client to mod-log utility ─────────────────────────────────────────
+    // logAction() already reads each guild's modLogChannelId from serverConfig
+    // per-call, with MOD_LOG_CHANNEL_ID as an optional global fallback — no
+    // startup restoration step is needed (and copying one guild's saved
+    // channel into the global env var would leak across guilds).
     setModLogClient(client)
-
-    // ── Restore mod-log channel IDs from persisted serverConfig ───────────────
-    const savedConfig = loadConfig()
-    for (const [guildId, cfg] of Object.entries(savedConfig)) {
-        if (cfg.modLogChannelId && !process.env.MOD_LOG_CHANNEL_ID) {
-            // Use the first guild's saved channel as the default if env var not set
-            process.env.MOD_LOG_CHANNEL_ID = cfg.modLogChannelId
-            console.log(`Mod-log channel restored: ${cfg.modLogChannelId} (guild ${guildId})`)
-            break
-        }
-    }
 
     // ── Register slash commands globally ──────────────────────────────────────
     try {
@@ -137,6 +130,16 @@ await rest.put(
 
 client.on(Events.GuildCreate, async (guild) => {
     log.info(`Joined new server: ${guild.name} (${guild.memberCount} members)`)
+
+    // Persist a default per-guild config immediately so Welcome, Autorole,
+    // logging, and other settings are ready with no manual setup required.
+    try {
+        const { data } = getServerConfig(guild.id)
+        saveConfig(data)
+    } catch (err) {
+        log.error(`Failed to initialize server config for ${guild.id}: ${err.message}`)
+    }
+
     const channel = guild.systemChannel
         || guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has("SendMessages"))
     if (channel) {
