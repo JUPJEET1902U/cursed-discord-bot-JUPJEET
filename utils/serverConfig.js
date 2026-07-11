@@ -22,9 +22,18 @@ function getServerConfig(guildId) {
         if (!data[guildId].allowedChannels) data[guildId].allowedChannels = []
         if (!data[guildId].paymentLinks) data[guildId].paymentLinks = {}
     }
-    if (!data[guildId].welcomeChannelId) data[guildId].welcomeChannelId = null
-    if (!data[guildId].welcomeMessage) data[guildId].welcomeMessage = null
-    if (!data[guildId].welcomeUseAI) data[guildId].welcomeUseAI = false
+    // Welcome system fields — use explicit undefined checks so saved falsy values
+    // (e.g. welcomeThumbnail: false, welcomeUseAI: false) are never overwritten.
+    if (data[guildId].welcomeChannelId  === undefined) data[guildId].welcomeChannelId  = null
+    if (data[guildId].welcomeMessage    === undefined) data[guildId].welcomeMessage    = null
+    if (data[guildId].welcomeUseAI      === undefined) data[guildId].welcomeUseAI      = false
+    if (data[guildId].welcomeColor      === undefined) data[guildId].welcomeColor      = null
+    if (data[guildId].welcomeThumbnail  === undefined) data[guildId].welcomeThumbnail  = true
+    if (data[guildId].welcomeImageUrl   === undefined) data[guildId].welcomeImageUrl   = null
+    if (data[guildId].welcomeFooter     === undefined) data[guildId].welcomeFooter     = null
+    // Autorole fields
+    if (data[guildId].autoroleId        === undefined) data[guildId].autoroleId        = null
+    if (data[guildId].autoroleRoleName  === undefined) data[guildId].autoroleRoleName  = null
     return { data, config: data[guildId] }
 }
 

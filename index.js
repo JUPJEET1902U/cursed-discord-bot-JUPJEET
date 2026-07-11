@@ -47,6 +47,7 @@ const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
 const moderationCmd = require("./commands/moderation")
 const { sendWelcome, getWelcome } = require("./utils/welcome")
+const { getAutorole } = require("./utils/autorole")
 
 const RAGE_TRIGGERS = ["randi"]
 
@@ -149,9 +150,11 @@ client.on(Events.GuildCreate, async (guild) => {
 })
 
 client.on(Events.GuildMemberAdd, async (member) => {
-    // Attempt to add default role (non-critical)
-    if (process.env.DEFAULT_ROLE_ID) {
-        try { await member.roles.add(process.env.DEFAULT_ROLE_ID) } catch { }
+    // ── Autorole — per-guild config takes precedence over env-var fallback ─────
+    const { autoroleId } = getAutorole(member.guild.id)
+    const roleToAdd = autoroleId || process.env.DEFAULT_ROLE_ID || null
+    if (roleToAdd) {
+        try { await member.roles.add(roleToAdd) } catch { }
     }
 
     // Send welcome message (custom or AI)
