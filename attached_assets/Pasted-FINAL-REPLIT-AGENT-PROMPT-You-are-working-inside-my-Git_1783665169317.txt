@@ -1,0 +1,152 @@
+FINAL REPLIT AGENT PROMPT
+
+You are working inside my GitHub repository:
+
+JUPJEET1902U/cursed-discord-bot-JUPJEET
+
+Your task is to produce the final production-ready version of CURSED.
+
+IMPORTANT
+
+This is the last major PR before release.
+
+Your priority is stability over new features.
+
+If a feature cannot be implemented safely, leave it unchanged.
+
+Never break existing functionality.
+
+PHASE 1 — AUDIT FIRST
+
+Before changing any code:
+
+Scan the entire repository.
+Find compile errors.
+Find syntax errors.
+Find missing imports.
+Find circular dependencies.
+Find duplicate event listeners.
+Find duplicate slash commands.
+Find runtime errors.
+Find merge conflict markers.
+Find unused files.
+Find dead code.
+
+Do NOT modify anything yet.
+
+Produce a plan first.
+
+PHASE 2 — FIX PROJECT
+
+Only fix issues that are real.
+
+Never rewrite working code.
+
+Preserve:
+
+AI Chat
+Economy
+Moderation
+Memory
+MongoDB
+Railway compatibility
+Dashboard compatibility
+
+Do not modify dashboard files unless required to fix a bug.
+
+PHASE 3 — WELCOME SYSTEM
+
+Redesign the Welcome System into a polished production-ready implementation inspired by Mimu's usability (without copying code).
+
+Support:
+
+/welcome setup
+/welcome view
+/welcome preview
+/welcome test
+/welcome disable
+
+Features:
+
+Rich embeds
+AI welcome
+Custom message
+Placeholder variables
+Color
+Thumbnail
+Image
+Footer
+Timestamp
+
+If AI fails:
+
+Automatically use the custom welcome.
+
+Never allow the welcome system to crash.
+
+PHASE 4 — AUTOROLE
+
+Review the Autorole implementation.
+
+If it is:
+
+stable
+complete
+merge-safe
+
+keep it.
+
+If it introduces instability or conflicts:
+
+remove it completely.
+
+No half-finished code.
+
+No unused imports.
+
+No dead code.
+
+Bot stability is more important than Autorole.
+
+PHASE 5 — VERIFY EVERYTHING
+
+Confirm:
+
+Bot starts successfully.
+No syntax errors.
+No runtime errors.
+Slash commands register.
+Prefix commands work.
+MongoDB works.
+AI works.
+Welcome system works.
+No duplicate listeners.
+No missing imports.
+No merge conflicts.
+PHASE 6 — FINAL CLEANUP
+
+Remove:
+
+duplicate code
+unused imports
+unused variables
+dead files
+TODO comments
+placeholder code
+
+Only if it is safe.
+
+FINAL OUTPUT
+
+Only after verification:
+
+Apply the required code changes.
+Ensure the project builds successfully.
+Create ONE clean production-ready commit.
+Generate ONE final PR summary including:
+Changes made
+Bugs fixed
+Testing performed
+Remaining risks (if any)
+
+Do not invent new features. Do not rewrite unrelated systems. Do not break existing functionality. The goal is a stable, production-ready CURSED bot.
