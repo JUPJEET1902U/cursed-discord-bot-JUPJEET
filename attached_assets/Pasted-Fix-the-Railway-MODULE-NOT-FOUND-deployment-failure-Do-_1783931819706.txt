@@ -1,0 +1,67 @@
+Fix the Railway MODULE_NOT_FOUND deployment failure. Do not change bot logic.
+
+ROOT CAUSE:
+package-lock.json contains Replit-only dependency URLs using:
+
+http://package-firewall.replit.local/npm/
+
+Railway cannot access that private registry, so npm ci completes incorrectly or does not install usable dependencies. The bot then crashes with:
+
+Error: Cannot find module 'discord.js'
+Require stack: /app/index.js
+
+TASK:
+
+1. Do not change index.js, AI behavior, commands, Welcome, Autorole, or any bot feature.
+
+2. Regenerate package-lock.json so it uses the public npm registry only.
+
+Run:
+
+rm -rf node_modules package-lock.json
+npm config set registry https://registry.npmjs.org/
+npm install --package-lock-only --registry=https://registry.npmjs.org/
+
+3. Search the newly generated package-lock.json and confirm it contains ZERO occurrences of:
+
+package-firewall.replit.local
+
+4. Confirm discord.js remains under "dependencies" in package.json, not devDependencies.
+
+5. Install and verify:
+
+npm ci --registry=https://registry.npmjs.org/
+node -e "require('discord.js'); console.log('discord.js loaded successfully')"
+node -e "require('express'); require('mongoose'); require('dotenv'); console.log('core dependencies loaded')"
+node --check index.js
+node --check webhook.js
+
+6. Keep railway.json with:
+
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "startCommand": "node index.js",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 300
+  }
+}
+
+7. Confirm webhook.js listens on:
+
+const port = Number(process.env.PORT || 3000)
+
+and that index.js calls startWebhookServer() exactly once before waiting for Discord ClientReady.
+
+8. Commit package-lock.json and any genuinely required health-server fix, then push to GitHub.
+
+9. Report:
+- commit hash
+- confirmation that package-firewall.replit.local appears zero times
+- confirmation that require("discord.js") passes
+- confirmation that GET /health returns HTTP 200
+
+Do not claim success unless all checks pass.
