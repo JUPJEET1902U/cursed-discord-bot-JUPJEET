@@ -115,8 +115,6 @@ await rest.put(
         console.error("Slash command registration error:", err.message)
     }
 
-    setClient(client)
-    startWebhookServer()
 
     // ── Startup cleanup ────────────────────────────────────────────────────────
     // Run once immediately to clear any stale data from a previous run, then
@@ -401,5 +399,8 @@ process.on("uncaughtException", (err) => {
     log.error(`Uncaught exception: ${err?.message || err}`, { stack: err?.stack })
     // Don't exit — let Railway restart if truly fatal
 })
+
+setClient(client)
+startWebhookServer()
 
 client.login(process.env.BOT_TOKEN)
