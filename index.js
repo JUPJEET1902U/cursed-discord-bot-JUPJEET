@@ -231,15 +231,36 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (!isChannelAllowed(guildId, channelId)) return
 
-    message.channel.sendTyping().catch(() => {})
-
-    const msgLower = message.content.toLowerCase().trim()
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
     // ── Dispatch to command modules ────────────────────────────────────────────
     const handled = await dispatchCommand(message, commandModules)
     if (handled) return
+
+    // ── Trigger check: only respond when mentioned or replied to ──────────────
+    const botMentioned = message.mentions.users.has(client.user.id)
+    const repliedToBot = message.reference?.messageId
+        ? await message.fetchReference()
+            .then(ref => ref.author.id === client.user.id)
+            .catch(() => false)
+        : false
+
+    if (!botMentioned && !repliedToBot) return
+
+    message.channel.sendTyping().catch(() => {})
+
+    // ── Build AI input (strip only the bot's own mention when tagged) ──────────
+    const aiInput = botMentioned
+        ? message.content.replace(new RegExp(`<@!?${client.user.id}>`, "g"), "").trim()
+        : message.content
+
+    if (!aiInput) {
+        await sendSafe(message.channel, "You called? What do you need?")
+        return
+    }
+
+    const msgLower = aiInput.toLowerCase()
 
     // ── Rate limiting for AI chat ──────────────────────────────────────────────
     const rl = checkRateLimit(userId)
@@ -250,7 +271,7 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     // ── Prompt injection check ─────────────────────────────────────────────────
-    const { safe, sanitized: sanitizedInput } = sanitizeUserInput(message.content)
+    const { safe, sanitized: sanitizedInput } = sanitizeUserInput(aiInput)
     if (!safe) {
         await sendSafe(message.channel, `🛡️ Nice try, **${senderName}**. I see what you're doing. 😏`)
         return
