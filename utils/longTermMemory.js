@@ -1,8 +1,9 @@
 /**
  * utils/longTermMemory.js
- * Persistent long-term user memory system (Phase 1)
+ * Persistent long-term user memory system.
  * Stores structured facts about users extracted from conversations.
  * Uses MongoDB when available, falls back to in-memory storage.
+ * Prevents duplicate memories and updates contradicted facts.
  */
 
 const mongoose = require("mongoose")
@@ -57,16 +58,53 @@ async function getUserLongTermMemories(userId) {
 }
 
 /**
+ * Compute a simple similarity score between two strings (0–1).
+ * Uses word-overlap ratio — fast and good enough for short memory facts.
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function stringSimilarity(a, b) {
+    const wordsA = new Set(a.toLowerCase().split(/\W+/).filter(Boolean))
+    const wordsB = new Set(b.toLowerCase().split(/\W+/).filter(Boolean))
+    if (!wordsA.size || !wordsB.size) return 0
+    let shared = 0
+    for (const w of wordsA) if (wordsB.has(w)) shared++
+    return shared / Math.max(wordsA.size, wordsB.size)
+}
+
+/**
  * Add a long-term memory for a user.
+ * Before inserting, checks for near-duplicates (same type, ≥70% word overlap).
+ * If a very similar memory exists, updates it in place instead of creating a duplicate.
+ * Sensitive content (API keys, tokens, URLs, emails, phone numbers) is silently dropped.
  * @param {string} userId
  * @param {object} memory  { type, content, importance, tags }
  * @returns {Promise<void>}
  */
 async function addLongTermMemory(userId, memory) {
+    const content = String(memory.content || "").slice(0, 500).trim()
+    if (!content) return
+
+    // ── Security: drop sensitive content ──────────────────────────────────────
+    // Never store tokens, API keys, URLs, emails, phone numbers, or env vars.
+    const SENSITIVE_PATTERNS = [
+        /\b[A-Za-z0-9_\-]{20,}\b/,           // long opaque strings (tokens/keys)
+        /https?:\/\//i,                        // URLs
+        /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/,  // emails
+        /\b\d{7,}\b/,                          // long numbers (phone, IDs)
+        /process\.env/i,                       // env var references
+        /password|secret|token|apikey|api_key/i,
+    ]
+    if (SENSITIVE_PATTERNS.some(p => p.test(content))) {
+        log.debug(`Dropped sensitive memory for ${userId}`)
+        return
+    }
+
     const entry = {
         userId,
         type: memory.type || "fact",
-        content: String(memory.content || "").slice(0, 500),
+        content,
         importance: Math.min(5, Math.max(1, parseInt(memory.importance) || 1)),
         tags: Array.isArray(memory.tags) ? memory.tags.slice(0, 10) : [],
         extractedAt: new Date(),
@@ -74,6 +112,25 @@ async function addLongTermMemory(userId, memory) {
 
     if (isMongoConnected()) {
         try {
+            // Check for near-duplicate in the same type bucket
+            const existing = await MemoryModel.findOne({ userId, type: entry.type }).lean()
+            if (existing) {
+                // Look for any record of the same type with high overlap
+                const sameType = await MemoryModel.find({ userId, type: entry.type }).lean()
+                const nearDupe = sameType.find(m => stringSimilarity(m.content, entry.content) >= 0.7)
+                if (nearDupe) {
+                    // Update instead of inserting a duplicate; prefer newer + higher importance
+                    const newImportance = Math.max(nearDupe.importance, entry.importance)
+                    await MemoryModel.findByIdAndUpdate(nearDupe._id, {
+                        content: entry.content,   // prefer the newer phrasing
+                        importance: newImportance,
+                        tags: entry.tags.length ? entry.tags : nearDupe.tags,
+                        extractedAt: entry.extractedAt,
+                    })
+                    log.debug(`Updated existing memory for ${userId}: [${entry.type}] ${entry.content.slice(0, 40)}`)
+                    return
+                }
+            }
             await new MemoryModel(entry).save()
             log.debug(`Added memory for ${userId}: [${entry.type}] ${entry.content.slice(0, 40)}`)
             return
@@ -82,10 +139,17 @@ async function addLongTermMemory(userId, memory) {
         }
     }
 
+    // ── In-memory fallback with dedup ──────────────────────────────────────────
     const list = memoryFallback.get(userId) || []
-    list.push(entry)
-    // Keep only the 100 most recent in fallback
-    if (list.length > 100) list.splice(0, list.length - 100)
+    const nearDupe = list.find(m => m.type === entry.type && stringSimilarity(m.content, entry.content) >= 0.7)
+    if (nearDupe) {
+        nearDupe.content = entry.content
+        nearDupe.importance = Math.max(nearDupe.importance, entry.importance)
+        nearDupe.extractedAt = entry.extractedAt
+    } else {
+        list.push(entry)
+        if (list.length > 100) list.splice(0, list.length - 100)
+    }
     memoryFallback.set(userId, list)
 }
 

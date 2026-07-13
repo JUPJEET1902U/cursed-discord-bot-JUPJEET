@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits, REST, Routes } = require("discord.js")
+const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType } = require("discord.js")
 require("dotenv/config")
 const mongoose = require("mongoose")
 
@@ -41,6 +41,8 @@ const { sanitizeUserInput, sanitizeAIOutput, sanitizeName } = require("./utils/s
 const { buildSystemPrompt } = require("./utils/prompts")
 const { getUserPersonality } = require("./utils/personalities")
 const { extractAndStoreMemories, buildMemoryContext } = require("./utils/longTermMemory")
+const { needsDiscordContext, buildDiscordContext } = require("./utils/discordContext")
+const { trackMessage, trackCommand, startVoiceSession, endVoiceSession, getActivity } = require("./utils/activityTracker")
 const { handleCommandError } = require("./utils/errorFormatter")
 const logger = require("./utils/logger")
 const log = logger.child("Index")
@@ -59,7 +61,8 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildVoiceStates,
     ]
 })
 
@@ -189,6 +192,31 @@ client.on(Events.GuildMemberAdd, async (member) => {
     }
 })
 
+// ── Voice activity tracking ────────────────────────────────────────────────────
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+    const guildId = newState.guild.id
+    const userId  = newState.member?.user?.bot ? null : (newState.id || oldState.id)
+    if (!userId) return
+
+    const joinedChannel  = !oldState.channelId && newState.channelId
+    const leftChannel    = oldState.channelId && !newState.channelId
+    const switchedChannel = oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId
+
+    if (joinedChannel) {
+        startVoiceSession(guildId, userId)
+    } else if (leftChannel) {
+        endVoiceSession(guildId, userId).catch(err =>
+            log.error(`endVoiceSession (leave) failed: ${err.message}`)
+        )
+    } else if (switchedChannel) {
+        // Treat as leave + join so time in old channel is saved
+        endVoiceSession(guildId, userId).catch(err =>
+            log.error(`endVoiceSession (switch) failed: ${err.message}`)
+        )
+        startVoiceSession(guildId, userId)
+    }
+})
+
 // ── Slash command interactions ─────────────────────────────────────────────────
 client.on(Events.InteractionCreate, async (interaction) => {
     try {
@@ -232,9 +260,15 @@ client.on(Events.MessageCreate, async (message) => {
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
+    // ── Activity tracking — message count (fire-and-forget) ───────────────────
+    trackMessage(guildId, message.author.id).catch(() => {})
+
     // ── Dispatch to command modules ────────────────────────────────────────────
     const handled = await dispatchCommand(message, commandModules)
-    if (handled) return
+    if (handled) {
+        trackCommand(guildId, message.author.id).catch(() => {})
+        return
+    }
 
     // ── Trigger check: only respond when mentioned or replied to ──────────────
     const botMentioned = message.mentions.users.has(client.user.id)
@@ -293,12 +327,26 @@ client.on(Events.MessageCreate, async (message) => {
     const personality = await getUserPersonality(userId)
     const memoryContext = await buildMemoryContext(userId)
 
-    const systemPrompt = buildSystemPrompt({
+    let systemPrompt = buildSystemPrompt({
         personality,
         profileInstruction: userProfile?.personality || null,
         hasShield,
         rageMode: isRageMode,
     }) + memoryContext
+
+    // ── Inject real Discord context when the question warrants it ─────────────
+    if (needsDiscordContext(sanitizedInput)) {
+        try {
+            const selfActivity = await getActivity(guildId, userId)
+            const mentionedMember = message.mentions.members?.first()
+            const mentionedActivity = (mentionedMember && mentionedMember.id !== userId)
+                ? await getActivity(guildId, mentionedMember.id)
+                : null
+            systemPrompt += buildDiscordContext({ message, selfActivity, mentionedActivity })
+        } catch (err) {
+            log.error(`Discord context injection failed: ${err.message}`)
+        }
+    }
 
     const userHistory = getUserMemory(userId)
     const chatMessages = [{ role: "system", content: systemPrompt }, ...userHistory]
