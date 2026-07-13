@@ -1,6 +1,6 @@
 {
   "1508581218898149457": {
-    "name": "!                  SHINJI ENERGY",
+    "name": "CURSED",
     "coins": 433,
     "xp": 1220,
     "level": 3,
@@ -8,7 +8,8 @@
     "stats": {
       "dailyClaimed": 1,
       "chat": 34,
-      "give": 1
+      "give": 1,
+      "imagine": 2
     },
     "achievements": [
       "first_msg"
