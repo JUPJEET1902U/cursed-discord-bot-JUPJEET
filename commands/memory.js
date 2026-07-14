@@ -117,7 +117,7 @@ async function handle(message) {
     // ── !clearmemory ───────────────────────────────────────────────────────────
     if (msgLower === "!clearmemory") {
         await clearLongTermMemories(userId)
-        clearUserMemory(userId)
+        clearUserMemory(message.guild.id, userId)
         await createSafeMessage(message.channel,
             `🧹 Done, **${senderName}**. I've wiped ALL memories about you — both short-term and long-term.\n` +
             `You're a complete stranger to me now. Fresh start! 😇`)

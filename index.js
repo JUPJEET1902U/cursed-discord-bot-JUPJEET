@@ -348,7 +348,7 @@ client.on(Events.MessageCreate, async (message) => {
         }
     }
 
-    const userHistory = getUserMemory(userId)
+    const userHistory = getUserMemory(guildId, userId)
     const chatMessages = [{ role: "system", content: systemPrompt }, ...userHistory]
     const currentUserMsg = `${senderName}: ${sanitizedInput}`
     chatMessages.push({ role: "user", content: currentUserMsg })
@@ -375,7 +375,7 @@ client.on(Events.MessageCreate, async (message) => {
     // isolated so a failure here is logged but NEVER surfaces a user-facing
     // "Something went wrong" message for a request that already succeeded.
     try {
-        appendUserMemory(userId, currentUserMsg, safeOutput)
+        appendUserMemory(guildId, userId, currentUserMsg, safeOutput)
     } catch (err) {
         log.error(`appendUserMemory failed: ${err.message}`, { stack: err.stack, userId })
     }

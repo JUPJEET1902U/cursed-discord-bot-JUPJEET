@@ -2,8 +2,13 @@ const fs = require("fs")
 
 const MEMORY_FILE     = "./memory.json"
 const MEMORY_FILE_BAK = "./memory.json.bak"
-const MAX_MEMORY      = 20          // max messages kept per user
+const MAX_MEMORY      = 20   // max messages stored per user per guild
+const MAX_CONTEXT     = 10   // max messages sent to AI (last 5 exchanges)
 const MAX_FILE_SIZE   = 10_485_760  // 10 MB — rotate when exceeded
+
+function memKey(guildId, userId) {
+    return `${guildId}:${userId}`
+}
 
 function loadMemory() {
     try {
@@ -21,14 +26,11 @@ function saveMemory(mem) {
     try {
         const serialized = JSON.stringify(mem, null, 2)
 
-        // Check if the serialized content exceeds the size limit
         if (Buffer.byteLength(serialized, "utf8") > MAX_FILE_SIZE) {
             console.warn(`[Memory] memory.json exceeds ${MAX_FILE_SIZE / 1_048_576}MB — rotating to memory.json.bak`)
             try {
-                // Overwrite any existing backup
                 fs.copyFileSync(MEMORY_FILE, MEMORY_FILE_BAK)
             } catch { /* ignore if source doesn't exist */ }
-            // Start fresh — write only the current (already-trimmed) data
             fs.writeFileSync(MEMORY_FILE, serialized)
             return
         }
@@ -44,35 +46,42 @@ function saveMemory(mem) {
 function cleanupMemory() {
     const mem = loadMemory()
     let changed = false
-    for (const userId of Object.keys(mem)) {
-        if (!Array.isArray(mem[userId]) || mem[userId].length === 0) {
-            delete mem[userId]
+    for (const key of Object.keys(mem)) {
+        if (!Array.isArray(mem[key]) || mem[key].length === 0) {
+            delete mem[key]
             changed = true
-        } else if (mem[userId].length > MAX_MEMORY) {
-            mem[userId] = mem[userId].slice(-MAX_MEMORY)
+        } else if (mem[key].length > MAX_MEMORY) {
+            mem[key] = mem[key].slice(-MAX_MEMORY)
             changed = true
         }
     }
     if (changed) saveMemory(mem)
 }
 
-function getUserMemory(userId) {
+/**
+ * Return the most recent MAX_CONTEXT messages for this user in this guild.
+ * Returns an empty array safely if no history exists.
+ */
+function getUserMemory(guildId, userId) {
     const mem = loadMemory()
-    return mem[userId] || []
+    const history = mem[memKey(guildId, userId)] || []
+    // Only send the last MAX_CONTEXT messages to keep AI context tight
+    return history.slice(-MAX_CONTEXT)
 }
 
-function appendUserMemory(userId, userMsg, botReply) {
+function appendUserMemory(guildId, userId, userMsg, botReply) {
     const mem = loadMemory()
-    if (!mem[userId]) mem[userId] = []
-    mem[userId].push({ role: "user", content: userMsg })
-    mem[userId].push({ role: "assistant", content: botReply })
-    if (mem[userId].length > MAX_MEMORY) mem[userId] = mem[userId].slice(-MAX_MEMORY)
+    const key = memKey(guildId, userId)
+    if (!mem[key]) mem[key] = []
+    mem[key].push({ role: "user", content: userMsg })
+    mem[key].push({ role: "assistant", content: botReply })
+    if (mem[key].length > MAX_MEMORY) mem[key] = mem[key].slice(-MAX_MEMORY)
     saveMemory(mem)
 }
 
-function clearUserMemory(userId) {
+function clearUserMemory(guildId, userId) {
     const mem = loadMemory()
-    delete mem[userId]
+    delete mem[memKey(guildId, userId)]
     saveMemory(mem)
 }
 

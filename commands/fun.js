@@ -213,7 +213,7 @@ if (msgLower.startsWith("!meme")) {
     }
 
     if (msgLower === "!forget") {
-        clearUserMemory(userId)
+        clearUserMemory(message.guild.id, userId)
         await message.channel.send(`🧹 Done, **${senderName}**. Who are you again? I've completely forgotten you existed. Fresh start! 😇`)
         return true
     }

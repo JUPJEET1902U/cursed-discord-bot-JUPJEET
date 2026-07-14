@@ -1,84 +1,103 @@
 const OpenAI = require("openai").default
 
-const groq = new OpenAI({
-    apiKey: process.env.GROQ_KEY || "not-needed",
-    baseURL: "https://api.groq.com/openai/v1"
-})
+const TIMEOUT_MS = 25_000  // 25 seconds per provider attempt
 
+// ── Provider clients ───────────────────────────────────────────────────────────
 const gemini = process.env.GEMINI_KEY ? new OpenAI({
     apiKey: process.env.GEMINI_KEY,
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/"
 }) : null
 
-const GROQ_MODEL = "llama-3.1-8b-instant"
-const GEMINI_MODEL = "gemini-2.0-flash"
+const groq = process.env.GROQ_KEY ? new OpenAI({
+    apiKey: process.env.GROQ_KEY,
+    baseURL: "https://api.groq.com/openai/v1"
+}) : null
 
-let lastUsed = "groq"
-let groqFailCount = 0
+const openrouter = process.env.OPENROUTER_KEY ? new OpenAI({
+    apiKey: process.env.OPENROUTER_KEY,
+    baseURL: "https://openrouter.ai/api/v1",
+    defaultHeaders: { "HTTP-Referer": "https://cursed-bot.replit.app", "X-Title": "CURSED Bot" }
+}) : null
 
-async function callGroq(messages, maxTokens) {
-    const res = await groq.chat.completions.create({ model: GROQ_MODEL, messages, max_tokens: maxTokens })
-    return { content: res.choices[0].message.content, provider: "groq" }
+const GEMINI_MODEL     = "gemini-2.0-flash"
+const GROQ_MODEL       = "llama-3.1-8b-instant"
+const OPENROUTER_MODEL = "mistralai/mistral-7b-instruct"
+
+let lastUsed = "none"
+
+// ── Timeout wrapper ────────────────────────────────────────────────────────────
+function withTimeout(promise, ms) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Provider timed out")), ms)
+        )
+    ])
 }
 
+// ── Individual provider calls ──────────────────────────────────────────────────
 async function callGemini(messages, maxTokens) {
     if (!gemini) throw new Error("Gemini not configured")
-    const res = await gemini.chat.completions.create({ model: GEMINI_MODEL, messages, max_tokens: maxTokens })
+    const res = await withTimeout(
+        gemini.chat.completions.create({ model: GEMINI_MODEL, messages, max_tokens: maxTokens }),
+        TIMEOUT_MS
+    )
     return { content: res.choices[0].message.content, provider: "gemini" }
 }
 
+async function callGroq(messages, maxTokens) {
+    if (!groq) throw new Error("Groq not configured")
+    const res = await withTimeout(
+        groq.chat.completions.create({ model: GROQ_MODEL, messages, max_tokens: maxTokens }),
+        TIMEOUT_MS
+    )
+    return { content: res.choices[0].message.content, provider: "groq" }
+}
+
+async function callOpenRouter(messages, maxTokens) {
+    if (!openrouter) throw new Error("OpenRouter not configured")
+    const res = await withTimeout(
+        openrouter.chat.completions.create({ model: OPENROUTER_MODEL, messages, max_tokens: maxTokens }),
+        TIMEOUT_MS
+    )
+    return { content: res.choices[0].message.content, provider: "openrouter" }
+}
+
+// ── Main entry — Gemini → Groq → OpenRouter ────────────────────────────────────
 async function callAI(messages, options = {}) {
-    const { maxTokens = 500, preferGemini = false } = options
+    const { maxTokens = 500 } = options
+    const errors = []
 
-    if (preferGemini && gemini) {
+    const chain = [
+        { name: "Gemini",      fn: () => callGemini(messages, maxTokens)      },
+        { name: "Groq",        fn: () => callGroq(messages, maxTokens)        },
+        { name: "OpenRouter",  fn: () => callOpenRouter(messages, maxTokens)  },
+    ]
+
+    for (const { name, fn } of chain) {
         try {
-            const result = await callGemini(messages, maxTokens)
-            lastUsed = "gemini"
-            groqFailCount = 0
+            const result = await fn()
+            lastUsed = result.provider
+            console.log(`[AI] ${name} responded OK`)
             return result
         } catch (err) {
-            console.log("Gemini failed, falling back to Groq:", err.message)
+            // Derive a safe reason string — never log the raw key or full stack here
+            const status = err.status ? `HTTP ${err.status}` : ""
+            const reason = [status, err.message].filter(Boolean).join(" ")
+            console.warn(`[AI] ${name} failed: ${reason}`)
+            errors.push(`${name}: ${reason}`)
         }
     }
 
-    if (groqFailCount >= 3 && gemini) {
-        try {
-            const result = await callGemini(messages, maxTokens)
-            lastUsed = "gemini"
-            return result
-        } catch (err) {
-            groqFailCount = 0
-        }
-    }
-
-    try {
-        const result = await callGroq(messages, maxTokens)
-        lastUsed = "groq"
-        groqFailCount = 0
-        return result
-    } catch (err) {
-        if (gemini && (err.status === 429 || err.code === "rate_limit_exceeded" || err.message?.includes("rate"))) {
-            groqFailCount++
-            console.log(`Groq rate limited (${groqFailCount}), switching to Gemini:`, err.message)
-            try {
-                const result = await callGemini(messages, maxTokens)
-                lastUsed = "gemini"
-                return result
-            } catch (geminiErr) {
-                console.error("Both AI providers failed:", geminiErr.message)
-                throw geminiErr
-            }
-        }
-        throw err
-    }
+    throw new Error(`All AI providers failed — ${errors.join(" | ")}`)
 }
 
 function getStatus() {
     return {
-        groqConfigured: !!process.env.GROQ_KEY,
-        geminiConfigured: !!gemini,
-        lastUsed,
-        groqFailCount
+        geminiConfigured:      !!gemini,
+        groqConfigured:        !!groq,
+        openRouterConfigured:  !!openrouter,
+        lastUsed
     }
 }
 
