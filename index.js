@@ -29,7 +29,7 @@ if (!process.env.DISCORD_REDIRECT_URI) {
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
 const { getUserMemory, appendUserMemory, cleanupMemory } = require("./utils/memory")
 require("./utils/antiSpam") // side-effect: registers the 30s messageLog cleanup interval
-const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat, updateQuestProgress } = require("./utils/economy")
+const { getUser, saveEconomy, addXP, incrementStat, updateQuestProgress } = require("./utils/economy")
 const { checkRateLimit } = require("./utils/cooldowns")
 const { getProfile } = require("./utils/profiles")
 const { isChannelAllowed, getServerConfig, saveConfig } = require("./utils/serverConfig")
@@ -410,14 +410,6 @@ client.on(Events.MessageCreate, async (message) => {
         log.error(`XP/level-up post-processing failed: ${err.message}`, { stack: err.stack, userId })
     }
 
-    try {
-        const newAchs = checkAndGrantAchievements(userId, senderName)
-        for (const a of newAchs) {
-            await sendSafe(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-        }
-    } catch (err) {
-        log.error(`Achievement post-processing failed: ${err.message}`, { stack: err.stack, userId })
-    }
 })
 
 // ── Graceful shutdown (Priority 11) ───────────────────────────────────────────

@@ -1,16 +1,9 @@
 const { callAI } = require("../utils/ai")
 const { getPet, savePets, PET_TYPES, calcPetLevel } = require("../utils/pets")
-const { getUser, saveEconomy, checkAndGrantAchievements, updateQuestProgress, incrementStat } = require("../utils/economy")
+const { getUser, saveEconomy, updateQuestProgress, incrementStat } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
 const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName } = require("../utils/sanitizer")
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await createSafeMessage(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-    }
-}
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -40,7 +33,6 @@ async function handle(message) {
         savePets(petData)
         incrementStat(userId, senderName, "petAdopt")
         await createSafeMessage(message.channel, `🎉 **${senderName}** adopted a **${typeInfo.emoji} ${petType}** named **${petName}**!\n> ${typeInfo.desc}\n\nUse \`!feedpet\` and \`!petplay\` to keep it happy!`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -71,7 +63,6 @@ async function handle(message) {
         updateQuestProgress(userId, senderName, "feedpet")
         incrementStat(userId, senderName, "feedpet")
         await createSafeMessage(message.channel, `🍖 **${senderName}** fed **${pet.emoji} ${pet.name}**! (-${cost} coins)\nHunger: **${pet.hunger}%** | Mood: **${pet.mood}** 😊`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -187,7 +178,6 @@ async function handle(message) {
         await createSafeMessage(message.channel,
             `🏋️ **${senderName}** trained **${pet.emoji} ${pet.name}**! (+${xpGain} XP, -${cost} coins)\n` +
             `Level: **${newLevel}** | Total XP: **${pet.xp}**`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -228,7 +218,6 @@ async function handle(message) {
                 ? `🏆 **${pet.name} WINS!** +${xpGain} XP | +${reward} coins`
                 : `💀 **${enemy} wins!** ${pet.name} lost some health. (+${xpGain} XP consolation | +${reward} coins)`
             }`)
-        await announce(message, userId, senderName)
         return true
     }
 

@@ -3,7 +3,7 @@
  * Advanced economy features: work, crime, heist, invest, business, factory, bank (Phase 6)
  */
 
-const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat, updateQuestProgress } = require("../utils/economy")
+const { getUser, saveEconomy, addXP, incrementStat, updateQuestProgress } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
 const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName } = require("../utils/sanitizer")
@@ -28,13 +28,6 @@ const CRIME_OUTCOMES = [
     { name: "smuggling memes",  successRate: 0.7, reward: [40, 120],  penalty: [20, 60]  },
     { name: "casino cheating",  successRate: 0.35,reward: [150, 400], penalty: [80, 200] },
 ]
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await createSafeMessage(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-    }
-}
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -66,7 +59,6 @@ async function handle(message) {
         await createSafeMessage(message.channel,
             `${job.emoji} **${senderName}** worked as a **${job.name}** and earned **${earned} coins**! (+${xpEarned} XP)\n` +
             `💰 Balance: **${user.coins} coins** | Come back in 1 hour for more work.`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -102,7 +94,6 @@ async function handle(message) {
                 `🚔 **${senderName}** tried **${crime.name}** and got CAUGHT!\n` +
                 `💸 Fined **${actualPenalty} coins**! Balance: **${user.coins}**\n*Maybe stick to honest work next time.*`)
         }
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -145,7 +136,6 @@ async function handle(message) {
                 `🚨 **HEIST FAILED!** The alarm went off and **${senderName}** barely escaped!\n` +
                 `💸 Lost **${heistCost} coins** in the chaos. Balance: **${user.coins}**\n*The crew is not happy.*`)
         }
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -214,7 +204,6 @@ async function handle(message) {
         await createSafeMessage(message.channel,
             `📊 **Investment Matured!** **${senderName}** collected **${returns} coins** (${profitText} profit)!\n` +
             `💰 Balance: **${user.coins} coins**`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -345,7 +334,6 @@ async function handle(message) {
             user.business.totalEarned += earned
             saveEconomy(data)
             await createSafeMessage(message.channel, `🏢 **${senderName}** collected **${earned} coins** from **${user.business.name}**!\n💰 Balance: **${user.coins}**`)
-            await announce(message, userId, senderName)
             return true
         }
 
@@ -424,7 +412,6 @@ async function handle(message) {
             user.factory.stock = 0
             saveEconomy(data)
             await createSafeMessage(message.channel, `💰 Sold all factory stock for **${earned} coins**! Balance: **${user.coins}**`)
-            await announce(message, userId, senderName)
             return true
         }
 

@@ -87,7 +87,6 @@ async function handle(message) {
         const progress = Math.min(10, Math.floor((user.xp / nextLevelXP) * 10))
         const xpBar = "█".repeat(progress) + "░".repeat(10 - progress)
         const badges = [user.prestige ? "🌟" : null, user.badge ? "💀" : null, user.vip ? "⭐" : null].filter(Boolean).join(" ")
-        const achCount = (user.achievements || []).length
         const s = user.stats || {}
 
         const allUsers = Object.values(loadEconomy()).sort((a, b) => b.xp - a.xp)
@@ -101,7 +100,7 @@ async function handle(message) {
         msg += `⭐ Level: **${user.level}** | 🏅 Rank: **#${rank > 0 ? rank : "?"}**\n`
         msg += `📊 XP: **${user.xp}** / ${Math.floor(nextLevelXP)} \`[${xpBar}]\`\n`
         msg += `🪙 Coins: **${user.coins}**\n`
-        msg += `🏆 Achievements: **${achCount}** | 💬 Messages: **${s.chat || 0}**\n`
+        msg += `💬 Messages: **${s.chat || 0}**\n`
         msg += `⚔️ Battles: **${s.battles || 0}** (${s.battlesWon || 0}W) | ✅ Quests: **${s.questClaimed || 0}**\n`
         if (pet) {
             const petLevel = calcPetLevel(pet.xp)

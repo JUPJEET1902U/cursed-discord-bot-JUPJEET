@@ -1,17 +1,10 @@
 const { callAI } = require("../utils/ai")
 const { addRoast, getLeaderboard } = require("../utils/roast")
 const { checkCooldown } = require("../utils/cooldowns")
-const { incrementStat, updateQuestProgress, checkAndGrantAchievements, MEDALS } = require("../utils/economy")
+const { incrementStat, updateQuestProgress, MEDALS } = require("../utils/economy")
 const { clearUserMemory } = require("../utils/memory")
 const { activeTriviaAnswers } = require("../utils/state")
 
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await message.channel.send(`🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-    }
-}
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -34,7 +27,6 @@ async function handle(message) {
             await message.channel.send(`🔥 ${result.content}`)
             incrementStat(userId, senderName, "roast")
             updateQuestProgress(userId, senderName, "roast")
-            await announce(message, userId, senderName)
         } catch (err) { console.error("Roast error:", err.message) }
         return true
     }
@@ -153,7 +145,6 @@ if (msgLower.startsWith("!meme")) {
             await message.channel.send(`✅ **${senderName}** got it right! The answer was **${correct}**! 🎉 You're not as dumb as you look.`)
             incrementStat(userId, senderName, "triviaWin")
             updateQuestProgress(userId, senderName, "triviaWin")
-            await announce(message, userId, senderName)
         } else {
             await message.channel.send(`❌ Wrong, **${senderName}**! The correct answer was **${correct}**. Maybe try using your brain next time? 💀`)
         }

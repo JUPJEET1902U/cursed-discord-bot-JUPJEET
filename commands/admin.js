@@ -121,7 +121,6 @@ async function handle(message) {
         const users = Object.values(data)
         const totalCoins = users.reduce((s, u) => s + (u.coins || 0), 0)
         const totalXP = users.reduce((s, u) => s + (u.xp || 0), 0)
-        const totalAch = users.reduce((s, u) => s + (u.achievements?.length || 0), 0)
         const avgLevel = users.length > 0 ? (users.reduce((s, u) => s + (u.level || 0), 0) / users.length).toFixed(1) : 0
         const petData = loadPets()
         const totalPets = Object.keys(petData).length
@@ -132,7 +131,6 @@ async function handle(message) {
             `🪙 Total Coins in Circulation: **${totalCoins.toLocaleString()}**\n` +
             `⭐ Total XP Earned: **${totalXP.toLocaleString()}**\n` +
             `📊 Average Level: **${avgLevel}**\n` +
-            `🏆 Total Achievements Earned: **${totalAch}**\n` +
             `🐾 Total Pets: **${totalPets}**`)
         return true
     }

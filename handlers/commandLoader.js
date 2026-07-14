@@ -24,7 +24,6 @@ function loadCommands() {
         { name: "battle",           module: require("../commands/battle")           },
         { name: "pets",             module: require("../commands/pets")             },
         { name: "profiles",         module: require("../commands/profiles")         },
-        { name: "achievements",     module: require("../commands/achievements")     },
         { name: "leaderboards",     module: require("../commands/leaderboards")     },
         { name: "images",           module: require("../commands/images")           },
         { name: "admin",            module: require("../commands/admin")            },

@@ -3,7 +3,7 @@
  * Mini-games: guess, mines, blackjack, rps, duel, treasure, dailygame (Phase 7)
  */
 
-const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat, updateQuestProgress } = require("../utils/economy")
+const { getUser, saveEconomy, addXP, incrementStat, updateQuestProgress } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
 const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName, validateAmount } = require("../utils/sanitizer")
@@ -34,13 +34,6 @@ function handValue(hand) {
 
 function formatHand(hand) {
     return hand.map(c => `${c.rank}${c.suit}`).join(" ")
-}
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await createSafeMessage(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-    }
 }
 
 async function handle(message) {
@@ -91,7 +84,6 @@ async function handle(message) {
                 addXP(userId, senderName, 20)
                 incrementStat(userId, senderName, "gamesWon")
                 await createSafeMessage(message.channel, `✅ **CORRECT!** The number was **${game.answer}**! **${senderName}** wins **${reward} coins**! 🎉`)
-                await announce(message, userId, senderName)
             } else {
                 const hint = guess < game.answer ? "📈 Too low!" : "📉 Too high!"
                 await createSafeMessage(message.channel, `❌ Wrong! ${hint} The answer was **${game.answer}**. **${senderName}** lost **${game.bet} coins**.`)
@@ -167,7 +159,6 @@ async function handle(message) {
 
         saveEconomy(data)
         await createSafeMessage(message.channel, `✊ **Rock Paper Scissors!**\n${senderName}: ${emojis[choice]} | CURSED: ${emojis[botChoice]}\n\n${result}\n💰 Balance: **${user.coins} coins**`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -226,7 +217,6 @@ async function handle(message) {
                 await createSafeMessage(message.channel,
                     `🃏 **Blackjack Result**\nYour hand: ${formatHand(game.playerHand)} = **${pv}**\n` +
                     `Dealer: ${formatHand(game.dealerHand)} = **${dv}**\n\n${resultMsg}\n💰 Balance: **${user.coins}**`)
-                await announce(message, userId, senderName)
                 return true
             }
 
@@ -266,7 +256,6 @@ async function handle(message) {
             await createSafeMessage(message.channel,
                 `🃏 **BLACKJACK!** ${formatHand(playerHand)} = **21**!\n` +
                 `🏆 **${senderName}** wins **${reward} coins**! 🎉`)
-            await announce(message, userId, senderName)
         } else {
             await createSafeMessage(message.channel,
                 `🃏 **Blackjack!** Bet: **${amount} coins**\n\n` +
@@ -325,7 +314,6 @@ async function handle(message) {
             saveEconomy(data)
             await createSafeMessage(message.channel,
                 `💣 **MINES** — **${senderName}** bet **${amount} coins**\n\n${rows.join("\n")}\n\n✅ **SAFE!** Won **${reward} coins**!\nBalance: **${user.coins}**`)
-            await announce(message, userId, senderName)
         }
         return true
     }
@@ -380,7 +368,6 @@ async function handle(message) {
             `⚔️ **DUEL: ${senderName} vs ${targetName}** (${amount} coins)\n\n` +
             `🎲 ${senderName}: ${Math.floor(p1Score)} pts | ${targetName}: ${Math.floor(p2Score)} pts\n\n` +
             `🏆 **${winnerName}** wins **${amount} coins** from **${loserName}**!`)
-        await announce(message, winnerId, winnerName)
         return true
     }
 
@@ -416,7 +403,6 @@ async function handle(message) {
             `🗺️ **${senderName}** went treasure hunting and found...\n\n` +
             `${found.emoji} **${found.name}!** +${found.coins} coins | +${found.xp} XP\n` +
             `💰 Balance: **${user.coins} coins**`)
-        await announce(message, userId, senderName)
         return true
     }
 

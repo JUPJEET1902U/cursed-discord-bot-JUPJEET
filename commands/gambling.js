@@ -1,14 +1,7 @@
-const { getUser, saveEconomy, checkAndGrantAchievements, updateQuestProgress, CURRENCY } = require("../utils/economy")
+const { getUser, saveEconomy, updateQuestProgress, CURRENCY } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
 
 const SLOT_SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "💎", "🎰", "⭐"]
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await message.channel.send(`🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-    }
-}
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -39,7 +32,6 @@ async function handle(message) {
             updateQuestProgress(userId, senderName, "gamble")
             await message.channel.send(`🎲 **${senderName}** gambled **${amount} coins** and **LOST** 💀. Balance: **${user.coins} coins**. Get absolutely rekt.`)
         }
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -72,7 +64,6 @@ async function handle(message) {
             await message.channel.send(`${coin} It's **${result}**! **${senderName}** guessed ${guess} and LOST **${amount} coins** 💀. Balance: **${user.coins}**`)
         }
         updateQuestProgress(userId, senderName, "gamble")
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -121,7 +112,6 @@ async function handle(message) {
         updateQuestProgress(userId, senderName, "gamble")
         updateQuestProgress(userId, senderName, "slots")
         await message.channel.send(`🎰 **SLOTS** | ${spin.join(" | ")}\n\n${result}\n💰 Balance: **${user.coins} coins**`)
-        await announce(message, userId, senderName)
         return true
     }
 

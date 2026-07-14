@@ -1,11 +1,4 @@
-const { getUser, saveEconomy, calcLevel, getOrCreateDailyQuests, checkAndGrantAchievements, CURRENCY } = require("../utils/economy")
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await message.channel.send(`🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-    }
-}
+const { getUser, saveEconomy, calcLevel, getOrCreateDailyQuests, CURRENCY } = require("../utils/economy")
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -58,7 +51,6 @@ async function handle(message) {
         qp.claimed = true
         saveEconomy(data)
         await message.channel.send(`🎉 **${senderName}** claimed all daily quest rewards!\n\n💰 **+${totalCoins} coins** | ⭐ **+${totalXP} XP**\nTotal balance: **${user.coins} coins** | Level: **${user.level}**\n\nNew quests tomorrow. Don't slack off. 😤`)
-        await announce(message, userId, senderName)
         return true
     }
 

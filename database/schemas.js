@@ -12,7 +12,6 @@ const userSchema = new mongoose.Schema({
     level:        { type: Number, default: 0 },
     xp:           { type: Number, default: 0 },
     coins:        { type: Number, default: 0 },
-    achievements: [{ type: String }],
     stats:        { type: Map, of: Number, default: {} },
     preferences:  { type: Map, of: mongoose.Schema.Types.Mixed, default: {} },
     lastDaily:    { type: String, default: null },

@@ -4,7 +4,7 @@
  */
 
 const { callAI } = require("../utils/ai")
-const { getUser, saveEconomy, addXP, checkAndGrantAchievements, incrementStat } = require("../utils/economy")
+const { getUser, saveEconomy, addXP, incrementStat } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
 const { sanitizeAIOutput, sanitizeName } = require("../utils/sanitizer")
 const { createSafeMessage } = require("../utils/sanitizeMentions")
@@ -56,13 +56,6 @@ async function generateBattleNarrative(attacker, defender, ability, damage, atta
         return sanitizeAIOutput(result.content)
     } catch {
         return `${attacker} used ${ability.emoji} **${ability.name}** for **${damage}** damage!`
-    }
-}
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await createSafeMessage(message.channel, `🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
     }
 }
 
@@ -164,7 +157,6 @@ async function handle(message) {
         narrative += `🏆 **${winnerName} WINS!** +${coinsReward} coins | +${xpReward} XP\n💀 **${loserName}** has been defeated!`
 
         await createSafeMessage(message.channel, narrative)
-        await announce(message, winner, winnerName)
         return true
     }
 
@@ -225,7 +217,6 @@ async function handle(message) {
         }`
 
         await createSafeMessage(message.channel, narrative)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -283,7 +274,6 @@ async function handle(message) {
         }`
 
         await createSafeMessage(message.channel, narrative)
-        await announce(message, userId, senderName)
         return true
     }
 

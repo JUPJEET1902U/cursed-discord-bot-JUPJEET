@@ -369,14 +369,6 @@ const COMMAND_REGISTRY = {
                 aliases: [],
             },
             {
-                name: "!achievements",
-                usage: "!achievements",
-                description: "View your earned achievements",
-                examples: ["!achievements"],
-                cooldown: "none",
-                aliases: [],
-            },
-            {
                 name: "!quests",
                 usage: "!quests",
                 description: "View your daily quests and progress",

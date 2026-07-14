@@ -1,15 +1,8 @@
 const {
     CURRENCY, MEDALS, SHOP, loadEconomy, saveEconomy, getUser,
     calcLevel, xpToNextLevel, addCoins, incrementStat,
-    updateQuestProgress, checkAndGrantAchievements
+    updateQuestProgress
 } = require("../utils/economy")
-
-async function announce(message, userId, name) {
-    const achs = checkAndGrantAchievements(userId, name)
-    for (const a of achs) {
-        await message.channel.send(`🏆 **ACHIEVEMENT UNLOCKED — ${a.name}!**\n> ${a.desc}\n🎁 +${a.xp} XP | +${a.coins} coins`)
-    }
-}
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -37,7 +30,6 @@ async function handle(message) {
         updateQuestProgress(userId, senderName, "dailyClaimed")
         const boostNote = boosted ? " *(🎲 Daily Boost applied — double coins!)*" : ""
         await message.channel.send(`🎁 **Daily Reward Claimed!**${boostNote}\n\n**${senderName}** got **${coinsEarned} ${CURRENCY}** + **${xpEarned} XP**!\nBalance: **${user.coins} coins** | Level: **${user.level}**\n\nCome back tomorrow. Try not to waste it. 🙄`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -54,8 +46,7 @@ async function handle(message) {
             (user.dailyBoost || 0) > 0 ? `🎲 Daily Boost ready!` : null
         ].filter(Boolean)
         const perksLine = perks.length ? `\n⚡ **Active:** ${perks.join(" | ")}` : ""
-        const achCount = (user.achievements || []).length
-        await message.channel.send(`💰 **${senderName}'s Balance**\n\n🪙 **Coins:** ${user.coins}\n⭐ **Level:** ${user.level}\n📊 **XP:** ${user.xp} / ${Math.floor(nextLevelXP)}\n\`[${bar}]\`\n🏆 **Achievements:** ${achCount}${badgeLine}${perksLine}`)
+        await message.channel.send(`💰 **${senderName}'s Balance**\n\n🪙 **Coins:** ${user.coins}\n⭐ **Level:** ${user.level}\n📊 **XP:** ${user.xp} / ${Math.floor(nextLevelXP)}\n\`[${bar}]\`${badgeLine}${perksLine}`)
         return true
     }
 
@@ -88,7 +79,6 @@ async function handle(message) {
         incrementStat(userId, senderName, "give")
         updateQuestProgress(userId, senderName, "give")
         await message.channel.send(`💸 **${senderName}** gave **${amount} ${CURRENCY}** to **${targetName}**! How generous... or suspicious. 👀`)
-        await announce(message, userId, senderName)
         return true
     }
 
@@ -136,7 +126,6 @@ async function handle(message) {
         else user[item.key] = (user[item.key] || 0) + item.value
         saveEconomy(data)
         await message.channel.send(`✅ **${senderName}** bought **${item.name}** for **${item.price} coins**! Balance: **${user.coins} coins**. Enjoy it while it lasts. 😏`)
-        await announce(message, userId, senderName)
         return true
     }
 
