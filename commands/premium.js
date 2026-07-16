@@ -118,7 +118,9 @@ async function handle(message) {
         if (!isAdmin(message.member)) { await message.channel.send("❌ You need **Administrator** or **Manage Server** permission."); return true }
         const { data, config } = getServerConfig(guildId)
         if (!config.allowedChannels) config.allowedChannels = []
+        config.channelRestrictionEnabled = true
         if (config.allowedChannels.includes(message.channel.id)) {
+            saveConfig(data)
             await message.channel.send("✅ This channel is already in CURSED's allowed list.")
             return true
         }
@@ -131,20 +133,59 @@ async function handle(message) {
     if (msgLower === "!removechannel") {
         if (!isAdmin(message.member)) { await message.channel.send("❌ You need **Administrator** or **Manage Server** permission."); return true }
         const { data, config } = getServerConfig(guildId)
-        config.allowedChannels = (config.allowedChannels || []).filter(id => id !== message.channel.id)
+        const channels = Array.isArray(config.allowedChannels) ? config.allowedChannels : []
+        const restrictionEnabled = typeof config.channelRestrictionEnabled === "boolean"
+            ? config.channelRestrictionEnabled
+            : channels.length > 0
+
+        if (!restrictionEnabled) {
+            await message.channel.send(
+                "ℹ️ CURSED currently responds in **all channels**. Use `!addchannel` inside each channel where CURSED should be allowed; that enables restricted mode."
+            )
+            return true
+        }
+
+        const wasAllowed = channels.includes(message.channel.id)
+        config.channelRestrictionEnabled = true
+        config.allowedChannels = channels.filter(id => id !== message.channel.id)
         saveConfig(data)
-        await message.channel.send(`✅ **#${message.channel.name}** removed from CURSED's channels.`)
+
+        if (!wasAllowed) {
+            await message.channel.send(`✅ **#${message.channel.name}** is already blocked for normal CURSED responses.`)
+        } else if (config.allowedChannels.length === 0) {
+            await message.channel.send(
+                `✅ **#${message.channel.name}** removed. CURSED is now blocked in **all regular channels**. Use \`!addchannel\` anywhere to allow a channel again.`
+            )
+        } else {
+            await message.channel.send(`✅ **#${message.channel.name}** removed from CURSED's allowed channels.`)
+        }
+        return true
+    }
+
+    if (msgLower === "!allchannels") {
+        if (!isAdmin(message.member)) { await message.channel.send("❌ You need **Administrator** or **Manage Server** permission."); return true }
+        const { data, config } = getServerConfig(guildId)
+        config.channelRestrictionEnabled = false
+        config.allowedChannels = []
+        saveConfig(data)
+        await message.channel.send("✅ Channel restriction disabled. CURSED will respond in **all channels** again.")
         return true
     }
 
     if (msgLower === "!channels") {
         const { config } = getServerConfig(guildId)
-        const channels = config.allowedChannels || []
-        if (channels.length === 0) {
-            await message.channel.send("📢 CURSED responds in **all channels** on this server.\nAdmins can restrict it with `!addchannel` and `!removechannel`.")
+        const channels = Array.isArray(config.allowedChannels) ? config.allowedChannels : []
+        const restrictionEnabled = typeof config.channelRestrictionEnabled === "boolean"
+            ? config.channelRestrictionEnabled
+            : channels.length > 0
+
+        if (!restrictionEnabled) {
+            await message.channel.send("📢 CURSED responds in **all channels** on this server.\nUse `!addchannel` to enable restricted mode.")
+        } else if (channels.length === 0) {
+            await message.channel.send("🔒 CURSED is blocked in **all regular channels**.\nUse `!addchannel` in a channel to allow it, or `!allchannels` to respond everywhere.")
         } else {
             const names = channels.map(id => `<#${id}>`).join(", ")
-            await message.channel.send(`📢 CURSED active in: ${names}\nUse \`!addchannel\` / \`!removechannel\` to manage.`)
+            await message.channel.send(`📢 CURSED active in: ${names}\nUse \`!addchannel\` / \`!removechannel\` to manage, or \`!allchannels\` to remove the restriction.`)
         }
         return true
     }
