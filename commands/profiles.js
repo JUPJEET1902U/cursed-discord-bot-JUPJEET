@@ -1,3 +1,4 @@
+const { EmbedBuilder } = require("discord.js")
 const { getUser, loadEconomy, xpToNextLevel } = require("../utils/economy")
 const { getProfile, setProfile } = require("../utils/profiles")
 const { getPet, calcPetLevel } = require("../utils/pets")
@@ -6,6 +7,8 @@ const { VALID_PERSONALITIES, formatPersonalityList } = require("../config/person
 const { getEquipped } = require("../utils/shop")
 const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName } = require("../utils/sanitizer")
+
+const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -115,7 +118,14 @@ async function handle(message) {
         if (profile?.personality) msg += `\n💬 *AI Profile:* "${profile.personality}"`
         if (personality !== "cursed") msg += `\n🎭 *Personality:* ${personality}`
 
-        await createSafeMessage(message.channel, msg)
+        const targetUser = mentioned || message.author
+        const embed = new EmbedBuilder()
+            .setColor(equipped.theme?.color || 0x3498DB)
+            .setDescription(msg)
+            .setFooter({ text: equipped.theme ? `${equipped.theme.display} profile theme` : "CURSED Profile" })
+        const avatar = targetUser.displayAvatarURL?.({ size: 256 })
+        if (avatar) embed.setThumbnail(avatar)
+        await message.channel.send({ embeds: [embed], allowedMentions: SAFE_MENTIONS })
         return true
     }
 
