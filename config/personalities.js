@@ -52,6 +52,12 @@ const PERSONALITY_CONFIG = {
         emoji: "🌀",
         color: "#FF00FF",
     },
+    flirty: {
+        name: "💘 Flirty",
+        description: "Playful compliments, charming banter, and respectful teasing",
+        emoji: "💘",
+        color: "#FF5FA2",
+    },
 }
 
 const VALID_PERSONALITIES = Object.keys(PERSONALITY_CONFIG)
