@@ -10,6 +10,7 @@ const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./serverConfig")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
+const premiumCmd = require("../commands/premium")
 
 // Regex patterns — pre-compiled outside functions to avoid repeated compilation.
 // Kept deliberately simple (no nested quantifiers) to prevent ReDoS.
@@ -18,6 +19,13 @@ const LINK_REGEX   = /https?:\/\/\S+|www\.\S+\.\S+/gi
 // INVITE_REGEX: matches discord.gg/<code> or discord.com/invite/<code>.
 // The invite code is limited to 2-32 alphanumeric/hyphen chars to bound backtracking.
 const INVITE_REGEX = /discord(?:\.gg|(?:app)?\.com\/invite)\/[a-zA-Z0-9-]{2,32}/gi
+
+const CHANNEL_CONTROL_COMMANDS = new Set([
+    "!addchannel",
+    "!removechannel",
+    "!channels",
+    "!allchannels",
+])
 
 /**
  * Check whether the bot has permission to manage messages in this channel.
@@ -42,6 +50,15 @@ async function safeDelete(message) {
 async function runAutoMod(message) {
     if (message.author.bot) return false
     if (!message.guild)     return false
+
+    // Channel-control commands must be reachable even when the current channel
+    // is outside the allow-list. The main MessageCreate handler runs auto-mod
+    // before its channel gate, so handling these exact commands here prevents
+    // admins from being locked out after removing the final allowed channel.
+    const normalizedContent = message.content.toLowerCase().trim()
+    if (CHANNEL_CONTROL_COMMANDS.has(normalizedContent)) {
+        return premiumCmd.handle(message)
+    }
 
     const { guild, member, author, content } = message
     const guildId = guild.id
