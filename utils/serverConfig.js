@@ -20,21 +20,43 @@ function getServerConfig(guildId) {
         data[guildId] = { allowedChannels: [], premiumRoleId: null, paymentLinks: {} }
     } else {
         if (!data[guildId].allowedChannels) data[guildId].allowedChannels = []
-        if (!data[guildId].paymentLinks) data[guildId].paymentLinks = {}
+        if (!data[guildId].paymentLinks)    data[guildId].paymentLinks    = {}
     }
-    // Welcome system fields — use explicit undefined checks so saved falsy values
-    // (e.g. welcomeThumbnail: false, welcomeUseAI: false) are never overwritten.
-    if (data[guildId].welcomeChannelId  === undefined) data[guildId].welcomeChannelId  = null
-    if (data[guildId].welcomeMessage    === undefined) data[guildId].welcomeMessage    = null
-    if (data[guildId].welcomeUseAI      === undefined) data[guildId].welcomeUseAI      = false
-    if (data[guildId].welcomeColor      === undefined) data[guildId].welcomeColor      = null
-    if (data[guildId].welcomeThumbnail  === undefined) data[guildId].welcomeThumbnail  = true
-    if (data[guildId].welcomeImageUrl   === undefined) data[guildId].welcomeImageUrl   = null
-    if (data[guildId].welcomeFooter     === undefined) data[guildId].welcomeFooter     = null
-    // Autorole fields
-    if (data[guildId].autoroleId        === undefined) data[guildId].autoroleId        = null
-    if (data[guildId].autoroleRoleName  === undefined) data[guildId].autoroleRoleName  = null
-    return { data, config: data[guildId] }
+
+    const g = data[guildId]
+
+    // ── Core welcome ──────────────────────────────────────────────────────────
+    if (g.welcomeChannelId    === undefined) g.welcomeChannelId    = null
+    if (g.welcomeMessage      === undefined) g.welcomeMessage      = null
+    if (g.welcomeMessages     === undefined) g.welcomeMessages     = []
+    if (g.welcomeUseAI        === undefined) g.welcomeUseAI        = false
+    // ── Embed ─────────────────────────────────────────────────────────────────
+    if (g.welcomeEmbedTitle   === undefined) g.welcomeEmbedTitle   = null
+    if (g.welcomeColor        === undefined) g.welcomeColor        = null
+    if (g.welcomeThumbnail    === undefined) g.welcomeThumbnail    = true
+    if (g.welcomeImageUrl     === undefined) g.welcomeImageUrl     = null
+    if (g.welcomeFooter       === undefined) g.welcomeFooter       = null
+    // ── Card ──────────────────────────────────────────────────────────────────
+    if (g.welcomeCardEnabled    === undefined) g.welcomeCardEnabled    = true
+    if (g.welcomeCardTheme      === undefined) g.welcomeCardTheme      = "classic"
+    if (g.welcomeCardBackground === undefined) g.welcomeCardBackground = null
+    if (g.welcomeAccentColor    === undefined) g.welcomeAccentColor    = null
+    // ── Media ─────────────────────────────────────────────────────────────────
+    if (g.welcomeMediaUrl     === undefined) g.welcomeMediaUrl     = null
+    if (g.welcomeMediaMode    === undefined) g.welcomeMediaMode    = "card"
+    // ── Join info ─────────────────────────────────────────────────────────────
+    if (g.welcomeShowJoinInfo   === undefined) g.welcomeShowJoinInfo   = false
+    if (g.welcomeNewAccountDays === undefined) g.welcomeNewAccountDays = 7
+    if (g.welcomeShowRoles      === undefined) g.welcomeShowRoles      = false
+    // ── Buttons ───────────────────────────────────────────────────────────────
+    if (g.welcomeButtons      === undefined) g.welcomeButtons      = []
+    // ── Seasonal ──────────────────────────────────────────────────────────────
+    if (g.welcomeSeasonal     === undefined) g.welcomeSeasonal     = false
+    // ── Autorole ──────────────────────────────────────────────────────────────
+    if (g.autoroleId          === undefined) g.autoroleId          = null
+    if (g.autoroleRoleName    === undefined) g.autoroleRoleName    = null
+
+    return { data, config: g }
 }
 
 function isChannelAllowed(guildId, channelId) {
