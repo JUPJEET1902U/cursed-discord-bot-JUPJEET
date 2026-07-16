@@ -39,6 +39,8 @@ function sanitizeTranscriptText(value, maxLength = 1800) {
     return sanitizeMentions(String(value || ""))
         .replace(/\u0000/g, "")
         .replace(/\b\d{17,20}\b/g, "[id]")
+        .replace(/</g, "‹")
+        .replace(/>/g, "›")
         .replace(/[\t ]+/g, " ")
         .replace(/\n{4,}/g, "\n\n\n")
         .trim()
