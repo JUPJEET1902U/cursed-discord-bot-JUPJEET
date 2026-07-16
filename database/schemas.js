@@ -105,6 +105,40 @@ const personalitySchema = new mongoose.Schema({
     updatedAt:          { type: Date, default: Date.now },
 })
 
+// ── Guild config ───────────────────────────────────────────────────────────────
+const guildConfigSchema = new mongoose.Schema({
+    guildId: { type: String, required: true, unique: true, index: true },
+
+    allowedChannels: { type: [String], default: [] },
+    premiumRoleId:   { type: String, default: null },
+    paymentLinks:    { type: Map, of: String, default: {} },
+
+    welcomeChannelId:      { type: String, default: null },
+    welcomeMessage:        { type: String, default: null },
+    welcomeMessages:       { type: [String], default: [] },
+    welcomeUseAI:          { type: Boolean, default: false },
+    welcomeEmbedTitle:     { type: String, default: null },
+    welcomeColor:          { type: String, default: null },
+    welcomeThumbnail:      { type: Boolean, default: true },
+    welcomeImageUrl:       { type: String, default: null },
+    welcomeFooter:         { type: String, default: null },
+    welcomeCardEnabled:    { type: Boolean, default: true },
+    welcomeCardTheme:      { type: String, default: "classic", enum: ["classic", "midnight", "neon"] },
+    welcomeCardBackground: { type: String, default: null },
+    welcomeAccentColor:    { type: String, default: null },
+    welcomeMediaUrl:       { type: String, default: null },
+    welcomeMediaMode:      { type: String, default: "card", enum: ["card", "embed", "both"] },
+    welcomeShowJoinInfo:   { type: Boolean, default: false },
+    welcomeNewAccountDays: { type: Number, default: 7, min: 0 },
+    welcomeShowRoles:      { type: Boolean, default: false },
+    welcomeButtons:        { type: [mongoose.Schema.Types.Mixed], default: [] },
+    welcomeSeasonal:       { type: Boolean, default: false },
+
+    autoroleId:       { type: String, default: null },
+    autoroleRoleName: { type: String, default: null },
+    updatedAt:        { type: Date, default: Date.now },
+}, { minimize: false })
+
 // ── Safe model registration (idempotent) ───────────────────────────────────────
 function getModel(name, schema) {
     try { return mongoose.model(name) } catch { return mongoose.model(name, schema) }
@@ -117,6 +151,7 @@ const BattleModel       = getModel("Battle", battleSchema)
 const PetModel          = getModel("Pet", petSchema)
 const LeaderboardModel  = getModel("Leaderboard", leaderboardSchema)
 const PersonalityModel  = getModel("Personality", personalitySchema)
+const GuildConfigModel  = getModel("GuildConfig", guildConfigSchema)
 
 module.exports = {
     UserModel,
@@ -126,4 +161,5 @@ module.exports = {
     PetModel,
     LeaderboardModel,
     PersonalityModel,
+    GuildConfigModel,
 }

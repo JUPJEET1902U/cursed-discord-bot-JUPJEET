@@ -12,9 +12,10 @@
  * Placeholders: {user} {username} {mention} {server} {membercount}
  */
 
-const { EmbedBuilder } = require("discord.js")
+const { AttachmentBuilder, EmbedBuilder } = require("discord.js")
 const { getServerConfig, saveConfig } = require("./serverConfig")
 const { sendSafe } = require("./mentionSanitizer")
+const { generateWelcomeCard } = require("./welcomeCard")
 const logger = require("./logger")
 const log = logger.child("Welcome")
 
@@ -48,6 +49,11 @@ function getWelcome(guildId) {
         welcomeThumbnail: config.welcomeThumbnail  !== false, // default true
         welcomeImageUrl:  config.welcomeImageUrl   || null,
         welcomeFooter:    config.welcomeFooter     || null,
+        welcomeCardEnabled:    config.welcomeCardEnabled !== false,
+        welcomeCardTheme:      config.welcomeCardTheme || "classic",
+        welcomeCardBackground: config.welcomeCardBackground || null,
+        welcomeAccentColor:    config.welcomeAccentColor || null,
+        welcomeMediaUrl:       config.welcomeMediaUrl || null,
     }
 }
 
@@ -66,6 +72,11 @@ function setWelcome(guildId, channelId, options = {}) {
     config.welcomeThumbnail = options.thumbnail ?? config.welcomeThumbnail ?? true
     config.welcomeImageUrl  = options.imageUrl  ?? config.welcomeImageUrl  ?? null
     config.welcomeFooter    = options.footer    ?? config.welcomeFooter    ?? null
+    config.welcomeCardEnabled    = options.cardEnabled    ?? config.welcomeCardEnabled    ?? true
+    config.welcomeCardTheme      = options.cardTheme      ?? config.welcomeCardTheme      ?? "classic"
+    config.welcomeCardBackground = options.cardBackground ?? config.welcomeCardBackground ?? null
+    config.welcomeAccentColor    = options.accentColor    ?? config.welcomeAccentColor    ?? null
+    config.welcomeMediaUrl       = options.mediaUrl       ?? config.welcomeMediaUrl       ?? null
     saveConfig(data)
 }
 
@@ -82,6 +93,11 @@ function disableWelcome(guildId) {
     config.welcomeThumbnail = true
     config.welcomeImageUrl  = null
     config.welcomeFooter    = null
+    config.welcomeCardEnabled    = true
+    config.welcomeCardTheme      = "classic"
+    config.welcomeCardBackground = null
+    config.welcomeAccentColor    = null
+    config.welcomeMediaUrl       = null
     saveConfig(data)
 }
 
@@ -131,7 +147,7 @@ function parseColor(colorStr) {
  * @param {object} cfg             - Guild welcome config
  * @returns {import("discord.js").EmbedBuilder}
  */
-function buildEmbed(description, member, cfg) {
+function buildEmbed(description, member, cfg, assignedRoleId = null) {
     const guild = member.guild
 
     const embed = new EmbedBuilder()
@@ -153,6 +169,10 @@ function buildEmbed(description, member, cfg) {
         : `Member #${guild.memberCount}`
     embed.setFooter({ text: footerText })
 
+    if (assignedRoleId) {
+        embed.addFields({ name: "Role assigned", value: `<@&${assignedRoleId}>`, inline: true })
+    }
+
     return embed
 }
 
@@ -166,9 +186,32 @@ function buildEmbed(description, member, cfg) {
  * @param {object} cfg           - Guild welcome config
  * @returns {Promise<void>}
  */
-async function sendWelcomeEmbed(channel, messageText, member, cfg) {
-    const embed = buildEmbed(messageText, member, cfg)
-    await sendSafe(channel, { embeds: [embed] })
+async function sendWelcomeEmbed(channel, messageText, member, cfg, assignedRoleId = null) {
+    const embed = buildEmbed(messageText, member, cfg, assignedRoleId)
+    const payload = { embeds: [embed] }
+    const perms = channel.permissionsFor?.(member.guild.members.me)
+    const canAttachFiles = !perms || perms.has("AttachFiles")
+
+    if (cfg.welcomeCardEnabled !== false && canAttachFiles) {
+        try {
+            const card = await generateWelcomeCard(member, cfg, { assignedRoleId })
+            const attachment = new AttachmentBuilder(card, { name: "welcome-card.png" })
+            embed.setImage("attachment://welcome-card.png")
+            payload.files = [attachment]
+        } catch (err) {
+            log.warn(`[${member.guild.name}] Welcome card generation failed - sending embed only: ${err.message}`)
+        }
+    } else if (cfg.welcomeCardEnabled !== false) {
+        log.warn(`[${member.guild.name}] Missing AttachFiles in welcome channel - sending embed only`)
+    }
+
+    try {
+        await sendSafe(channel, payload)
+    } catch (err) {
+        if (!payload.files) throw err
+        log.warn(`[${member.guild.name}] Welcome card send failed - retrying embed only: ${err.message}`)
+        await sendSafe(channel, { embeds: [buildEmbed(messageText, member, cfg, assignedRoleId)] })
+    }
 }
 
 /**
@@ -185,7 +228,7 @@ async function sendWelcomeEmbed(channel, messageText, member, cfg) {
  * @param {Function} callAI  - utils/ai callAI function
  * @returns {Promise<void>}
  */
-async function sendWelcome(member, config, callAI) {
+async function sendWelcome(member, config, callAI, assignedRoleId = null) {
     const { welcomeChannelId } = config
     if (!welcomeChannelId) return
 
@@ -225,7 +268,7 @@ async function sendWelcome(member, config, callAI) {
 
             const aiText = (result.content || "").trim()
             if (aiText) {
-                await sendWelcomeEmbed(channel, aiText, member, config)
+                await sendWelcomeEmbed(channel, aiText, member, config, assignedRoleId)
                 return
             }
         } catch (err) {
@@ -234,7 +277,7 @@ async function sendWelcome(member, config, callAI) {
     }
 
     try {
-        await sendWelcomeEmbed(channel, customText, member, config)
+        await sendWelcomeEmbed(channel, customText, member, config, assignedRoleId)
     } catch (err) {
         log.error(`[${member.guild.name}] Failed to send welcome message: ${err.message}`)
     }

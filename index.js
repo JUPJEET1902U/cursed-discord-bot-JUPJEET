@@ -157,8 +157,14 @@ client.on(Events.GuildMemberAdd, async (member) => {
     // ── Autorole — per-guild config takes precedence over env-var fallback ─────
     const { autoroleId } = getAutorole(member.guild.id)
     const roleToAdd = autoroleId || process.env.DEFAULT_ROLE_ID || null
+    let assignedRoleId = null
     if (roleToAdd) {
-        try { await member.roles.add(roleToAdd) } catch { }
+        try {
+            await member.roles.add(roleToAdd)
+            assignedRoleId = roleToAdd
+        } catch (err) {
+            log.warn(`[${member.guild.name}] Autorole ${roleToAdd} was not assigned: ${err.message}`)
+        }
     }
 
     // Send welcome message (custom or AI)
@@ -166,7 +172,9 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
     if (welcomeConfig.welcomeChannelId) {
         // Custom welcome is configured
-        sendWelcome(member, welcomeConfig, callAI).catch(err =>
+        const welcomeArgs = [member, welcomeConfig, callAI]
+        if (assignedRoleId) welcomeArgs.push(assignedRoleId)
+        sendWelcome(...welcomeArgs).catch(err =>
             log.error(`[Welcome] Error: ${err.message}`)
         )
     } else {

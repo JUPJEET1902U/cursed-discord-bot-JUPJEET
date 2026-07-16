@@ -111,6 +111,27 @@ const commands = [
                 .setName("footer")
                 .setDescription("Footer text — supports {membercount} and other placeholders")
                 .setRequired(false))
+            .addBooleanOption(o => o
+                .setName("card")
+                .setDescription("Generate a PNG welcome card with the embed (default: true)")
+                .setRequired(false))
+            .addStringOption(o => o
+                .setName("theme")
+                .setDescription("Welcome card theme")
+                .addChoices(
+                    { name: "Classic", value: "classic" },
+                    { name: "Midnight", value: "midnight" },
+                    { name: "Neon", value: "neon" },
+                )
+                .setRequired(false))
+            .addStringOption(o => o
+                .setName("background")
+                .setDescription("URL of a background image for the PNG welcome card")
+                .setRequired(false))
+            .addStringOption(o => o
+                .setName("accent")
+                .setDescription("Card accent color as a hex code, e.g. #FF5733")
+                .setRequired(false))
         )
         .addSubcommand(sub => sub
             .setName("view")
@@ -371,6 +392,10 @@ async function handleInteraction(interaction) {
             const thumbnail = interaction.options.getBoolean("thumbnail") ?? true
             const imageUrl  = interaction.options.getString("image")     ?? null
             const footer    = interaction.options.getString("footer")    ?? null
+            const cardEnabled = interaction.options.getBoolean("card")    ?? true
+            const cardTheme = interaction.options.getString("theme")      ?? "classic"
+            const cardBackground = interaction.options.getString("background") ?? null
+            const accentColor = interaction.options.getString("accent")   ?? null
 
             // Validate channel is text-based
             if (!channel.isTextBased || !channel.isTextBased()) {
@@ -381,6 +406,11 @@ async function handleInteraction(interaction) {
             // Validate hex color if provided
             if (colorStr && !/^#?[0-9A-Fa-f]{6}$/.test(colorStr)) {
                 await interaction.reply({ content: "❌ Invalid color. Use a 6-digit hex code like `#FF5733`.", ephemeral: true })
+                return true
+            }
+
+            if (accentColor && !/^#?[0-9A-Fa-f]{6}$/.test(accentColor)) {
+                await interaction.reply({ content: "❌ Invalid accent color. Use a 6-digit hex code like `#FF5733`.", ephemeral: true })
                 return true
             }
 
@@ -395,6 +425,16 @@ async function handleInteraction(interaction) {
                 }
             }
 
+            if (cardBackground) {
+                try {
+                    const u = new URL(cardBackground)
+                    if (!["http:", "https:"].includes(u.protocol)) throw new Error("bad protocol")
+                } catch {
+                    await interaction.reply({ content: "❌ Invalid card background URL. It must start with `http://` or `https://`.", ephemeral: true })
+                    return true
+                }
+            }
+
             setWelcome(guild.id, channel.id, {
                 message,
                 useAI,
@@ -402,6 +442,10 @@ async function handleInteraction(interaction) {
                 thumbnail,
                 imageUrl,
                 footer,
+                cardEnabled,
+                cardTheme,
+                cardBackground,
+                accentColor,
             })
 
             const embed = new EmbedBuilder()
@@ -411,14 +455,17 @@ async function handleInteraction(interaction) {
                     { name: "📢 Channel",     value: `<#${channel.id}>`,               inline: true },
                     { name: "🤖 AI Enabled",  value: useAI ? "Yes" : "No",             inline: true },
                     { name: "🖼️ Thumbnail",   value: thumbnail ? "Yes" : "No",         inline: true },
+                    { name: "🪪 Card",        value: cardEnabled ? cardTheme : "Off",   inline: true },
                     { name: "📝 Message",     value: (message || "*(default)*").slice(0, 512), inline: false },
                 )
                 .setFooter({ text: "Use /welcome preview to see the embed • /welcome test to send a live test" })
                 .setTimestamp()
 
             if (colorStr)  embed.addFields({ name: "🎨 Color",  value: colorStr, inline: true })
+            if (accentColor) embed.addFields({ name: "🎨 Accent", value: accentColor, inline: true })
             if (footer)    embed.addFields({ name: "📄 Footer", value: footer,   inline: true })
             if (imageUrl)  embed.addFields({ name: "🖼️ Image",  value: imageUrl, inline: false })
+            if (cardBackground) embed.addFields({ name: "🪪 Card Background", value: cardBackground, inline: false })
 
             await interaction.reply({ embeds: [embed] })
             return true
@@ -440,14 +487,17 @@ async function handleInteraction(interaction) {
                     { name: "📢 Channel",    value: `<#${config.welcomeChannelId}>`,            inline: true },
                     { name: "🤖 AI Enabled", value: config.welcomeUseAI ? "Yes" : "No",         inline: true },
                     { name: "🖼️ Thumbnail",  value: config.welcomeThumbnail ? "Yes" : "No",     inline: true },
+                    { name: "🪪 Card",       value: config.welcomeCardEnabled ? config.welcomeCardTheme : "Off", inline: true },
                     { name: "📝 Message",    value: (config.welcomeMessage || "*(default)*").slice(0, 512), inline: false },
                 )
                 .setFooter({ text: "Use /welcome preview to see the embed • /welcome disable to turn off" })
                 .setTimestamp()
 
             if (config.welcomeColor)    embed.addFields({ name: "🎨 Color",  value: config.welcomeColor,    inline: true })
+            if (config.welcomeAccentColor) embed.addFields({ name: "🎨 Accent", value: config.welcomeAccentColor, inline: true })
             if (config.welcomeFooter)   embed.addFields({ name: "📄 Footer", value: config.welcomeFooter,   inline: true })
             if (config.welcomeImageUrl) embed.addFields({ name: "🖼️ Image",  value: config.welcomeImageUrl, inline: false })
+            if (config.welcomeCardBackground) embed.addFields({ name: "🪪 Card Background", value: config.welcomeCardBackground, inline: false })
 
             await interaction.reply({ embeds: [embed], ephemeral: true })
             return true
