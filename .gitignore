@@ -1,2 +1,22 @@
+# Secrets and local environments
 .env
+.env.*
+!.env.example
 node_modules/
+dashboard/node_modules/
+
+# Runtime data — never commit user/server data
+memory.json
+economy.json
+pets.json
+profiles.json
+warnings.json
+serverConfig.json
+premium.json
+roast_counts.json
+
+# Logs, tests, and build output
+*.log
+coverage/
+dist/
+.DS_Store
