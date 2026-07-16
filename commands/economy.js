@@ -60,7 +60,7 @@ async function handle(message) {
         return true
     }
 
-    if (msgLower.startsWith("!give")) {
+    if (msgLower === "!give" || msgLower.startsWith("!give ")) {
         const mentioned = message.mentions.users.first()
         const parts = message.content.split(" ")
         const amount = parseInt(parts[parts.length - 1])
