@@ -28,6 +28,7 @@ function loadCommands() {
         { name: "images",           module: require("../commands/images")           },
         { name: "admin",            module: require("../commands/admin")            },
         { name: "memory",           module: require("../commands/memory")           },
+        { name: "summary",          module: require("../commands/summary")          },
     ]
 
     log.info(`Loaded ${commandModules.length} command modules`)
