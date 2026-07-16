@@ -321,13 +321,15 @@ async function updateGuildConfigAndWait(guildId, updates = {}) {
 
     const jsonData = loadJsonConfig()
     const legacyConfig = normalizeConfig(jsonData[guildId] || DEFAULT_CONFIG)
-    const setOnInsert = {
-        ...legacyConfig,
+    const setOnInsert = { ...legacyConfig }
+
+    for (const key of blockedKeys) delete setOnInsert[key]
+    Object.assign(setOnInsert, {
         guildId,
         createdAt: new Date(),
         migratedFrom: "serverConfig.json",
         migratedAt: new Date(),
-    }
+    })
 
     for (const key of [...Object.keys(setFields), ...Object.keys(unsetFields)]) {
         delete setOnInsert[key]
