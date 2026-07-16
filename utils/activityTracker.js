@@ -152,8 +152,60 @@ async function endVoiceSession(guildId, userId) {
     }
 }
 
+/**
+ * Return real persisted totals for a guild. An empty collection is a valid
+ * zero-data result; null means MongoDB is unavailable or the query failed.
+ */
+async function getGuildActivitySummary(guildId) {
+    if (!isMongoConnected()) return null
+
+    try {
+        const [summary] = await ActivityModel.aggregate([
+            { $match: { guildId } },
+            {
+                $group: {
+                    _id: null,
+                    totalMessages: { $sum: "$messageCount" },
+                    totalCommands: { $sum: "$commandCount" },
+                    totalVoiceSeconds: { $sum: "$voiceSeconds" },
+                    trackedUsers: { $sum: 1 },
+                    activeUsers: {
+                        $sum: {
+                            $cond: [
+                                {
+                                    $or: [
+                                        { $gt: ["$messageCount", 0] },
+                                        { $gt: ["$commandCount", 0] },
+                                        { $gt: ["$voiceSeconds", 0] },
+                                    ],
+                                },
+                                1,
+                                0,
+                            ],
+                        },
+                    },
+                    lastActivityAt: { $max: "$updatedAt" },
+                },
+            },
+        ])
+
+        return summary || {
+            totalMessages: 0,
+            totalCommands: 0,
+            totalVoiceSeconds: 0,
+            trackedUsers: 0,
+            activeUsers: 0,
+            lastActivityAt: null,
+        }
+    } catch (err) {
+        log.error(`getGuildActivitySummary failed (${guildId}): ${err.message}`)
+        return null
+    }
+}
+
 module.exports = {
     getActivity,
+    getGuildActivitySummary,
     trackMessage,
     trackCommand,
     startVoiceSession,
