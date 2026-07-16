@@ -23,8 +23,16 @@ function getServerConfig(guildId) {
 
 function isChannelAllowed(guildId, channelId) {
     const { config } = getServerConfig(guildId)
-    if (!config.allowedChannels || config.allowedChannels.length === 0) return true
-    return config.allowedChannels.includes(channelId)
+    const allowedChannels = Array.isArray(config.allowedChannels) ? config.allowedChannels : []
+
+    // Backward compatibility: existing guilds that already have an allow-list
+    // are treated as restricted even before channelRestrictionEnabled existed.
+    const restrictionEnabled = typeof config.channelRestrictionEnabled === "boolean"
+        ? config.channelRestrictionEnabled
+        : allowedChannels.length > 0
+
+    if (!restrictionEnabled) return true
+    return allowedChannels.includes(channelId)
 }
 
 module.exports = {
