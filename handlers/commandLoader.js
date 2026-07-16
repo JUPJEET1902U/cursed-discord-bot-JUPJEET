@@ -16,6 +16,7 @@ function loadCommands() {
         { name: "help",             module: require("../commands/help")             },
         { name: "premium",          module: require("../commands/premium")          },
         { name: "fun",              module: require("../commands/fun")              },
+        { name: "shop",             module: require("../commands/shop")             },
         { name: "economy",          module: require("../commands/economy")          },
         { name: "economy-advanced", module: require("../commands/economy-advanced") },
         { name: "gambling",         module: require("../commands/gambling")         },
