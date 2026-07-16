@@ -3,7 +3,7 @@
  * Developer/admin commands for bot statistics and debugging (Phase 12)
  */
 
-const { loadEconomy } = require("../utils/economy")
+const { loadEconomy, addCoins } = require("../utils/economy")
 const { loadPets } = require("../utils/pets")
 const { getStatus: getAIStatus } = require("../utils/ai")
 const { createSafeMessage } = require("../utils/sanitizeMentions")
@@ -13,8 +13,12 @@ const log = logger.child("Admin")
 const BOT_OWNER_IDS = (process.env.BOT_OWNER_IDS || "").split(",").map(s => s.trim()).filter(Boolean)
 const START_TIME = Date.now()
 
+function isOwner(message) {
+    return BOT_OWNER_IDS.includes(message.author.id)
+}
+
 function isAdmin(message) {
-    if (BOT_OWNER_IDS.includes(message.author.id)) return true
+    if (isOwner(message)) return true
     return message.member?.permissions?.has("Administrator") || false
 }
 
@@ -38,12 +42,66 @@ function formatBytes(bytes) {
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
     const userId = message.author.id
+    const isGiveCoinsCommand = msgLower === "!givecoins" || msgLower.startsWith("!givecoins ")
 
     if (!msgLower.startsWith("!botstats") &&
         !msgLower.startsWith("!aistats") &&
         !msgLower.startsWith("!memorydebug") &&
-        !msgLower.startsWith("!economystats")) {
+        !msgLower.startsWith("!economystats") &&
+        !isGiveCoinsCommand) {
         return false
+    }
+
+    // ── !givecoins @user amount ────────────────────────────────────────────────
+    // Strictly bot-owner-only. Discord admins and server owners cannot bypass this.
+    if (isGiveCoinsCommand) {
+        if (!isOwner(message)) {
+            await createSafeMessage(message.channel, "🔒 This command is restricted to the CURSED bot owner.")
+            return true
+        }
+
+        const target = message.mentions.users.first()
+        const amountText = message.content.trim().split(/\s+/).at(-1)?.replace(/,/g, "") || ""
+
+        if (!target || !/^\d+$/.test(amountText)) {
+            await createSafeMessage(message.channel, "Usage: `!givecoins @user [amount]`\nExample: `!givecoins @user 5000`")
+            return true
+        }
+
+        let amountBigInt
+        try {
+            amountBigInt = BigInt(amountText)
+        } catch {
+            await createSafeMessage(message.channel, "❌ Enter a valid positive whole number.")
+            return true
+        }
+
+        if (amountBigInt <= 0n || amountBigInt > BigInt(Number.MAX_SAFE_INTEGER)) {
+            await createSafeMessage(message.channel, `❌ Amount must be between **1** and **${Number.MAX_SAFE_INTEGER.toLocaleString()}**.`)
+            return true
+        }
+
+        const economy = loadEconomy()
+        const currentBalance = economy[target.id]?.coins || 0
+        if (!Number.isSafeInteger(currentBalance) || currentBalance < 0) {
+            log.error(`Unsafe economy balance detected for user ${target.id}`)
+            await createSafeMessage(message.channel, "❌ That user's balance is invalid. No coins were changed.")
+            return true
+        }
+
+        const amount = Number(amountBigInt)
+        if (amount > Number.MAX_SAFE_INTEGER - currentBalance) {
+            await createSafeMessage(message.channel, "❌ That amount would make the user's balance too large to store safely.")
+            return true
+        }
+
+        const targetName = message.guild?.members?.cache?.get(target.id)?.displayName || target.username
+        const newBalance = addCoins(target.id, targetName, amount)
+
+        await createSafeMessage(message.channel,
+            `✅ Added **${amount.toLocaleString()} 🪙 Cursed Coins** to **${targetName}**.\n` +
+            `New balance: **${newBalance.toLocaleString()} coins**.`)
+        return true
     }
 
     if (!isAdmin(message)) {
