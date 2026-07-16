@@ -9,6 +9,7 @@
     "api:start": "npx tsx api/server.ts",
     "api:dev": "npx tsx --watch api/server.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
+    "test:dashboard-api": "node --test test/dashboard-api.test.js",
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build"
   },
@@ -27,6 +28,8 @@
     "openai": "^6.42.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.21",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0"
   }

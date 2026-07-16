@@ -1,6 +1,7 @@
 const express = require("express")
 const crypto = require("crypto")
 const { getServerConfig } = require("./utils/serverConfig")
+const { createDashboardRouter } = require("./api/dashboard")
 
 let discordClient = null
 
@@ -134,6 +135,7 @@ async function grantPremiumByDiscordId(discordId, platform) {
 function startWebhookServer() {
     const port = Number(process.env.PORT || 3000)
     const app = express()
+    app.set("trust proxy", 1)
 
     // Parse raw body for signature verification before JSON parsing
     app.use(express.json({
@@ -153,6 +155,8 @@ function startWebhookServer() {
         },
         timestamp: new Date().toISOString(),
     }))
+
+    app.use("/api/dashboard", createDashboardRouter(() => discordClient))
 
     // Ko-fi webhook
     // Set your Ko-fi webhook to: https://your-app.railway.app/webhook/kofi
