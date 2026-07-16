@@ -1,7 +1,16 @@
-const express = require("express")
 const crypto = require("crypto")
+const express = require("express")
+const helmet = require("helmet")
+const rateLimit = require("express-rate-limit")
+const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./utils/serverConfig")
 const { createDashboardRouter } = require("./api/dashboard")
+const {
+    auditSecurityEvent,
+    createReplayGuard,
+    createSecretGate,
+    isStrongSecret,
+} = require("./utils/security")
 
 let discordClient = null
 
@@ -9,268 +18,251 @@ function setClient(client) {
     discordClient = client
 }
 
-// ── Discord ID validation ──────────────────────────────────────────────────────
-// Discord snowflake IDs are 17-19 digits and must be >= the Discord epoch
-// (2015-01-01T00:00:00.000Z = snowflake 0, first real IDs ~2015).
-// This rejects phone numbers, credit card numbers, and other numeric strings
-// that happen to be 17-20 digits long.
-const DISCORD_EPOCH_MS = 1420070400000 // 2015-01-01T00:00:00.000Z
+const DISCORD_EPOCH_MS = 1420070400000
 
 function isValidDiscordId(id) {
-    if (!/^\d{17,19}$/.test(id)) return false
-    // Extract timestamp from snowflake: top 42 bits >> 22
-    const timestamp = Number(BigInt(id) >> 22n) + DISCORD_EPOCH_MS
-    const now = Date.now()
-    // Must be after Discord epoch and not in the future (with 5-minute tolerance)
-    return timestamp >= DISCORD_EPOCH_MS && timestamp <= now + 5 * 60 * 1000
+    if (!/^\d{17,19}$/.test(String(id || ""))) return false
+    try {
+        const timestamp = Number(BigInt(id) >> 22n) + DISCORD_EPOCH_MS
+        return timestamp >= DISCORD_EPOCH_MS && timestamp <= Date.now() + 5 * 60 * 1000
+    } catch {
+        return false
+    }
 }
 
-// Extract the first valid Discord snowflake from a text string
 function extractDiscordId(text) {
     const matches = String(text || "").match(/\b(\d{17,19})\b/g) || []
     return matches.find(isValidDiscordId) || null
 }
 
-// ── HMAC-SHA256 signature helpers ─────────────────────────────────────────────
-
-/**
- * Verify a Ko-fi webhook token.
- * Ko-fi sends the verification token as a plain string in the JSON payload
- * (data.verification_token). We compare it to our secret using a
- * timing-safe comparison to prevent timing attacks.
- */
-function verifyKofiToken(token) {
-    const secret = process.env.KOFI_WEBHOOK_SECRET
-    if (!secret) {
-        console.warn("⚠️  KOFI_WEBHOOK_SECRET not set — skipping Ko-fi signature verification")
-        return true // degrade gracefully if secret not configured
-    }
-    if (!token) return false
-    // Use timingSafeEqual to prevent timing attacks
-    try {
-        const a = Buffer.from(String(token))
-        const b = Buffer.from(String(secret))
-        if (a.length !== b.length) return false
-        return crypto.timingSafeEqual(a, b)
-    } catch {
-        return false
-    }
+function safeEqual(left, right) {
+    const a = Buffer.from(String(left || ""))
+    const b = Buffer.from(String(right || ""))
+    return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b)
 }
 
-/**
- * Verify a Patreon webhook signature.
- * Patreon signs the raw body with HMAC-MD5 and sends it in X-Patreon-Signature.
- */
+function verifyKofiToken(token) {
+    return isStrongSecret(process.env.KOFI_WEBHOOK_SECRET) && safeEqual(token, process.env.KOFI_WEBHOOK_SECRET)
+}
+
 function verifyPatreonSignature(rawBody, signature) {
     const secret = process.env.PATREON_WEBHOOK_SECRET
-    if (!secret) {
-        console.warn("⚠️  PATREON_WEBHOOK_SECRET not set — skipping Patreon signature verification")
-        return true
-    }
-    if (!signature || !rawBody) return false
+    if (!isStrongSecret(secret) || !signature || !rawBody) return false
     try {
         const expected = crypto.createHmac("md5", secret).update(rawBody).digest("hex")
-        return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+        return safeEqual(signature, expected)
     } catch {
         return false
     }
 }
 
-/**
- * Verify a Buy Me a Coffee webhook signature.
- * BMC sends an HMAC-SHA256 signature in the X-BMC-Signature header.
- */
 function verifyBmcSignature(rawBody, signature) {
     const secret = process.env.BMC_WEBHOOK_SECRET
-    if (!secret) {
-        console.warn("⚠️  BMC_WEBHOOK_SECRET not set — skipping BMC signature verification")
-        return true
-    }
-    if (!signature || !rawBody) return false
+    if (!isStrongSecret(secret) || !signature || !rawBody) return false
     try {
         const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex")
-        // BMC may prefix with "sha256="
-        const sig = signature.startsWith("sha256=") ? signature.slice(7) : signature
-        return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
+        const provided = String(signature).startsWith("sha256=") ? String(signature).slice(7) : String(signature)
+        return safeEqual(provided, expected)
     } catch {
         return false
     }
 }
 
 async function grantPremiumByDiscordId(discordId, platform) {
-    if (!discordClient) return false
-
-    // Validate the Discord ID before attempting any API calls
-    if (!isValidDiscordId(discordId)) {
-        console.warn(`⚠️  Rejected invalid Discord ID "${discordId}" from ${platform}`)
-        return false
-    }
+    if (!discordClient?.isReady?.() || !isValidDiscordId(discordId)) return false
 
     let granted = false
-
     for (const [guildId, guild] of discordClient.guilds.cache) {
         const { config } = getServerConfig(guildId)
         if (!config.premiumRoleId) continue
 
         try {
+            const botMember = guild.members.me
+            const role = guild.roles.cache.get(config.premiumRoleId)
+            if (!botMember || !role || role.managed) continue
+            if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) continue
+            if (role.position >= botMember.roles.highest.position) continue
+
             const member = await guild.members.fetch(discordId).catch(() => null)
             if (!member) continue
 
-            await member.roles.add(config.premiumRoleId)
+            await member.roles.add(role, `Verified ${platform} supporter webhook`)
             granted = true
-            console.log(`✅ Premium granted to ${discordId} via ${platform} in guild: ${guild.name}`)
+            auditSecurityEvent("premium_role_granted", {
+                platform,
+                guildId,
+                userId: discordId,
+                roleId: role.id,
+            })
 
             const user = await discordClient.users.fetch(discordId).catch(() => null)
             if (user) {
-                await user.send(`💎 Thanks for supporting on **${platform}**! Your **Premium** role has been automatically granted in **${guild.name}**. 🎉`).catch(() => {})
+                await user.send(
+                    `💎 Thanks for supporting on **${platform}**! Your **Premium** role has been granted in **${guild.name}**. 🎉`
+                ).catch(() => {})
             }
         } catch (err) {
-            console.error(`Failed to grant premium to ${discordId} in ${guild.name}:`, err.message)
+            auditSecurityEvent("premium_role_grant_failed", {
+                platform,
+                guildId,
+                userId: discordId,
+                message: err?.message || "Unknown error",
+            }, "error")
         }
     }
-
     return granted
+}
+
+function captureRawBody(req, _res, buffer) {
+    req.rawBody = Buffer.from(buffer)
+}
+
+function webhookLimiter() {
+    return rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max: 60,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: { error: "Too many webhook requests.", code: "RATE_LIMITED" },
+    })
 }
 
 function startWebhookServer() {
     const port = Number(process.env.PORT || 3000)
     const app = express()
     app.set("trust proxy", 1)
-
-    // Parse raw body for signature verification before JSON parsing
-    app.use(express.json({
-        verify: (req, _res, buf) => { req.rawBody = buf }
+    app.disable("x-powered-by")
+    app.use(helmet({ crossOriginResourcePolicy: false }))
+    app.use(rateLimit({
+        windowMs: 60 * 1000,
+        max: 300,
+        standardHeaders: true,
+        legacyHeaders: false,
+        skip: req => req.path === "/health",
+        message: { error: "Too many requests.", code: "RATE_LIMITED" },
     }))
-    app.use(express.urlencoded({ extended: true }))
+    app.use(express.json({ limit: "100kb", verify: captureRawBody }))
+    app.use(express.urlencoded({ extended: true, limit: "100kb", verify: captureRawBody }))
 
-    app.get("/", (req, res) => res.send("👹 CURSED Bot is alive!"))
-    app.get("/health", (req, res) => res.json({
-        status: "ok",
-        bot: discordClient?.isReady() ?? false,
-        guilds: discordClient?.guilds.cache.size ?? 0,
-        uptime: Math.floor(process.uptime()),
-        memory: {
-            heapUsed: process.memoryUsage().heapUsed,
-            heapTotal: process.memoryUsage().heapTotal,
-        },
-        timestamp: new Date().toISOString(),
-    }))
+    app.get("/", (_req, res) => res.send("👹 CURSED Bot is alive!"))
+    app.get("/health", (_req, res) => res.status(200).json({ status: "ok" }))
 
-    app.use("/api/dashboard", createDashboardRouter(() => discordClient))
+    app.use("/api/dashboard", (req, res, next) => {
+        if (!isStrongSecret(process.env.DASHBOARD_API_SECRET, 32)) {
+            return res.status(503).json({
+                error: "Dashboard API is not securely configured.",
+                code: "API_NOT_CONFIGURED",
+            })
+        }
+        if (["PUT", "PATCH", "POST", "DELETE"].includes(req.method)) {
+            res.once("finish", () => auditSecurityEvent("dashboard_write", {
+                method: req.method,
+                path: req.originalUrl,
+                status: res.statusCode,
+            }))
+        }
+        next()
+    }, createDashboardRouter(() => discordClient))
 
-    // Ko-fi webhook
-    // Set your Ko-fi webhook to: https://your-app.railway.app/webhook/kofi
-    // Users must include their Discord ID in the donation message.
-    // Set KOFI_WEBHOOK_SECRET to your Ko-fi verification token.
-    app.post("/webhook/kofi", async (req, res) => {
-        try {
-            const raw = req.body?.data
-            if (!raw) return res.status(400).send("No data")
-            const data = typeof raw === "string" ? JSON.parse(raw) : raw
-
-            // Verify Ko-fi verification token
-            if (!verifyKofiToken(data.verification_token)) {
-                console.warn("⚠️  Ko-fi webhook rejected: invalid verification token")
-                return res.status(401).send("Unauthorized")
-            }
-
-            console.log(`☕ Ko-fi donation from ${data.from_name} (${data.type})`)
-
-            // Look for a valid Discord snowflake ID in the message
-            const searchText = (data.message || "") + " " + (data.from_name || "")
-            const discordId = extractDiscordId(searchText)
-
-            if (discordId) {
-                const granted = await grantPremiumByDiscordId(discordId, "Ko-fi")
-                if (granted) {
-                    console.log(`✅ Auto-granted premium for Discord ID ${discordId}`)
-                } else {
-                    console.log(`⚠️ Could not find Discord user ${discordId} in any guild`)
+    app.post("/webhook/kofi",
+        webhookLimiter(),
+        createSecretGate("KOFI_WEBHOOK_SECRET", "Ko-fi"),
+        createReplayGuard("kofi"),
+        async (req, res) => {
+            try {
+                const raw = req.body?.data
+                if (!raw) return res.status(400).send("No data")
+                const data = typeof raw === "string" ? JSON.parse(raw) : raw
+                if (!verifyKofiToken(data.verification_token)) {
+                    auditSecurityEvent("webhook_rejected", { provider: "Ko-fi", reason: "invalid_token" }, "warn")
+                    return res.status(401).send("Unauthorized")
                 }
-            } else {
-                console.log("⚠️ Ko-fi donation received but no valid Discord ID found in message. Manual grant needed.")
-            }
 
-            res.status(200).send("OK")
-        } catch (err) {
-            console.error("Ko-fi webhook error: request failed")
-            res.status(500).send("Error")
+                const discordId = extractDiscordId(`${data.message || ""} ${data.from_name || ""}`)
+                if (discordId) await grantPremiumByDiscordId(discordId, "Ko-fi")
+                res.status(200).send("OK")
+            } catch {
+                auditSecurityEvent("webhook_processing_failed", { provider: "Ko-fi" }, "error")
+                res.status(500).send("Error")
+            }
         }
-    })
+    )
 
-    // Patreon webhook
-    // Set your Patreon webhook to: https://your-app.railway.app/webhook/patreon
-    // Set PATREON_WEBHOOK_SECRET to your Patreon webhook secret.
-    app.post("/webhook/patreon", async (req, res) => {
-        try {
-            // Verify Patreon HMAC-MD5 signature
-            const signature = req.headers["x-patreon-signature"]
-            if (!verifyPatreonSignature(req.rawBody, signature)) {
-                console.warn("⚠️  Patreon webhook rejected: invalid signature")
-                return res.status(401).send("Unauthorized")
-            }
-
-            const event = req.headers["x-patreon-event"]
-            const body = req.body
-            console.log(`🎨 Patreon webhook event: ${event}`)
-
-            if (["members:pledge:create", "members:create"].includes(event)) {
-                const rawDiscordId = body?.included?.find(i => i.type === "user")
-                    ?.attributes?.social_connections?.discord?.user_id
-                    || body?.data?.relationships?.user?.data?.id
-
-                if (rawDiscordId && isValidDiscordId(String(rawDiscordId))) {
-                    await grantPremiumByDiscordId(String(rawDiscordId), "Patreon")
-                } else {
-                    console.log("⚠️ Patreon webhook: no valid Discord ID found. User may need to connect Discord on Patreon.")
+    app.post("/webhook/patreon",
+        webhookLimiter(),
+        createSecretGate("PATREON_WEBHOOK_SECRET", "Patreon"),
+        createReplayGuard("patreon"),
+        async (req, res) => {
+            try {
+                const signature = req.get("x-patreon-signature")
+                if (!verifyPatreonSignature(req.rawBody, signature)) {
+                    auditSecurityEvent("webhook_rejected", { provider: "Patreon", reason: "invalid_signature" }, "warn")
+                    return res.status(401).send("Unauthorized")
                 }
-            }
 
-            res.status(200).send("OK")
-        } catch (err) {
-            console.error("Patreon webhook error: request failed")
-            res.status(500).send("Error")
+                const event = req.get("x-patreon-event")
+                if (["members:pledge:create", "members:create"].includes(event)) {
+                    const rawDiscordId = req.body?.included?.find(item => item.type === "user")
+                        ?.attributes?.social_connections?.discord?.user_id
+                    if (rawDiscordId && isValidDiscordId(rawDiscordId)) {
+                        await grantPremiumByDiscordId(String(rawDiscordId), "Patreon")
+                    }
+                }
+                res.status(200).send("OK")
+            } catch {
+                auditSecurityEvent("webhook_processing_failed", { provider: "Patreon" }, "error")
+                res.status(500).send("Error")
+            }
         }
-    })
+    )
 
-    // Buy Me a Coffee webhook
-    // Set BMC_WEBHOOK_SECRET to your BMC webhook secret.
-    app.post("/webhook/bmc", async (req, res) => {
-        try {
-            // Verify BMC HMAC-SHA256 signature
-            const signature = req.headers["x-bmc-signature"]
-            if (!verifyBmcSignature(req.rawBody, signature)) {
-                console.warn("⚠️  BMC webhook rejected: invalid signature")
-                return res.status(401).send("Unauthorized")
+    app.post("/webhook/bmc",
+        webhookLimiter(),
+        createSecretGate("BMC_WEBHOOK_SECRET", "Buy Me a Coffee"),
+        createReplayGuard("bmc"),
+        async (req, res) => {
+            try {
+                const signature = req.get("x-bmc-signature")
+                if (!verifyBmcSignature(req.rawBody, signature)) {
+                    auditSecurityEvent("webhook_rejected", { provider: "Buy Me a Coffee", reason: "invalid_signature" }, "warn")
+                    return res.status(401).send("Unauthorized")
+                }
+
+                const discordId = extractDiscordId(`${req.body?.support_note || ""} ${req.body?.supporter_name || ""}`)
+                if (discordId) await grantPremiumByDiscordId(discordId, "Buy Me a Coffee")
+                res.status(200).send("OK")
+            } catch {
+                auditSecurityEvent("webhook_processing_failed", { provider: "Buy Me a Coffee" }, "error")
+                res.status(500).send("Error")
             }
-
-            const data = req.body
-            console.log(`☕ Buy Me a Coffee webhook from ${data?.supporter_name}`)
-
-            const searchText = (data?.support_note || "") + " " + (data?.supporter_name || "")
-            const discordId = extractDiscordId(searchText)
-            if (discordId) {
-                await grantPremiumByDiscordId(discordId, "Buy Me a Coffee")
-            } else {
-                console.log("⚠️ BMC donation received but no valid Discord ID in note.")
-            }
-
-            res.status(200).send("OK")
-        } catch (err) {
-            console.error("BMC webhook error: request failed")
-            res.status(500).send("Error")
         }
+    )
+
+    app.use((err, _req, res, _next) => {
+        if (err?.type === "entity.too.large") {
+            return res.status(413).json({ error: "Request body too large.", code: "PAYLOAD_TOO_LARGE" })
+        }
+        auditSecurityEvent("http_request_failed", { message: err?.message || "Unknown error" }, "error")
+        res.status(500).json({ error: "Internal server error.", code: "INTERNAL_ERROR" })
     })
 
     app.listen(port, "0.0.0.0", () => {
-        console.log(`\n🌐 Webhook server running on port ${port}`)
-        console.log(`   Ko-fi:   POST /webhook/kofi`)
-        console.log(`   Patreon: POST /webhook/patreon`)
-        console.log(`   BMC:     POST /webhook/bmc`)
-        console.log(`   Health:  GET  /health\n`)
+        console.log(`\n🌐 CURSED server running on port ${port}`)
+        console.log("   Health:    GET  /health")
+        console.log("   Dashboard: /api/dashboard/*")
+        console.log("   Payments:  POST /webhook/kofi | /webhook/patreon | /webhook/bmc\n")
     })
 
     return app
 }
 
-module.exports = { startWebhookServer, setClient, grantPremiumByDiscordId }
+module.exports = {
+    startWebhookServer,
+    setClient,
+    grantPremiumByDiscordId,
+    isValidDiscordId,
+    extractDiscordId,
+    verifyKofiToken,
+    verifyPatreonSignature,
+    verifyBmcSignature,
+}
