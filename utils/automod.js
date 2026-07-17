@@ -10,6 +10,7 @@ const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./serverConfig")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
+const { handleLevelingMessage } = require("./leveling")
 const premiumCmd = require("../commands/premium")
 
 // Regex patterns — pre-compiled outside functions to avoid repeated compilation.
@@ -26,6 +27,12 @@ const CHANNEL_CONTROL_COMMANDS = new Set([
     "!channels",
     "!allchannels",
 ])
+
+function queueLeveling(message) {
+    handleLevelingMessage(message).catch(err => {
+        console.error("Leveling message processing error:", err.message)
+    })
+}
 
 /**
  * Check whether the bot has permission to manage messages in this channel.
@@ -64,8 +71,12 @@ async function runAutoMod(message) {
     const guildId = guild.id
     const userId  = author.id
 
-    // Moderators (ManageMessages) are exempt from auto-mod
-    if (member?.permissions.has(PermissionFlagsBits.ManageMessages)) return false
+    // Moderators are exempt from auto-mod, but their normal messages may still
+    // earn leveling XP under the same cooldown and anti-spam rules as everyone.
+    if (member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+        queueLeveling(message)
+        return false
+    }
 
     const { config } = getServerConfig(guildId)
 
@@ -92,7 +103,7 @@ async function runAutoMod(message) {
         }
     }
 
-    // ── Anti-link ──────────────────────────────────────────────────────────────
+    // ── Anti-link ─────────────────────────────────────────────────────────────
     if (config.antiLink) {
         const whitelist = config.linkWhitelist || []
         LINK_REGEX.lastIndex = 0 // reset global regex state before each use
@@ -127,7 +138,7 @@ async function runAutoMod(message) {
         }
     }
 
-    // ── Anti-spam ──────────────────────────────────────────────────────────────
+    // ── Anti-spam ─────────────────────────────────────────────────────────────
     if (config.antiSpam) {
         // If already muted by anti-spam, delete the message silently
         if (isMuted(guildId, userId)) {
@@ -179,6 +190,9 @@ async function runAutoMod(message) {
         }
     }
 
+    // The message passed auto-moderation. Leveling runs here so blocked messages
+    // never earn XP and CURSED's separate AI channel allow-list remains untouched.
+    queueLeveling(message)
     return false
 }
 

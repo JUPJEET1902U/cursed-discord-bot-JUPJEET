@@ -58,10 +58,14 @@ function addXP(userId, name, amount) {
     const { data, user } = getUser(userId, name)
     user.xp += amount
     const newLevel = calcLevel(user.xp)
-    const leveledUp = newLevel > user.level
+    const legacyLeveledUp = newLevel > user.level
     user.level = newLevel
     saveEconomy(data)
-    return { leveledUp, newLevel }
+
+    // The MongoDB server-leveling system now owns visible level-up announcements.
+    // Keep legacy economy XP and level values intact for battles, quests, boosts,
+    // and backward compatibility, but suppress the old same-channel notification.
+    return { leveledUp: false, legacyLeveledUp, newLevel }
 }
 
 function addCoins(userId, name, amount) {
