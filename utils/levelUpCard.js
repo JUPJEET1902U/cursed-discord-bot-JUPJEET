@@ -3,9 +3,8 @@ const { createCanvas, loadImage } = require("@napi-rs/canvas")
 const WIDTH = 760
 const HEIGHT = 240
 
-// Compact built-in glyph map. The renderer connects these points with rounded,
-// anti-aliased strokes, producing smooth neon-style lettering without relying
-// on Railway/Linux fonts or shipping a font file.
+// Built-in vector glyphs keep card text reliable on Railway without relying on
+// system fonts. The strokes are rounded and anti-aliased by canvas.
 const GLYPHS = {
     " ": ["00000","00000","00000","00000","00000","00000","00000"],
     "A": ["01110","10001","10001","11111","10001","10001","10001"],
@@ -99,63 +98,56 @@ async function loadRemoteImage(url) {
         if (!["https:", "http:"].includes(parsed.protocol)) return null
         const response = await fetch(parsed)
         if (!response.ok) return null
-        const buffer = Buffer.from(await response.arrayBuffer())
-        return await loadImage(buffer)
+        return await loadImage(Buffer.from(await response.arrayBuffer()))
     } catch {
         return null
     }
 }
 
-function normalizeSmoothText(value, fallback = "MEMBER") {
+function normalizeText(value, fallback = "MEMBER") {
     const source = String(value || fallback)
         .normalize("NFKD")
         .replace(/[\u0300-\u036f]/g, "")
         .toUpperCase()
 
-    let normalized = ""
+    let result = ""
     for (const char of source) {
-        if (GLYPHS[char]) {
-            normalized += char
-        } else if (/\s/u.test(char) || char.codePointAt(0) > 127) {
-            // Decorative emoji are omitted rather than becoming ugly question marks.
-            normalized += " "
-        } else {
-            normalized += "?"
-        }
+        if (GLYPHS[char]) result += char
+        else if (/\s/u.test(char) || char.codePointAt(0) > 127) result += " "
+        else result += "?"
     }
 
-    return normalized.replace(/\s+/g, " ").trim() || String(fallback || "")
+    return result.replace(/\s+/g, " ").trim() || fallback
 }
 
-function smoothMetrics(height, letterSpacingRatio = 0.22) {
+function textMetrics(height, spacingRatio = 0.16) {
     const stepY = height / 6
     const stepX = stepY * 0.82
-    const stroke = Math.max(1.15, stepY * 0.66)
+    const stroke = Math.max(1.2, stepY * 0.82)
     const glyphWidth = stepX * 4 + stroke
-    const spacing = height * letterSpacingRatio
+    const spacing = height * spacingRatio
     return { stepX, stepY, stroke, glyphWidth, spacing }
 }
 
-function measureSmoothText(text, height, letterSpacingRatio = 0.22) {
-    const value = normalizeSmoothText(text, "")
+function measureText(text, height, spacingRatio = 0.16) {
+    const value = normalizeText(text, "")
     if (!value) return 0
-    const { glyphWidth, spacing } = smoothMetrics(height, letterSpacingRatio)
+    const { glyphWidth, spacing } = textMetrics(height, spacingRatio)
     return value.length * glyphWidth + Math.max(0, value.length - 1) * spacing
 }
 
-function fitSmoothHeight(text, preferredHeight, maxWidth, minHeight = 3, letterSpacingRatio = 0.22) {
-    if (!maxWidth) return preferredHeight
-    const width = measureSmoothText(text, preferredHeight, letterSpacingRatio)
-    if (width <= maxWidth) return preferredHeight
-    return Math.max(minHeight, preferredHeight * (maxWidth / width))
+function fitHeight(text, preferredHeight, maxWidth, minHeight, spacingRatio) {
+    const measured = measureText(text, preferredHeight, spacingRatio)
+    if (!maxWidth || measured <= maxWidth) return preferredHeight
+    return Math.max(minHeight, preferredHeight * (maxWidth / measured))
 }
 
 function hasCell(glyph, row, column) {
     return Boolean(glyph[row]?.[column] === "1")
 }
 
-function drawSmoothGlyph(ctx, glyph, x, y, height, color, options = {}) {
-    const { stepX, stepY, stroke } = smoothMetrics(height, options.letterSpacingRatio)
+function drawGlyph(ctx, glyph, x, y, height, color, options = {}) {
+    const { stepX, stepY, stroke } = textMetrics(height, options.spacingRatio)
     const point = (row, column) => [x + column * stepX + stroke / 2, y + row * stepY + stroke / 2]
 
     ctx.save()
@@ -164,13 +156,12 @@ function drawSmoothGlyph(ctx, glyph, x, y, height, color, options = {}) {
     ctx.lineWidth = stroke
     ctx.lineCap = "round"
     ctx.lineJoin = "round"
-
-    if (options.glowColor && options.glowBlur > 0) {
+    if (options.glowColor && options.glowBlur) {
         ctx.shadowColor = options.glowColor
         ctx.shadowBlur = options.glowBlur
     }
 
-    const drawnNodes = new Set()
+    const connected = new Set()
     const connect = (rowA, colA, rowB, colB) => {
         const [ax, ay] = point(rowA, colA)
         const [bx, by] = point(rowB, colB)
@@ -178,184 +169,113 @@ function drawSmoothGlyph(ctx, glyph, x, y, height, color, options = {}) {
         ctx.moveTo(ax, ay)
         ctx.lineTo(bx, by)
         ctx.stroke()
-        drawnNodes.add(`${rowA}:${colA}`)
-        drawnNodes.add(`${rowB}:${colB}`)
+        connected.add(`${rowA}:${colA}`)
+        connected.add(`${rowB}:${colB}`)
     }
 
     for (let row = 0; row < 7; row++) {
         for (let column = 0; column < 5; column++) {
             if (!hasCell(glyph, row, column)) continue
-
             if (hasCell(glyph, row, column + 1)) connect(row, column, row, column + 1)
             if (hasCell(glyph, row + 1, column)) connect(row, column, row + 1, column)
-
-            // Join diagonal stair-steps only when no orthogonal route exists.
-            if (
-                hasCell(glyph, row + 1, column + 1) &&
-                !hasCell(glyph, row, column + 1) &&
-                !hasCell(glyph, row + 1, column)
-            ) {
+            if (hasCell(glyph, row + 1, column + 1) && !hasCell(glyph, row, column + 1) && !hasCell(glyph, row + 1, column)) {
                 connect(row, column, row + 1, column + 1)
             }
-            if (
-                hasCell(glyph, row + 1, column - 1) &&
-                !hasCell(glyph, row, column - 1) &&
-                !hasCell(glyph, row + 1, column)
-            ) {
+            if (hasCell(glyph, row + 1, column - 1) && !hasCell(glyph, row, column - 1) && !hasCell(glyph, row + 1, column)) {
                 connect(row, column, row + 1, column - 1)
             }
         }
     }
 
-    // Preserve isolated punctuation dots and any intentionally isolated nodes.
     for (let row = 0; row < 7; row++) {
         for (let column = 0; column < 5; column++) {
-            if (!hasCell(glyph, row, column) || drawnNodes.has(`${row}:${column}`)) continue
+            if (!hasCell(glyph, row, column) || connected.has(`${row}:${column}`)) continue
             const [px, py] = point(row, column)
             ctx.beginPath()
             ctx.arc(px, py, stroke / 2, 0, Math.PI * 2)
             ctx.fill()
         }
     }
-
     ctx.restore()
 }
 
-function drawSmoothText(ctx, text, x, y, preferredHeight, options = {}) {
-    const {
-        color = "#FFFFFF",
-        align = "left",
-        maxWidth = null,
-        minHeight = 3,
-        letterSpacingRatio = 0.22,
-        glowColor = null,
-        glowBlur = 0,
-    } = options
-
-    const value = normalizeSmoothText(text)
-    const height = fitSmoothHeight(value, preferredHeight, maxWidth, minHeight, letterSpacingRatio)
-    const { glyphWidth, spacing } = smoothMetrics(height, letterSpacingRatio)
-    const width = measureSmoothText(value, height, letterSpacingRatio)
+function drawText(ctx, text, x, y, preferredHeight, options = {}) {
+    const spacingRatio = options.spacingRatio ?? 0.16
+    const value = normalizeText(text, options.fallback || "MEMBER")
+    const height = fitHeight(value, preferredHeight, options.maxWidth, options.minHeight || 7, spacingRatio)
+    const { glyphWidth, spacing } = textMetrics(height, spacingRatio)
+    const width = measureText(value, height, spacingRatio)
     let cursorX = x
-    if (align === "center") cursorX -= width / 2
-    if (align === "right") cursorX -= width
+    if (options.align === "center") cursorX -= width / 2
+    if (options.align === "right") cursorX -= width
 
     for (const char of value) {
-        drawSmoothGlyph(ctx, GLYPHS[char] || GLYPHS["?"], cursorX, y, height, color, {
-            letterSpacingRatio,
-            glowColor,
-            glowBlur,
+        drawGlyph(ctx, GLYPHS[char] || GLYPHS["?"], cursorX, y, height, options.color || "#FFFFFF", {
+            spacingRatio,
+            glowColor: options.glowColor,
+            glowBlur: options.glowBlur,
         })
         cursorX += glyphWidth + spacing
     }
-
-    return { width, height, text: value }
+    return { value, width, height }
 }
 
-function splitBalanced(text, lineCount) {
-    const value = normalizeSmoothText(text)
-    if (lineCount <= 1 || value.length <= 1) return [value]
+function splitServerName(value) {
+    const text = normalizeText(value, "DISCORD SERVER")
+    if (text.length <= 44) return [text]
 
-    const words = value.split(" ").filter(Boolean)
-    if (words.length > 1) {
-        const lines = Array.from({ length: lineCount }, () => "")
-        const targetLength = value.length / lineCount
-        let lineIndex = 0
+    const words = text.split(" ").filter(Boolean)
+    if (words.length === 1) {
+        const midpoint = Math.ceil(text.length / 2)
+        return [text.slice(0, midpoint), text.slice(midpoint)]
+    }
 
-        for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
-            const word = words[wordIndex]
-            const candidate = lines[lineIndex] ? `${lines[lineIndex]} ${word}` : word
-            const wordsRemaining = words.length - wordIndex - 1
-            const linesRemaining = lineCount - lineIndex - 1
-
-            if (lines[lineIndex] && candidate.length > targetLength && wordsRemaining >= linesRemaining) {
-                lineIndex = Math.min(lineIndex + 1, lineCount - 1)
-            }
-            lines[lineIndex] = lines[lineIndex] ? `${lines[lineIndex]} ${word}` : word
+    let first = ""
+    let second = ""
+    for (const word of words) {
+        if (!first || (first.length <= second.length && `${first} ${word}`.length <= 52)) {
+            first = first ? `${first} ${word}` : word
+        } else {
+            second = second ? `${second} ${word}` : word
         }
-        return lines.filter(Boolean)
     }
-
-    const lines = []
-    let start = 0
-    for (let index = 0; index < lineCount; index++) {
-        const remaining = value.length - start
-        const slots = lineCount - index
-        const take = Math.ceil(remaining / slots)
-        lines.push(value.slice(start, start + take))
-        start += take
-    }
-    return lines.filter(Boolean)
+    return second ? [first, second] : [first]
 }
 
-function fitWrappedSmoothText(text, maxWidth, maxHeight, options = {}) {
-    const {
-        preferredHeight = 11,
-        maxLines = 3,
-        minHeight = 3,
-        lineGapRatio = 0.28,
-        letterSpacingRatio = 0.16,
-    } = options
+function drawServerFooter(ctx, guildName) {
+    const footerX = 225
+    const footerY = 174
+    const footerWidth = 484
+    const footerHeight = 38
 
-    let best = null
-    for (let lineCount = 1; lineCount <= maxLines; lineCount++) {
-        const lines = splitBalanced(text, lineCount)
-        const maxHeightPerLine = maxHeight / (lines.length + lineGapRatio * Math.max(0, lines.length - 1))
-        let height = Math.min(preferredHeight, maxHeightPerLine)
+    ctx.fillStyle = "rgba(7, 3, 16, 0.46)"
+    roundRect(ctx, footerX, footerY, footerWidth, footerHeight, 13)
+    ctx.fill()
 
-        for (const line of lines) {
-            height = Math.min(height, fitSmoothHeight(line, height, maxWidth, minHeight, letterSpacingRatio))
-        }
+    ctx.fillStyle = "rgba(168, 85, 247, 0.55)"
+    roundRect(ctx, footerX, footerY, 5, footerHeight, 3)
+    ctx.fill()
 
-        const gap = height * lineGapRatio
-        const totalHeight = lines.length * height + Math.max(0, lines.length - 1) * gap
-        const fits = totalHeight <= maxHeight + 0.5 &&
-            lines.every(line => measureSmoothText(line, height, letterSpacingRatio) <= maxWidth + 0.5)
+    const lines = splitServerName(guildName)
+    const preferredHeight = lines.length === 1 ? 14 : 10
+    const minHeight = lines.length === 1 ? 9 : 7
+    const gap = lines.length === 1 ? 0 : 3
+    const heights = lines.map(line => fitHeight(line, preferredHeight, 452, minHeight, 0.12))
+    const totalHeight = heights.reduce((sum, height) => sum + height, 0) + gap * Math.max(0, lines.length - 1)
+    let y = footerY + (footerHeight - totalHeight) / 2
 
-        if (!fits) continue
-        const score = height - (lines.length - 1) * 0.06
-        if (!best || score > best.score) {
-            best = { lines, height, gap, totalHeight, score, letterSpacingRatio }
-        }
-    }
-
-    if (best) return best
-
-    // Discord guild names are bounded, but this final fallback still preserves
-    // every character by shrinking rather than adding an ellipsis.
-    const lines = splitBalanced(text, maxLines)
-    let height = minHeight
-    while (height > 2.2 && lines.some(line => measureSmoothText(line, height, letterSpacingRatio) > maxWidth)) {
-        height -= 0.2
-    }
-    const gap = height * lineGapRatio
-    return {
-        lines,
-        height,
-        gap,
-        totalHeight: lines.length * height + Math.max(0, lines.length - 1) * gap,
-        score: height,
-        letterSpacingRatio,
-    }
-}
-
-function drawWrappedSmoothText(ctx, text, centerX, topY, maxWidth, maxHeight, options = {}) {
-    const layout = fitWrappedSmoothText(text, maxWidth, maxHeight, options)
-    const startY = topY + Math.max(0, (maxHeight - layout.totalHeight) / 2)
-
-    layout.lines.forEach((line, index) => {
-        drawSmoothText(ctx, line, centerX, startY + index * (layout.height + layout.gap), layout.height, {
-            color: options.color || "#FFFFFF",
+    lines.forEach((line, index) => {
+        drawText(ctx, line, footerX + footerWidth / 2 + 2, y, heights[index], {
+            color: "#DDD6FE",
             align: "center",
-            maxWidth,
-            minHeight: 2.2,
-            letterSpacingRatio: layout.letterSpacingRatio,
-            glowColor: options.glowColor || null,
-            glowBlur: options.glowBlur || 0,
+            maxWidth: 452,
+            minHeight,
+            spacingRatio: 0.12,
+            glowColor: "rgba(168,85,247,0.32)",
+            glowBlur: 3,
         })
+        y += heights[index] + gap
     })
-
-    return layout
 }
 
 async function generateLevelUpCard({ user, displayName, guildName, oldLevel, newLevel }) {
@@ -375,7 +295,7 @@ async function generateLevelUpCard({ user, displayName, guildName, oldLevel, new
     glow.addColorStop(0, "#D946EF")
     glow.addColorStop(1, "rgba(217, 70, 239, 0)")
     ctx.fillStyle = glow
-    ctx.fillRect(350, 0, 410, 240)
+    ctx.fillRect(350, 0, 410, HEIGHT)
     ctx.restore()
 
     ctx.fillStyle = "rgba(255,255,255,0.075)"
@@ -410,7 +330,7 @@ async function generateLevelUpCard({ user, displayName, guildName, oldLevel, new
     } else {
         ctx.fillStyle = "#252033"
         ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize)
-        drawSmoothText(ctx, "?", avatarX + avatarSize / 2, avatarY + 48, 58, {
+        drawText(ctx, "?", avatarX + avatarSize / 2, avatarY + 50, 58, {
             color: "#D8B4FE",
             align: "center",
             glowColor: "rgba(168,85,247,0.65)",
@@ -419,61 +339,54 @@ async function generateLevelUpCard({ user, displayName, guildName, oldLevel, new
     }
     ctx.restore()
 
-    drawSmoothText(ctx, "CURSED LEVELING", 235, 29, 17, {
+    drawText(ctx, "CURSED LEVELING", 235, 29, 17, {
         color: "#F5D0FE",
         maxWidth: 285,
-        minHeight: 10,
-        letterSpacingRatio: 0.18,
+        minHeight: 11,
+        spacingRatio: 0.14,
         glowColor: "rgba(168,85,247,0.42)",
         glowBlur: 5,
     })
 
-    drawSmoothText(ctx, "LEVEL-UP!", 235, 64, 36, {
+    drawText(ctx, "LEVEL-UP!", 235, 63, 36, {
         color: "#FFFFFF",
         maxWidth: 285,
-        minHeight: 23,
-        letterSpacingRatio: 0.18,
+        minHeight: 24,
+        spacingRatio: 0.14,
         glowColor: "rgba(168,85,247,0.80)",
         glowBlur: 10,
     })
 
-    drawSmoothText(ctx, displayName || user?.username || "Member", 235, 124, 23, {
+    drawText(ctx, displayName || user?.username || "Member", 235, 121, 23, {
         color: "#E9D5FF",
         maxWidth: 285,
-        minHeight: 10,
-        letterSpacingRatio: 0.16,
+        minHeight: 11,
+        spacingRatio: 0.13,
     })
 
     ctx.fillStyle = "rgba(255,255,255,0.10)"
-    roundRect(ctx, 535, 53, 174, 128, 22)
+    roundRect(ctx, 535, 52, 174, 112, 22)
     ctx.fill()
 
-    drawSmoothText(ctx, "LEVEL", 622, 65, 14, {
+    drawText(ctx, "LEVEL", 622, 65, 14, {
         color: "#D8B4FE",
         align: "center",
         maxWidth: 142,
-        minHeight: 9,
-        letterSpacingRatio: 0.16,
+        minHeight: 10,
+        spacingRatio: 0.13,
     })
 
-    drawSmoothText(ctx, `${oldLevel} • ${newLevel}`, 622, 98, 31, {
+    drawText(ctx, `${oldLevel} • ${newLevel}`, 622, 101, 31, {
         color: "#FFFFFF",
         align: "center",
         maxWidth: 150,
-        minHeight: 15,
-        letterSpacingRatio: 0.18,
+        minHeight: 17,
+        spacingRatio: 0.15,
         glowColor: "rgba(168,85,247,0.55)",
         glowBlur: 6,
     })
 
-    drawWrappedSmoothText(ctx, guildName || "Discord Server", 622, 142, 150, 33, {
-        color: "#C4B5FD",
-        preferredHeight: 11,
-        maxLines: 3,
-        minHeight: 3,
-        lineGapRatio: 0.26,
-        letterSpacingRatio: 0.13,
-    })
+    drawServerFooter(ctx, guildName || "Discord Server")
 
     return canvas.toBuffer("image/png")
 }
