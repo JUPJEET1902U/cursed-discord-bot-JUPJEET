@@ -12,42 +12,24 @@ const {
     normalizeControlConfig,
 } = require("../utils/dashboardControl")
 const {
+    LevelingConfig,
     LevelingMember,
     getLevelingConfig,
-    updateLevelingConfig,
+    clearGuildLevelingCache,
 } = require("../utils/leveling")
 
 const SNOWFLAKE = /^\d{17,20}$/
 const CONTROL_KEYS = new Set([
-    "channelRestrictionEnabled",
-    "allowedChannels",
-    "aiEnabled",
-    "aiMaxTokens",
-    "aiRateLimit",
-    "aiRateWindowSeconds",
-    "aiMemoryEnabled",
-    "aiLongTermMemoryEnabled",
-    "aiCustomPrompt",
-    "legacyEconomyXpEnabled",
-    "moderationCommandsEnabled",
-    "disabledModules",
-    "disabledCommands",
-    "antiSpam",
-    "antiLink",
-    "antiInvite",
-    "linkWhitelist",
-    "modLogChannelId",
-    "premiumRoleId",
-    "paymentLinks",
+    "channelRestrictionEnabled", "allowedChannels", "aiEnabled", "aiMaxTokens",
+    "aiRateLimit", "aiRateWindowSeconds", "aiMemoryEnabled",
+    "aiLongTermMemoryEnabled", "aiCustomPrompt", "legacyEconomyXpEnabled",
+    "moderationCommandsEnabled", "disabledModules", "disabledCommands",
+    "antiSpam", "antiLink", "antiInvite", "linkWhitelist", "modLogChannelId",
+    "premiumRoleId", "paymentLinks",
 ])
 const LEVELING_KEYS = new Set([
-    "enabled",
-    "levelUpChannelId",
-    "ignoredChannelIds",
-    "xpMin",
-    "xpMax",
-    "cooldownSeconds",
-    "announceLevelUps",
+    "enabled", "levelUpChannelId", "ignoredChannelIds", "xpMin", "xpMax",
+    "cooldownSeconds", "announceLevelUps",
 ])
 
 function safeEqual(left, right) {
@@ -59,17 +41,26 @@ function safeEqual(left, right) {
 function dashboardAuth(req, res, next) {
     const secret = process.env.DASHBOARD_API_SECRET
     if (!secret) {
-        return res.status(503).json({
-            error: "Dashboard API is not configured.",
-            code: "API_NOT_CONFIGURED",
-        })
+        return res.status(503).json({ error: "Dashboard API is not configured.", code: "API_NOT_CONFIGURED" })
     }
     const authorization = req.get("authorization") || ""
-    const provided = authorization.startsWith("Bearer ")
-        ? authorization.slice("Bearer ".length)
-        : ""
+    const provided = authorization.startsWith("Bearer ") ? authorization.slice(7) : ""
     if (!safeEqual(provided, secret)) {
         return res.status(401).json({ error: "Unauthorized.", code: "UNAUTHORIZED" })
+    }
+    next()
+}
+
+function dashboardHeaders(req, res, next) {
+    res.set("Cache-Control", "no-store")
+    const origin = req.get("origin")
+    const dashboardUrl = process.env.DASHBOARD_URL
+    if (origin && (!dashboardUrl || origin !== dashboardUrl)) {
+        return res.status(403).json({ error: "Origin is not allowed.", code: "ORIGIN_DENIED" })
+    }
+    if (origin && origin === dashboardUrl) {
+        res.set("Access-Control-Allow-Origin", origin)
+        res.set("Vary", "Origin")
     }
     next()
 }
@@ -86,13 +77,10 @@ function getGuildOrResponse(getClient, guildId, res) {
     }
     const guild = client.guilds.cache.get(guildId)
     if (!guild) {
-        res.status(404).json({
-            error: "CURSED is not added to this server.",
-            code: "BOT_NOT_IN_GUILD",
-        })
+        res.status(404).json({ error: "CURSED is not added to this server.", code: "BOT_NOT_IN_GUILD" })
         return null
     }
-    return { client, guild }
+    return guild
 }
 
 function isRecord(value) {
@@ -174,6 +162,35 @@ async function getLevelingStats(guildId) {
     }
 }
 
+async function saveLevelingConfig(guildId, requested) {
+    if (mongoose.connection.readyState !== 1) {
+        const error = new Error("MongoDB is unavailable")
+        error.code = "MONGO_UNAVAILABLE"
+        throw error
+    }
+    const current = await getLevelingConfig(guildId, { fresh: true })
+    const doc = await LevelingConfig.findOneAndUpdate(
+        { guildId: String(guildId) },
+        {
+            $set: {
+                enabled: requested.enabled,
+                levelUpChannelId: requested.levelUpChannelId,
+                ignoredChannelIds: [...new Set(requested.ignoredChannelIds.map(String))],
+                xpMin: requested.xpMin,
+                xpMax: requested.xpMax,
+                cooldownSeconds: requested.cooldownSeconds,
+                announceLevelUps: requested.announceLevelUps,
+                trackingStartedAt: requested.enabled
+                    ? (current.trackingStartedAt || new Date())
+                    : current.trackingStartedAt,
+            },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).lean()
+    clearGuildLevelingCache(guildId)
+    return getLevelingConfig(guildId, { fresh: true }).then(config => config || doc)
+}
+
 function validateUrl(value) {
     if (value === null || value === undefined || value === "") return true
     try {
@@ -225,53 +242,37 @@ function validatePayload(body, channelIds, roleIds) {
         errors["config.modLogChannelId"] = ["Choose a channel from this server."]
     }
     if (config.premiumRoleId !== null && !roleIds.has(String(config.premiumRoleId))) {
-        errors["config.premiumRoleId"] = ["Choose a role from this server."]
+        errors["config.premiumRoleId"] = ["Choose a role CURSED can assign."]
     }
 
     const aiMaxTokens = Number(config.aiMaxTokens)
     const aiRateLimit = Number(config.aiRateLimit)
     const aiRateWindowSeconds = Number(config.aiRateWindowSeconds)
-    if (!Number.isInteger(aiMaxTokens) || aiMaxTokens < 100 || aiMaxTokens > 1500) {
-        errors["config.aiMaxTokens"] = ["Use a value from 100 to 1500."]
-    }
-    if (!Number.isInteger(aiRateLimit) || aiRateLimit < 1 || aiRateLimit > 30) {
-        errors["config.aiRateLimit"] = ["Use a value from 1 to 30."]
-    }
-    if (!Number.isInteger(aiRateWindowSeconds) || aiRateWindowSeconds < 10 || aiRateWindowSeconds > 600) {
-        errors["config.aiRateWindowSeconds"] = ["Use a value from 10 to 600 seconds."]
-    }
-    if (config.aiCustomPrompt !== null && (typeof config.aiCustomPrompt !== "string" || config.aiCustomPrompt.length > 2000)) {
-        errors["config.aiCustomPrompt"] = ["Use 2000 characters or fewer."]
-    }
+    if (!Number.isInteger(aiMaxTokens) || aiMaxTokens < 100 || aiMaxTokens > 1500) errors["config.aiMaxTokens"] = ["Use 100 to 1500."]
+    if (!Number.isInteger(aiRateLimit) || aiRateLimit < 1 || aiRateLimit > 30) errors["config.aiRateLimit"] = ["Use 1 to 30."]
+    if (!Number.isInteger(aiRateWindowSeconds) || aiRateWindowSeconds < 10 || aiRateWindowSeconds > 600) errors["config.aiRateWindowSeconds"] = ["Use 10 to 600 seconds."]
+    if (config.aiCustomPrompt !== null && (typeof config.aiCustomPrompt !== "string" || config.aiCustomPrompt.length > 2000)) errors["config.aiCustomPrompt"] = ["Use 2000 characters or fewer."]
 
     if (!isRecord(config.paymentLinks)) {
         errors["config.paymentLinks"] = ["Expected payment link fields."]
     } else {
         for (const key of ["kofi", "patreon", "bmc"]) {
-            if (!validateUrl(config.paymentLinks[key])) {
-                errors[`config.paymentLinks.${key}`] = ["Enter a valid http(s) URL or leave it blank."]
-            }
+            if (!validateUrl(config.paymentLinks[key])) errors[`config.paymentLinks.${key}`] = ["Enter a valid http(s) URL or leave it blank."]
         }
     }
 
     if (typeof leveling.enabled !== "boolean") errors["leveling.enabled"] = ["Expected a boolean."]
     if (typeof leveling.announceLevelUps !== "boolean") errors["leveling.announceLevelUps"] = ["Expected a boolean."]
-    if (leveling.levelUpChannelId !== null && !channelIds.has(String(leveling.levelUpChannelId))) {
-        errors["leveling.levelUpChannelId"] = ["Choose a channel from this server."]
-    }
-    if (leveling.enabled && !leveling.levelUpChannelId) {
-        errors["leveling.levelUpChannelId"] = ["Choose a level-up channel before enabling leveling."]
-    }
-    if (!Array.isArray(leveling.ignoredChannelIds) || leveling.ignoredChannelIds.some(id => !channelIds.has(String(id)))) {
-        errors["leveling.ignoredChannelIds"] = ["Choose ignored channels from this server."]
-    }
+    if (leveling.levelUpChannelId !== null && !channelIds.has(String(leveling.levelUpChannelId))) errors["leveling.levelUpChannelId"] = ["Choose a channel from this server."]
+    if (leveling.enabled && !leveling.levelUpChannelId) errors["leveling.levelUpChannelId"] = ["Choose a level-up channel before enabling leveling."]
+    if (!Array.isArray(leveling.ignoredChannelIds) || leveling.ignoredChannelIds.some(id => !channelIds.has(String(id)))) errors["leveling.ignoredChannelIds"] = ["Choose ignored channels from this server."]
+
     const xpMin = Number(leveling.xpMin)
     const xpMax = Number(leveling.xpMax)
     const cooldown = Number(leveling.cooldownSeconds)
     if (!Number.isInteger(xpMin) || xpMin < 1 || xpMin > 1000) errors["leveling.xpMin"] = ["Use 1 to 1000 XP."]
-    if (!Number.isInteger(xpMax) || xpMax < 1 || xpMax > 1000 || xpMax < xpMin) errors["leveling.xpMax"] = ["Maximum XP must be at least the minimum and no more than 1000."]
+    if (!Number.isInteger(xpMax) || xpMax < xpMin || xpMax > 1000) errors["leveling.xpMax"] = ["Maximum XP must be at least the minimum and no more than 1000."]
     if (!Number.isInteger(cooldown) || cooldown < 5 || cooldown > 3600) errors["leveling.cooldownSeconds"] = ["Use 5 to 3600 seconds."]
-
     return errors
 }
 
@@ -286,54 +287,24 @@ function normalizePaymentLinks(paymentLinks) {
 
 function createDashboardControlRouter(getClient) {
     const router = express.Router()
-    const readLimiter = rateLimit({
-        windowMs: 60 * 1000,
-        max: 180,
-        standardHeaders: true,
-        legacyHeaders: false,
-        message: { error: "Too many requests.", code: "RATE_LIMITED" },
-    })
-    const writeLimiter = rateLimit({
-        windowMs: 15 * 60 * 1000,
-        max: 60,
-        standardHeaders: true,
-        legacyHeaders: false,
-        message: { error: "Too many update requests.", code: "RATE_LIMITED" },
-    })
+    const readLimiter = rateLimit({ windowMs: 60 * 1000, max: 180, standardHeaders: true, legacyHeaders: false })
+    const writeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false })
+    const middleware = [dashboardHeaders, readLimiter, dashboardAuth]
 
-    router.use((req, res, next) => {
-        res.set("Cache-Control", "no-store")
-        const origin = req.get("origin")
-        const dashboardUrl = process.env.DASHBOARD_URL
-        if (origin && (!dashboardUrl || origin !== dashboardUrl)) {
-            return res.status(403).json({ error: "Origin is not allowed.", code: "ORIGIN_DENIED" })
-        }
-        if (origin && origin === dashboardUrl) {
-            res.set("Access-Control-Allow-Origin", origin)
-            res.set("Vary", "Origin")
-        }
-        next()
-    })
-    router.use(readLimiter)
-    router.use(dashboardAuth)
-
-    router.get("/guilds/:guildId/control-center", async (req, res, next) => {
+    router.get("/guilds/:guildId/control-center", ...middleware, async (req, res, next) => {
         try {
-            const found = getGuildOrResponse(getClient, req.params.guildId, res)
-            if (!found) return
-            const channels = usableTextChannels(found.guild)
-            const roles = manageableRoles(found.guild)
-            const rawConfig = getGuildConfig(found.guild.id)
-            const leveling = await getLevelingConfig(found.guild.id, { fresh: true })
+            const guild = getGuildOrResponse(getClient, req.params.guildId, res)
+            if (!guild) return
+            const rawConfig = getGuildConfig(guild.id)
+            const leveling = await getLevelingConfig(guild.id, { fresh: true })
             const ai = getAIStatus()
-
             res.json({
                 data: {
                     config: normalizeControlConfig(rawConfig),
                     leveling: publicLevelingConfig(leveling),
-                    levelingStats: await getLevelingStats(found.guild.id),
-                    channels,
-                    roles,
+                    levelingStats: await getLevelingStats(guild.id),
+                    channels: usableTextChannels(guild),
+                    roles: manageableRoles(guild),
                     modules: CONTROL_MODULES,
                     commands: getControlCommands(),
                     aiProviders: {
@@ -348,50 +319,33 @@ function createDashboardControlRouter(getClient) {
         }
     })
 
-    router.put("/guilds/:guildId/control-center", writeLimiter, async (req, res, next) => {
+    router.put("/guilds/:guildId/control-center", dashboardHeaders, writeLimiter, dashboardAuth, async (req, res, next) => {
         try {
-            const found = getGuildOrResponse(getClient, req.params.guildId, res)
-            if (!found) return
-            const channels = usableTextChannels(found.guild)
-            const roles = manageableRoles(found.guild)
+            const guild = getGuildOrResponse(getClient, req.params.guildId, res)
+            if (!guild) return
+            const channels = usableTextChannels(guild)
+            const roles = manageableRoles(guild)
             const channelIds = new Set(channels.map(channel => channel.id))
             const roleIds = new Set(roles.filter(role => role.assignable).map(role => role.id))
-            if (req.body?.config?.premiumRoleId) roleIds.add(String(req.body.config.premiumRoleId))
+            const currentPremiumRoleId = getGuildConfig(guild.id).premiumRoleId
+            if (currentPremiumRoleId) roleIds.add(String(currentPremiumRoleId))
 
             const fieldErrors = validatePayload(req.body, channelIds, roleIds)
             if (Object.keys(fieldErrors).length > 0) {
-                return res.status(422).json({
-                    error: "Control center settings are not valid.",
-                    code: "VALIDATION_ERROR",
-                    fieldErrors,
-                })
+                return res.status(422).json({ error: "Control center settings are not valid.", code: "VALIDATION_ERROR", fieldErrors })
             }
 
             const normalized = normalizeControlConfig({
                 ...req.body.config,
                 paymentLinks: normalizePaymentLinks(req.body.config.paymentLinks),
             })
-            const saved = await updateGuildConfigAndWait(found.guild.id, normalized)
-            const leveling = await updateLevelingConfig(found.guild.id, {
-                $set: {
-                    enabled: req.body.leveling.enabled,
-                    levelUpChannelId: req.body.leveling.levelUpChannelId,
-                    ignoredChannelIds: [...new Set(req.body.leveling.ignoredChannelIds.map(String))],
-                    xpMin: req.body.leveling.xpMin,
-                    xpMax: req.body.leveling.xpMax,
-                    cooldownSeconds: req.body.leveling.cooldownSeconds,
-                    announceLevelUps: req.body.leveling.announceLevelUps,
-                    trackingStartedAt: req.body.leveling.enabled
-                        ? (await getLevelingConfig(found.guild.id, { fresh: true })).trackingStartedAt || new Date()
-                        : (await getLevelingConfig(found.guild.id, { fresh: true })).trackingStartedAt,
-                },
-            })
-
+            const saved = await updateGuildConfigAndWait(guild.id, normalized)
+            const leveling = await saveLevelingConfig(guild.id, req.body.leveling)
             res.json({
                 data: {
                     config: normalizeControlConfig(saved),
                     leveling: publicLevelingConfig(leveling),
-                    levelingStats: await getLevelingStats(found.guild.id),
+                    levelingStats: await getLevelingStats(guild.id),
                 },
             })
         } catch (err) {
@@ -408,13 +362,10 @@ function createDashboardControlRouter(getClient) {
             code: err?.code || null,
         })
         res.status(mongoUnavailable ? 503 : 500).json({
-            error: mongoUnavailable
-                ? "MongoDB is unavailable. Try again shortly."
-                : "The bot API could not complete this request.",
+            error: mongoUnavailable ? "MongoDB is unavailable. Try again shortly." : "The bot API could not complete this request.",
             code: mongoUnavailable ? "MONGO_UNAVAILABLE" : "INTERNAL_ERROR",
         })
     })
-
     return router
 }
 
