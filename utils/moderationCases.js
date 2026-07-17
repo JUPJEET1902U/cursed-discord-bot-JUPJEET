@@ -67,7 +67,9 @@ function serializeCase(doc) {
         moderatorId: value.moderatorId || null,
         moderatorTag: value.moderatorTag || "Auto-Moderation",
         reason: value.reason || "No reason provided",
-        durationMs: Number.isFinite(Number(value.durationMs)) ? Number(value.durationMs) : null,
+        durationMs: value.durationMs === null || value.durationMs === undefined
+            ? null
+            : Number(value.durationMs),
         evidenceUrl: value.evidenceUrl || null,
         source: value.source || "manual",
         status: value.status || "active",
