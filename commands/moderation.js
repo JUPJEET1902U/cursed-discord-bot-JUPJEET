@@ -1,80 +1,123 @@
 /**
- * Moderation commands for CURSED bot.
+ * CURSED moderation foundation.
  *
- * Slash commands:
- *   /warn <user> <reason>
- *   /warnings <user>
- *   /clearwarns <user>
- *   /mute <user> [duration]
- *   /unmute <user>
- *   /kick <user> <reason>
- *   /ban <user> <reason>
- *   /welcome setup|view|preview|test|disable
- *   /autorole set|disable|view
- *
- * Prefix commands (admin convenience):
- *   !setmodlog  — set the current channel as the mod-log channel
- *   !antispam on|off
- *   !antilink on|off
- *   !antiinvite on|off
- *   !whitelist add|remove <domain>
+ * Includes permission-safe punishments, Mongo-backed warnings/cases, warning
+ * escalation, Welcome, Autorole, and legacy prefix configuration commands.
  */
 
-const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require("discord.js")
+const {
+    SlashCommandBuilder,
+    PermissionFlagsBits,
+    EmbedBuilder,
+    ChannelType,
+} = require("discord.js")
 const { addWarning, getWarnings, clearWarnings } = require("../utils/warnings")
 const { logAction } = require("../utils/modlog")
 const { getServerConfig, saveConfig } = require("../utils/serverConfig")
 const { getWelcome, setWelcome, disableWelcome, testWelcome, buildPreviewEmbed } = require("../utils/welcome")
 const { getAutorole, setAutorole, disableAutorole } = require("../utils/autorole")
+const {
+    getModerationConfig,
+    isModerator,
+    hasConfiguredModeratorRole,
+} = require("../utils/moderationConfig")
+const { validateModerationTarget } = require("../utils/moderationSafety")
+const {
+    getCase,
+    listCases,
+    updateCaseReason,
+    revokeCase,
+    softDeleteCase,
+} = require("../utils/moderationCases")
 
-// ─── Slash command definitions ────────────────────────────────────────────────
+const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
+const SNOWFLAKE = /^\d{17,20}$/
+const MODERATION_COMMANDS = new Set([
+    "warn", "warnings", "clearwarns", "timeout", "untimeout", "mute", "unmute",
+    "kick", "ban", "unban", "case", "cases",
+])
+
+function moderationCommand(name, description) {
+    return new SlashCommandBuilder().setName(name).setDescription(description)
+}
 
 const commands = [
-    new SlashCommandBuilder()
-        .setName("warn")
-        .setDescription("Warn a user")
-        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-        .addUserOption(o => o.setName("user").setDescription("User to warn").setRequired(true))
-        .addStringOption(o => o.setName("reason").setDescription("Reason for the warning").setRequired(true)),
+    moderationCommand("warn", "Warn a member and create a moderation case")
+        .addUserOption(option => option.setName("user").setDescription("Member to warn").setRequired(true))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for the warning").setRequired(true).setMaxLength(2000)),
 
-    new SlashCommandBuilder()
-        .setName("warnings")
-        .setDescription("Show all warnings for a user")
-        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-        .addUserOption(o => o.setName("user").setDescription("User to check").setRequired(true)),
+    moderationCommand("warnings", "View a member's active warnings")
+        .addUserOption(option => option.setName("user").setDescription("Member to check").setRequired(true)),
 
-    new SlashCommandBuilder()
-        .setName("clearwarns")
-        .setDescription("Clear all warnings for a user")
-        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-        .addUserOption(o => o.setName("user").setDescription("User to clear warnings for").setRequired(true)),
+    moderationCommand("clearwarns", "Clear a member's active warnings")
+        .addUserOption(option => option.setName("user").setDescription("Member whose warnings should be cleared").setRequired(true))
+        .addStringOption(option => option.setName("reason").setDescription("Why the warnings are being cleared").setRequired(false).setMaxLength(1000)),
 
-    new SlashCommandBuilder()
-        .setName("mute")
-        .setDescription("Timeout (mute) a user")
-        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-        .addUserOption(o => o.setName("user").setDescription("User to mute").setRequired(true))
-        .addIntegerOption(o => o.setName("duration").setDescription("Duration in minutes (default: 10)").setMinValue(1).setMaxValue(40320)),
+    moderationCommand("timeout", "Timeout a member")
+        .addUserOption(option => option.setName("user").setDescription("Member to timeout").setRequired(true))
+        .addIntegerOption(option => option.setName("duration").setDescription("Duration in minutes").setRequired(false).setMinValue(1).setMaxValue(40320))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for the timeout").setRequired(false).setMaxLength(2000)),
 
-    new SlashCommandBuilder()
-        .setName("unmute")
-        .setDescription("Remove timeout from a user")
-        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
-        .addUserOption(o => o.setName("user").setDescription("User to unmute").setRequired(true)),
+    moderationCommand("untimeout", "Remove a member's timeout")
+        .addUserOption(option => option.setName("user").setDescription("Member to remove timeout from").setRequired(true))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for removing the timeout").setRequired(false).setMaxLength(2000)),
 
-    new SlashCommandBuilder()
-        .setName("kick")
-        .setDescription("Kick a user from the server")
-        .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
-        .addUserOption(o => o.setName("user").setDescription("User to kick").setRequired(true))
-        .addStringOption(o => o.setName("reason").setDescription("Reason for the kick").setRequired(true)),
+    moderationCommand("mute", "Timeout a member (legacy alias)")
+        .addUserOption(option => option.setName("user").setDescription("Member to timeout").setRequired(true))
+        .addIntegerOption(option => option.setName("duration").setDescription("Duration in minutes").setRequired(false).setMinValue(1).setMaxValue(40320))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for the timeout").setRequired(false).setMaxLength(2000)),
 
-    new SlashCommandBuilder()
-        .setName("ban")
-        .setDescription("Ban a user from the server")
-        .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
-        .addUserOption(o => o.setName("user").setDescription("User to ban").setRequired(true))
-        .addStringOption(o => o.setName("reason").setDescription("Reason for the ban").setRequired(true)),
+    moderationCommand("unmute", "Remove a member timeout (legacy alias)")
+        .addUserOption(option => option.setName("user").setDescription("Member to remove timeout from").setRequired(true))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for removing the timeout").setRequired(false).setMaxLength(2000)),
+
+    moderationCommand("kick", "Kick a member and create a moderation case")
+        .addUserOption(option => option.setName("user").setDescription("Member to kick").setRequired(true))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for the kick").setRequired(true).setMaxLength(2000)),
+
+    moderationCommand("ban", "Ban a user and create a moderation case")
+        .addUserOption(option => option.setName("user").setDescription("User to ban").setRequired(true))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for the ban").setRequired(true).setMaxLength(2000))
+        .addIntegerOption(option => option.setName("delete_days").setDescription("Delete this many days of message history").setRequired(false).setMinValue(0).setMaxValue(7)),
+
+    moderationCommand("unban", "Unban a user by Discord ID")
+        .addStringOption(option => option.setName("user_id").setDescription("Discord user ID").setRequired(true).setMinLength(17).setMaxLength(20))
+        .addStringOption(option => option.setName("reason").setDescription("Reason for the unban").setRequired(false).setMaxLength(2000)),
+
+    moderationCommand("case", "View or manage a moderation case")
+        .addSubcommand(sub => sub
+            .setName("view")
+            .setDescription("View one moderation case")
+            .addIntegerOption(option => option.setName("number").setDescription("Case number").setRequired(true).setMinValue(1)))
+        .addSubcommand(sub => sub
+            .setName("reason")
+            .setDescription("Update a case reason")
+            .addIntegerOption(option => option.setName("number").setDescription("Case number").setRequired(true).setMinValue(1))
+            .addStringOption(option => option.setName("reason").setDescription("New reason").setRequired(true).setMaxLength(2000)))
+        .addSubcommand(sub => sub
+            .setName("revoke")
+            .setDescription("Mark a case as revoked without undoing the Discord action")
+            .addIntegerOption(option => option.setName("number").setDescription("Case number").setRequired(true).setMinValue(1))
+            .addStringOption(option => option.setName("reason").setDescription("Why the case is being revoked").setRequired(false).setMaxLength(1000)))
+        .addSubcommand(sub => sub
+            .setName("delete")
+            .setDescription("Soft-delete a case from normal views")
+            .addIntegerOption(option => option.setName("number").setDescription("Case number").setRequired(true).setMinValue(1))),
+
+    moderationCommand("cases", "List recent moderation cases")
+        .addUserOption(option => option.setName("user").setDescription("Filter by user").setRequired(false))
+        .addStringOption(option => option
+            .setName("action")
+            .setDescription("Filter by action")
+            .setRequired(false)
+            .addChoices(
+                { name: "Warnings", value: "WARN" },
+                { name: "Timeouts", value: "TIMEOUT" },
+                { name: "Kicks", value: "KICK" },
+                { name: "Bans", value: "BAN" },
+                { name: "AutoMod", value: "ANTI_SPAM" },
+            ))
+        .addIntegerOption(option => option.setName("limit").setDescription("Number of cases to show").setRequired(false).setMinValue(1).setMaxValue(20)),
 
     new SlashCommandBuilder()
         .setName("welcome")
@@ -83,569 +126,583 @@ const commands = [
         .addSubcommand(sub => sub
             .setName("setup")
             .setDescription("Set up the welcome message")
-            .addChannelOption(o => o
-                .setName("channel")
-                .setDescription("Channel to send welcome messages in")
-                .setRequired(true))
-            .addStringOption(o => o
-                .setName("message")
-                .setDescription("Welcome message — supports {user}, {mention}, {server}, {membercount}")
-                .setRequired(false))
-            .addBooleanOption(o => o
-                .setName("useai")
-                .setDescription("Use AI to generate welcome messages (falls back to custom message on failure)")
-                .setRequired(false))
-            .addStringOption(o => o
-                .setName("color")
-                .setDescription("Embed color as a hex code, e.g. #FF5733 (default: Discord blurple)")
-                .setRequired(false))
-            .addBooleanOption(o => o
-                .setName("thumbnail")
-                .setDescription("Show the new member's avatar as the embed thumbnail (default: true)")
-                .setRequired(false))
-            .addStringOption(o => o
-                .setName("image")
-                .setDescription("URL of a banner image to show at the bottom of the embed")
-                .setRequired(false))
-            .addStringOption(o => o
-                .setName("footer")
-                .setDescription("Footer text — supports {membercount} and other placeholders")
-                .setRequired(false))
-            .addBooleanOption(o => o
-                .setName("card")
-                .setDescription("Generate a PNG welcome card with the embed (default: true)")
-                .setRequired(false))
-            .addStringOption(o => o
-                .setName("theme")
-                .setDescription("Welcome card theme")
-                .addChoices(
-                    { name: "Classic", value: "classic" },
-                    { name: "Midnight", value: "midnight" },
-                    { name: "Neon", value: "neon" },
-                )
-                .setRequired(false))
-            .addStringOption(o => o
-                .setName("background")
-                .setDescription("URL of a background image for the PNG welcome card")
-                .setRequired(false))
-            .addStringOption(o => o
-                .setName("accent")
-                .setDescription("Card accent color as a hex code, e.g. #FF5733")
-                .setRequired(false))
-        )
-        .addSubcommand(sub => sub
-            .setName("view")
-            .setDescription("View the current welcome configuration"))
-        .addSubcommand(sub => sub
-            .setName("preview")
-            .setDescription("Preview the welcome embed here (ephemeral, shows exactly what new members will see)"))
-        .addSubcommand(sub => sub
-            .setName("test")
-            .setDescription("Send a live test welcome to the configured welcome channel"))
-        .addSubcommand(sub => sub
-            .setName("disable")
-            .setDescription("Disable the welcome system")),
+            .addChannelOption(option => option.setName("channel").setDescription("Welcome channel").setRequired(true))
+            .addStringOption(option => option.setName("message").setDescription("Supports {user}, {mention}, {server}, {membercount}").setRequired(false).setMaxLength(2000))
+            .addBooleanOption(option => option.setName("useai").setDescription("Use AI welcome text").setRequired(false))
+            .addStringOption(option => option.setName("color").setDescription("Embed hex color, e.g. #5865F2").setRequired(false))
+            .addBooleanOption(option => option.setName("thumbnail").setDescription("Show the member avatar").setRequired(false))
+            .addStringOption(option => option.setName("image").setDescription("Embed banner URL").setRequired(false).setMaxLength(2048))
+            .addStringOption(option => option.setName("footer").setDescription("Footer text").setRequired(false).setMaxLength(2048))
+            .addBooleanOption(option => option.setName("card").setDescription("Generate a PNG welcome card").setRequired(false))
+            .addStringOption(option => option.setName("theme").setDescription("Welcome card theme").setRequired(false).addChoices(
+                { name: "Classic", value: "classic" },
+                { name: "Midnight", value: "midnight" },
+                { name: "Neon", value: "neon" },
+            ))
+            .addStringOption(option => option.setName("background").setDescription("PNG card background URL").setRequired(false).setMaxLength(2048))
+            .addStringOption(option => option.setName("accent").setDescription("PNG card accent hex color").setRequired(false))
+            .addStringOption(option => option.setName("media").setDescription("Fallback media URL").setRequired(false).setMaxLength(2048)))
+        .addSubcommand(sub => sub.setName("view").setDescription("View welcome configuration"))
+        .addSubcommand(sub => sub.setName("preview").setDescription("Preview the welcome embed"))
+        .addSubcommand(sub => sub.setName("test").setDescription("Send a live test welcome"))
+        .addSubcommand(sub => sub.setName("disable").setDescription("Disable welcome messages")),
 
     new SlashCommandBuilder()
         .setName("autorole")
-        .setDescription("Manage the autorole assigned to new members")
+        .setDescription("Manage the role assigned to new members")
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
-        .addSubcommand(sub =>
-            sub.setName("set")
-                .setDescription("Set the role to assign to new members")
-                .addRoleOption(o => o.setName("role").setDescription("Role to assign on join").setRequired(true))
-        )
-        .addSubcommand(sub =>
-            sub.setName("disable")
-                .setDescription("Disable the autorole for this server")
-        )
-        .addSubcommand(sub =>
-            sub.setName("view")
-                .setDescription("View the current autorole configuration")
-        ),
+        .addSubcommand(sub => sub
+            .setName("set")
+            .setDescription("Set the autorole")
+            .addRoleOption(option => option.setName("role").setDescription("Role assigned on join").setRequired(true)))
+        .addSubcommand(sub => sub.setName("disable").setDescription("Disable autorole"))
+        .addSubcommand(sub => sub.setName("view").setDescription("View autorole configuration")),
 ]
 
-// ─── Slash command handler ────────────────────────────────────────────────────
+function actorIdentity(member) {
+    return { id: member.id, tag: member.user?.tag || member.displayName || "Unknown moderator" }
+}
+
+function targetIdentity(user) {
+    return { id: user.id, tag: user.tag || user.username || "Unknown user" }
+}
+
+async function replyError(interaction, message) {
+    const payload = { content: `❌ ${message}`, ephemeral: true, allowedMentions: SAFE_MENTIONS }
+    if (interaction.replied || interaction.deferred) return interaction.followUp(payload).catch(() => {})
+    return interaction.reply(payload).catch(() => {})
+}
+
+function ensureReason(config, reason) {
+    const cleaned = typeof reason === "string" ? reason.trim() : ""
+    if (cleaned) return { ok: true, reason: cleaned.slice(0, 2000) }
+    if (config.requireModerationReason) {
+        return { ok: false, error: "This server requires a moderation reason." }
+    }
+    return { ok: true, reason: "No reason provided" }
+}
+
+function formatDuration(durationMs) {
+    if (!durationMs) return "Permanent / not applicable"
+    const minutes = Math.round(durationMs / 60000)
+    if (minutes % 1440 === 0) return `${minutes / 1440} day(s)`
+    if (minutes % 60 === 0) return `${minutes / 60} hour(s)`
+    return `${minutes} minute(s)`
+}
+
+function caseEmbed(record) {
+    const embed = new EmbedBuilder()
+        .setColor(record.status === "active" ? 0x7C3AED : 0x6B7280)
+        .setTitle(`📁 Moderation Case #${record.caseNumber}`)
+        .addFields(
+            { name: "Action", value: record.action.replace(/_/g, " "), inline: true },
+            { name: "Status", value: record.status, inline: true },
+            { name: "Source", value: record.source, inline: true },
+            { name: "Target", value: `<@${record.targetId}> (${record.targetTag})`, inline: false },
+            { name: "Moderator", value: record.moderatorId ? `<@${record.moderatorId}> (${record.moderatorTag})` : record.moderatorTag, inline: false },
+            { name: "Reason", value: record.reason.slice(0, 1024), inline: false },
+        )
+        .setTimestamp(record.createdAt ? new Date(record.createdAt) : new Date())
+
+    if (record.durationMs) embed.addFields({ name: "Duration", value: formatDuration(record.durationMs), inline: true })
+    if (record.expiresAt) embed.addFields({ name: "Expires", value: `<t:${Math.floor(new Date(record.expiresAt).getTime() / 1000)}:R>`, inline: true })
+    if (record.revokeReason) embed.addFields({ name: "Revocation", value: record.revokeReason.slice(0, 1024), inline: false })
+    if (record.evidenceUrl) embed.addFields({ name: "Evidence", value: record.evidenceUrl, inline: false })
+    return embed
+}
+
+async function dmUser(user, config, text) {
+    if (!config.dmPunishedUsers || !user) return false
+    return user.send({ content: text, allowedMentions: SAFE_MENTIONS }).then(() => true).catch(() => false)
+}
+
+async function authorizeModeration(interaction, config) {
+    if (!config.moderationCommandsEnabled) {
+        await replyError(interaction, "Moderation commands are disabled in this server.")
+        return false
+    }
+    if (!isModerator(interaction.member, config)) {
+        await replyError(interaction, "You need a configured moderator role or Discord moderation permission.")
+        return false
+    }
+    return true
+}
+
+async function checkTarget(interaction, target, action, config) {
+    const result = await validateModerationTarget({
+        guild: interaction.guild,
+        actorMember: interaction.member,
+        targetUser: target,
+        action,
+        skipActorPermission: hasConfiguredModeratorRole(interaction.member, config),
+    })
+    if (!result.ok) await replyError(interaction, result.error)
+    return result
+}
+
+async function applyWarningEscalation(interaction, target, warningCount, config) {
+    if (!config.warningEscalationEnabled) return null
+    const threshold = config.warningThresholds.find(item => item.warnings === warningCount)
+    if (!threshold) return null
+
+    const action = threshold.action.toUpperCase()
+    const safety = await validateModerationTarget({
+        guild: interaction.guild,
+        actorMember: interaction.member,
+        targetUser: target,
+        action,
+        skipActorPermission: hasConfiguredModeratorRole(interaction.member, config),
+    })
+    if (!safety.ok) return `Escalation skipped: ${safety.error}`
+
+    const reason = `Automatic escalation after ${warningCount} active warnings`
+    try {
+        if (threshold.action === "timeout") {
+            const durationMs = threshold.durationMinutes * 60 * 1000
+            await safety.targetMember.timeout(durationMs, reason)
+            await dmUser(target, config, `🔇 You were timed out in **${interaction.guild.name}** for ${formatDuration(durationMs)}. Reason: ${reason}`)
+            const result = await logAction(interaction.guild, {
+                action: "TIMEOUT",
+                target: targetIdentity(target),
+                moderator: actorIdentity(interaction.member),
+                reason,
+                durationMs,
+                source: "system",
+                metadata: { warningEscalation: true, warningCount },
+            })
+            return `Automatic timeout applied${result.caseRecord ? ` (case #${result.caseRecord.caseNumber})` : ""}.`
+        }
+        if (threshold.action === "kick") {
+            await dmUser(target, config, `👢 You were kicked from **${interaction.guild.name}**. Reason: ${reason}`)
+            await safety.targetMember.kick(reason)
+            const result = await logAction(interaction.guild, {
+                action: "KICK",
+                target: targetIdentity(target),
+                moderator: actorIdentity(interaction.member),
+                reason,
+                source: "system",
+                metadata: { warningEscalation: true, warningCount },
+            })
+            return `Automatic kick applied${result.caseRecord ? ` (case #${result.caseRecord.caseNumber})` : ""}.`
+        }
+        if (threshold.action === "ban") {
+            await dmUser(target, config, `🔨 You were banned from **${interaction.guild.name}**. Reason: ${reason}`)
+            await interaction.guild.members.ban(target.id, { reason })
+            const result = await logAction(interaction.guild, {
+                action: "BAN",
+                target: targetIdentity(target),
+                moderator: actorIdentity(interaction.member),
+                reason,
+                source: "system",
+                metadata: { warningEscalation: true, warningCount },
+            })
+            return `Automatic ban applied${result.caseRecord ? ` (case #${result.caseRecord.caseNumber})` : ""}.`
+        }
+    } catch (err) {
+        return `Escalation failed: ${err.message}`
+    }
+    return null
+}
 
 async function handleInteraction(interaction) {
-    if (!interaction.isChatInputCommand()) return false
+    if (!interaction.isChatInputCommand() || !interaction.guild) return false
     const { commandName, guild, member } = interaction
-    if (!guild) return false
 
-    // ── /warn ──────────────────────────────────────────────────────────────────
-    if (commandName === "warn") {
-        if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-            await interaction.reply({ content: "❌ I don't have the **Moderate Members** permission required to warn users.", ephemeral: true })
-            return true
-        }
-        const target   = interaction.options.getUser("user")
-        const reason   = interaction.options.getString("reason")
-        const warnings = addWarning(
-            guild.id, target.id, target.tag,
-            reason,
-            member.user.id, member.user.tag
-        )
+    if (MODERATION_COMMANDS.has(commandName)) {
+        const config = getModerationConfig(guild.id)
+        if (!await authorizeModeration(interaction, config)) return true
 
-        await logAction(guild, {
-            action:    "WARN",
-            target:    { id: target.id, tag: target.tag },
-            moderator: { id: member.user.id, tag: member.user.tag },
-            reason,
-            extra:     `Total warnings: **${warnings.length}**`,
-        })
+        if (commandName === "warn") {
+            const target = interaction.options.getUser("user", true)
+            const reason = interaction.options.getString("reason", true).trim()
+            const safety = await checkTarget(interaction, target, "WARN", config)
+            if (!safety.ok) return true
 
-        const embed = new EmbedBuilder()
-            .setColor(0xFFAA00)
-            .setTitle("⚠️ User Warned")
-            .addFields(
-                { name: "User",    value: `<@${target.id}>`,             inline: true },
-                { name: "Reason",  value: reason,                        inline: true },
-                { name: "Total",   value: `${warnings.length} warning(s)`, inline: true },
-            )
-            .setTimestamp()
+            const warnings = addWarning(guild.id, target.id, target.tag, reason, member.id, member.user.tag)
+            const logResult = await logAction(guild, {
+                action: "WARN",
+                target: targetIdentity(target),
+                moderator: actorIdentity(member),
+                reason,
+                extra: `Active warnings: **${warnings.length}**`,
+            })
+            await dmUser(target, config, `⚠️ You were warned in **${guild.name}**. Reason: ${reason}`)
+            const escalation = await applyWarningEscalation(interaction, target, warnings.length, config)
 
-        await interaction.reply({ embeds: [embed] })
-        return true
-    }
-
-    // ── /warnings ──────────────────────────────────────────────────────────────
-    if (commandName === "warnings") {
-        const target   = interaction.options.getUser("user")
-        const warnings = getWarnings(guild.id, target.id)
-
-        if (warnings.length === 0) {
-            await interaction.reply({ content: `✅ **${target.tag}** has no warnings. Clean record!`, ephemeral: true })
+            const embed = new EmbedBuilder()
+                .setColor(0xFFAA00)
+                .setTitle("⚠️ Member Warned")
+                .addFields(
+                    { name: "Member", value: `<@${target.id}>`, inline: true },
+                    { name: "Active warnings", value: String(warnings.length), inline: true },
+                    { name: "Case", value: logResult.caseRecord ? `#${logResult.caseRecord.caseNumber}` : "Unavailable", inline: true },
+                    { name: "Reason", value: reason.slice(0, 1024), inline: false },
+                )
+                .setTimestamp()
+            if (escalation) embed.addFields({ name: "Escalation", value: escalation.slice(0, 1024), inline: false })
+            await interaction.reply({ embeds: [embed], allowedMentions: SAFE_MENTIONS })
             return true
         }
 
-        const lines = warnings.map((w, i) => {
-            const date = new Date(w.timestamp).toLocaleDateString()
-            return `**#${i + 1}** — ${w.reason}\n> By ${w.moderatorName} on ${date}`
-        })
-
-        const embed = new EmbedBuilder()
-            .setColor(0xFFAA00)
-            .setTitle(`⚠️ Warnings for ${target.tag}`)
-            .setDescription(lines.join("\n\n"))
-            .setFooter({ text: `${warnings.length} total warning(s)` })
-            .setTimestamp()
-
-        await interaction.reply({ embeds: [embed], ephemeral: true })
-        return true
-    }
-
-    // ── /clearwarns ────────────────────────────────────────────────────────────
-    if (commandName === "clearwarns") {
-        const target = interaction.options.getUser("user")
-        const count  = clearWarnings(guild.id, target.id)
-
-        await logAction(guild, {
-            action:    "WARN",
-            target:    { id: target.id, tag: target.tag },
-            moderator: { id: member.user.id, tag: member.user.tag },
-            reason:    `Cleared ${count} warning(s)`,
-            extra:     "All warnings removed",
-        })
-
-        await interaction.reply({ content: `🗑️ Cleared **${count}** warning(s) for <@${target.id}>.` })
-        return true
-    }
-
-    // ── /mute ──────────────────────────────────────────────────────────────────
-    if (commandName === "mute") {
-        if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-            await interaction.reply({ content: "❌ I don't have the **Moderate Members** permission required to mute users.", ephemeral: true })
-            return true
-        }
-        const target      = interaction.options.getUser("user")
-        const durationMin = interaction.options.getInteger("duration") ?? 10
-        const durationMs  = durationMin * 60 * 1000
-
-        const guildMember = guild.members.cache.get(target.id)
-        if (!guildMember) {
-            await interaction.reply({ content: "❌ That user is not in this server.", ephemeral: true })
-            return true
-        }
-
-        try {
-            await guildMember.timeout(durationMs, `Muted by ${member.user.tag}`)
-        } catch (err) {
-            await interaction.reply({ content: `❌ Could not mute: ${err.message}`, ephemeral: true })
-            return true
-        }
-
-        await logAction(guild, {
-            action:    "MUTE",
-            target:    { id: target.id, tag: target.tag },
-            moderator: { id: member.user.id, tag: member.user.tag },
-            extra:     `Duration: **${durationMin} minute(s)**`,
-        })
-
-        await interaction.reply({ content: `🔇 <@${target.id}> has been muted for **${durationMin} minute(s)**.` })
-        return true
-    }
-
-    // ── /unmute ────────────────────────────────────────────────────────────────
-    if (commandName === "unmute") {
-        if (!guild.members.me.permissions.has(PermissionFlagsBits.ModerateMembers)) {
-            await interaction.reply({ content: "❌ I don't have the **Moderate Members** permission required to unmute users.", ephemeral: true })
-            return true
-        }
-        const target      = interaction.options.getUser("user")
-        const guildMember = guild.members.cache.get(target.id)
-        if (!guildMember) {
-            await interaction.reply({ content: "❌ That user is not in this server.", ephemeral: true })
-            return true
-        }
-
-        try {
-            await guildMember.timeout(null)
-        } catch (err) {
-            await interaction.reply({ content: `❌ Could not unmute: ${err.message}`, ephemeral: true })
-            return true
-        }
-
-        await logAction(guild, {
-            action:    "UNMUTE",
-            target:    { id: target.id, tag: target.tag },
-            moderator: { id: member.user.id, tag: member.user.tag },
-        })
-
-        await interaction.reply({ content: `🔊 <@${target.id}> has been unmuted.` })
-        return true
-    }
-
-    // ── /kick ──────────────────────────────────────────────────────────────────
-    if (commandName === "kick") {
-        if (!guild.members.me.permissions.has(PermissionFlagsBits.KickMembers)) {
-            await interaction.reply({ content: "❌ I don't have the **Kick Members** permission required to kick users.", ephemeral: true })
-            return true
-        }
-        const target      = interaction.options.getUser("user")
-        const reason      = interaction.options.getString("reason")
-        const guildMember = guild.members.cache.get(target.id)
-        if (!guildMember) {
-            await interaction.reply({ content: "❌ That user is not in this server.", ephemeral: true })
-            return true
-        }
-
-        try {
-            await guildMember.kick(reason)
-        } catch (err) {
-            await interaction.reply({ content: `❌ Could not kick: ${err.message}`, ephemeral: true })
-            return true
-        }
-
-        await logAction(guild, {
-            action:    "KICK",
-            target:    { id: target.id, tag: target.tag },
-            moderator: { id: member.user.id, tag: member.user.tag },
-            reason,
-        })
-
-        await interaction.reply({ content: `👢 **${target.tag}** has been kicked. Reason: ${reason}` })
-        return true
-    }
-
-    // ── /ban ───────────────────────────────────────────────────────────────────
-    if (commandName === "ban") {
-        if (!guild.members.me.permissions.has(PermissionFlagsBits.BanMembers)) {
-            await interaction.reply({ content: "❌ I don't have the **Ban Members** permission required to ban users.", ephemeral: true })
-            return true
-        }
-        const target = interaction.options.getUser("user")
-        const reason = interaction.options.getString("reason")
-
-        try {
-            await guild.members.ban(target.id, { reason })
-        } catch (err) {
-            await interaction.reply({ content: `❌ Could not ban: ${err.message}`, ephemeral: true })
-            return true
-        }
-
-        await logAction(guild, {
-            action:    "BAN",
-            target:    { id: target.id, tag: target.tag },
-            moderator: { id: member.user.id, tag: member.user.tag },
-            reason,
-        })
-
-        await interaction.reply({ content: `🔨 **${target.tag}** has been banned. Reason: ${reason}` })
-        return true
-    }
-
-    // ── /welcome ───────────────────────────────────────────────────────────────
-    if (commandName === "welcome") {
-        const sub = interaction.options.getSubcommand()
-
-        // ── /welcome setup ─────────────────────────────────────────────────────
-        if (sub === "setup") {
-            if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-                await interaction.reply({ content: "❌ You need the **Manage Server** permission to configure the welcome system.", ephemeral: true })
+        if (commandName === "warnings") {
+            const target = interaction.options.getUser("user", true)
+            const warnings = getWarnings(guild.id, target.id)
+            if (!warnings.length) {
+                await interaction.reply({ content: `✅ **${target.tag}** has no active warnings.`, ephemeral: true, allowedMentions: SAFE_MENTIONS })
                 return true
             }
+            const lines = warnings.slice(-10).reverse().map((warning, index) => {
+                const timestamp = Math.floor(new Date(warning.timestamp).getTime() / 1000)
+                return `**${warnings.length - index}.** ${warning.reason}\n> ${warning.moderatorName} • <t:${timestamp}:d>`
+            })
+            const embed = new EmbedBuilder()
+                .setColor(0xFFAA00)
+                .setTitle(`⚠️ Warnings for ${target.tag}`)
+                .setDescription(lines.join("\n\n").slice(0, 4000))
+                .setFooter({ text: `${warnings.length} active warning(s) • showing up to 10` })
+            await interaction.reply({ embeds: [embed], ephemeral: true, allowedMentions: SAFE_MENTIONS })
+            return true
+        }
 
-            const channel   = interaction.options.getChannel("channel")
-            const message   = interaction.options.getString("message")   ?? null
-            const useAI     = interaction.options.getBoolean("useai")    ?? false
-            const colorStr  = interaction.options.getString("color")     ?? null
-            const thumbnail = interaction.options.getBoolean("thumbnail") ?? true
-            const imageUrl  = interaction.options.getString("image")     ?? null
-            const footer    = interaction.options.getString("footer")    ?? null
-            const cardEnabled = interaction.options.getBoolean("card")    ?? true
-            const cardTheme = interaction.options.getString("theme")      ?? "classic"
-            const cardBackground = interaction.options.getString("background") ?? null
-            const accentColor = interaction.options.getString("accent")   ?? null
+        if (commandName === "clearwarns") {
+            const target = interaction.options.getUser("user", true)
+            const reasonResult = ensureReason(config, interaction.options.getString("reason"))
+            if (!reasonResult.ok) { await replyError(interaction, reasonResult.error); return true }
+            const count = clearWarnings(guild.id, target.id, member.id)
+            const logResult = await logAction(guild, {
+                action: "CLEAR_WARNINGS",
+                target: targetIdentity(target),
+                moderator: actorIdentity(member),
+                reason: reasonResult.reason,
+                extra: `Cleared warnings: **${count}**`,
+            })
+            await interaction.reply({
+                content: `🧹 Cleared **${count}** active warning(s) for **${target.tag}**${logResult.caseRecord ? ` • Case #${logResult.caseRecord.caseNumber}` : ""}.`,
+                allowedMentions: SAFE_MENTIONS,
+            })
+            return true
+        }
 
-            // Validate channel is text-based
-            if (!channel.isTextBased || !channel.isTextBased()) {
-                await interaction.reply({ content: "❌ The welcome channel must be a text channel.", ephemeral: true })
+        if (["timeout", "mute"].includes(commandName)) {
+            const target = interaction.options.getUser("user", true)
+            const durationMinutes = interaction.options.getInteger("duration") ?? config.defaultTimeoutMinutes
+            const reasonResult = ensureReason(config, interaction.options.getString("reason"))
+            if (!reasonResult.ok) { await replyError(interaction, reasonResult.error); return true }
+            const safety = await checkTarget(interaction, target, "TIMEOUT", config)
+            if (!safety.ok) return true
+            const durationMs = durationMinutes * 60 * 1000
+            try {
+                await safety.targetMember.timeout(durationMs, `${reasonResult.reason} • ${member.user.tag}`)
+            } catch (err) {
+                await replyError(interaction, `Could not timeout that member: ${err.message}`)
                 return true
             }
+            await dmUser(target, config, `🔇 You were timed out in **${guild.name}** for ${formatDuration(durationMs)}. Reason: ${reasonResult.reason}`)
+            const logResult = await logAction(guild, {
+                action: "TIMEOUT",
+                target: targetIdentity(target),
+                moderator: actorIdentity(member),
+                reason: reasonResult.reason,
+                durationMs,
+                extra: `Duration: **${formatDuration(durationMs)}**`,
+            })
+            await interaction.reply({
+                content: `🔇 **${target.tag}** was timed out for **${formatDuration(durationMs)}**${logResult.caseRecord ? ` • Case #${logResult.caseRecord.caseNumber}` : ""}.`,
+                allowedMentions: SAFE_MENTIONS,
+            })
+            return true
+        }
 
-            // Validate hex color if provided
-            if (colorStr && !/^#?[0-9A-Fa-f]{6}$/.test(colorStr)) {
-                await interaction.reply({ content: "❌ Invalid color. Use a 6-digit hex code like `#FF5733`.", ephemeral: true })
+        if (["untimeout", "unmute"].includes(commandName)) {
+            const target = interaction.options.getUser("user", true)
+            const reasonResult = ensureReason(config, interaction.options.getString("reason"))
+            if (!reasonResult.ok) { await replyError(interaction, reasonResult.error); return true }
+            const safety = await checkTarget(interaction, target, "UNTIMEOUT", config)
+            if (!safety.ok) return true
+            try {
+                await safety.targetMember.timeout(null, `${reasonResult.reason} • ${member.user.tag}`)
+            } catch (err) {
+                await replyError(interaction, `Could not remove that timeout: ${err.message}`)
                 return true
             }
+            const logResult = await logAction(guild, {
+                action: "UNTIMEOUT",
+                target: targetIdentity(target),
+                moderator: actorIdentity(member),
+                reason: reasonResult.reason,
+            })
+            await interaction.reply({
+                content: `🔊 Removed **${target.tag}**'s timeout${logResult.caseRecord ? ` • Case #${logResult.caseRecord.caseNumber}` : ""}.`,
+                allowedMentions: SAFE_MENTIONS,
+            })
+            return true
+        }
 
-            if (accentColor && !/^#?[0-9A-Fa-f]{6}$/.test(accentColor)) {
-                await interaction.reply({ content: "❌ Invalid accent color. Use a 6-digit hex code like `#FF5733`.", ephemeral: true })
+        if (commandName === "kick") {
+            const target = interaction.options.getUser("user", true)
+            const reason = interaction.options.getString("reason", true).trim()
+            const safety = await checkTarget(interaction, target, "KICK", config)
+            if (!safety.ok) return true
+            await dmUser(target, config, `👢 You were kicked from **${guild.name}**. Reason: ${reason}`)
+            try {
+                await safety.targetMember.kick(`${reason} • ${member.user.tag}`)
+            } catch (err) {
+                await replyError(interaction, `Could not kick that member: ${err.message}`)
                 return true
             }
+            const logResult = await logAction(guild, {
+                action: "KICK",
+                target: targetIdentity(target),
+                moderator: actorIdentity(member),
+                reason,
+            })
+            await interaction.reply({
+                content: `👢 **${target.tag}** was kicked${logResult.caseRecord ? ` • Case #${logResult.caseRecord.caseNumber}` : ""}.`,
+                allowedMentions: SAFE_MENTIONS,
+            })
+            return true
+        }
 
-            // Validate image URL if provided
-            if (imageUrl) {
-                try {
-                    const u = new URL(imageUrl)
-                    if (!["http:", "https:"].includes(u.protocol)) throw new Error("bad protocol")
-                } catch {
-                    await interaction.reply({ content: "❌ Invalid image URL. It must start with `http://` or `https://`.", ephemeral: true })
+        if (commandName === "ban") {
+            const target = interaction.options.getUser("user", true)
+            const reason = interaction.options.getString("reason", true).trim()
+            const deleteDays = interaction.options.getInteger("delete_days") ?? 0
+            const safety = await checkTarget(interaction, target, "BAN", config)
+            if (!safety.ok) return true
+            await dmUser(target, config, `🔨 You were banned from **${guild.name}**. Reason: ${reason}`)
+            try {
+                await guild.members.ban(target.id, {
+                    reason: `${reason} • ${member.user.tag}`,
+                    deleteMessageSeconds: deleteDays * 24 * 60 * 60,
+                })
+            } catch (err) {
+                await replyError(interaction, `Could not ban that user: ${err.message}`)
+                return true
+            }
+            const logResult = await logAction(guild, {
+                action: "BAN",
+                target: targetIdentity(target),
+                moderator: actorIdentity(member),
+                reason,
+                extra: deleteDays ? `Deleted **${deleteDays} day(s)** of message history` : null,
+            })
+            await interaction.reply({
+                content: `🔨 **${target.tag}** was banned${logResult.caseRecord ? ` • Case #${logResult.caseRecord.caseNumber}` : ""}.`,
+                allowedMentions: SAFE_MENTIONS,
+            })
+            return true
+        }
+
+        if (commandName === "unban") {
+            const userId = interaction.options.getString("user_id", true).trim()
+            if (!SNOWFLAKE.test(userId)) { await replyError(interaction, "Enter a valid Discord user ID."); return true }
+            const reasonResult = ensureReason(config, interaction.options.getString("reason"))
+            if (!reasonResult.ok) { await replyError(interaction, reasonResult.error); return true }
+            if (!hasConfiguredModeratorRole(member, config) && !member.permissions.has(PermissionFlagsBits.BanMembers)) {
+                await replyError(interaction, "You need Ban Members permission or a configured moderator role.")
+                return true
+            }
+            if (!guild.members.me.permissions.has(PermissionFlagsBits.BanMembers)) {
+                await replyError(interaction, "I need Ban Members permission.")
+                return true
+            }
+            const ban = await guild.bans.fetch(userId).catch(() => null)
+            if (!ban) { await replyError(interaction, "That user is not banned in this server."); return true }
+            try {
+                await guild.members.unban(userId, `${reasonResult.reason} • ${member.user.tag}`)
+            } catch (err) {
+                await replyError(interaction, `Could not unban that user: ${err.message}`)
+                return true
+            }
+            const logResult = await logAction(guild, {
+                action: "UNBAN",
+                target: { id: userId, tag: ban.user.tag },
+                moderator: actorIdentity(member),
+                reason: reasonResult.reason,
+            })
+            await interaction.reply({
+                content: `🕊️ **${ban.user.tag}** was unbanned${logResult.caseRecord ? ` • Case #${logResult.caseRecord.caseNumber}` : ""}.`,
+                allowedMentions: SAFE_MENTIONS,
+            })
+            return true
+        }
+
+        if (commandName === "case") {
+            const sub = interaction.options.getSubcommand()
+            const number = interaction.options.getInteger("number", true)
+            if (sub === "view") {
+                const record = await getCase(guild.id, number)
+                if (!record) { await replyError(interaction, `Case #${number} was not found.`); return true }
+                await interaction.reply({ embeds: [caseEmbed(record)], ephemeral: true, allowedMentions: SAFE_MENTIONS })
+                return true
+            }
+            if (sub === "reason") {
+                const reason = interaction.options.getString("reason", true)
+                const record = await updateCaseReason(guild.id, number, reason, actorIdentity(member))
+                if (!record) { await replyError(interaction, `Case #${number} was not found.`); return true }
+                await interaction.reply({ content: `✅ Updated the reason for case **#${number}**.`, ephemeral: true })
+                return true
+            }
+            if (sub === "revoke") {
+                const reason = interaction.options.getString("reason")
+                const record = await revokeCase(guild.id, number, actorIdentity(member), reason)
+                if (!record) { await replyError(interaction, `Case #${number} was not found or is not active.`); return true }
+                await interaction.reply({ content: `✅ Case **#${number}** is now marked revoked. This does not undo the Discord punishment.`, ephemeral: true })
+                return true
+            }
+            if (sub === "delete") {
+                if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+                    await replyError(interaction, "Manage Server permission is required to delete a case.")
                     return true
                 }
+                const record = await softDeleteCase(guild.id, number, actorIdentity(member))
+                if (!record) { await replyError(interaction, `Case #${number} was not found.`); return true }
+                await interaction.reply({ content: `🗑️ Case **#${number}** was removed from normal case views.`, ephemeral: true })
+                return true
             }
+        }
 
-            if (cardBackground) {
+        if (commandName === "cases") {
+            const target = interaction.options.getUser("user")
+            const action = interaction.options.getString("action")
+            const limit = interaction.options.getInteger("limit") ?? 10
+            const records = await listCases(guild.id, { targetId: target?.id, action, limit })
+            if (!records.length) {
+                await interaction.reply({ content: "No matching moderation cases were found.", ephemeral: true })
+                return true
+            }
+            const lines = records.map(record => {
+                const timestamp = record.createdAt ? Math.floor(new Date(record.createdAt).getTime() / 1000) : null
+                return `**#${record.caseNumber} • ${record.action.replace(/_/g, " ")}** — <@${record.targetId}>\n> ${record.reason.slice(0, 180)}${timestamp ? ` • <t:${timestamp}:R>` : ""} • ${record.status}`
+            })
+            const embed = new EmbedBuilder()
+                .setColor(0x7C3AED)
+                .setTitle("📚 Recent Moderation Cases")
+                .setDescription(lines.join("\n\n").slice(0, 4000))
+                .setFooter({ text: `Showing ${records.length} case(s)` })
+            await interaction.reply({ embeds: [embed], ephemeral: true, allowedMentions: SAFE_MENTIONS })
+            return true
+        }
+    }
+
+    if (commandName === "welcome") {
+        const sub = interaction.options.getSubcommand()
+        if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
+            await replyError(interaction, "Manage Server permission is required to configure Welcome.")
+            return true
+        }
+
+        if (sub === "setup") {
+            const channel = interaction.options.getChannel("channel", true)
+            if (![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) {
+                await replyError(interaction, "Choose a text or announcement channel.")
+                return true
+            }
+            const color = interaction.options.getString("color")
+            const accent = interaction.options.getString("accent")
+            if (color && !/^#?[0-9A-Fa-f]{6}$/.test(color)) { await replyError(interaction, "Embed color must be a six-digit hex color."); return true }
+            if (accent && !/^#?[0-9A-Fa-f]{6}$/.test(accent)) { await replyError(interaction, "Accent color must be a six-digit hex color."); return true }
+
+            const urls = [
+                ["image", interaction.options.getString("image")],
+                ["background", interaction.options.getString("background")],
+                ["media", interaction.options.getString("media")],
+            ]
+            for (const [label, value] of urls) {
+                if (!value) continue
                 try {
-                    const u = new URL(cardBackground)
-                    if (!["http:", "https:"].includes(u.protocol)) throw new Error("bad protocol")
+                    const url = new URL(value)
+                    if (!["http:", "https:"].includes(url.protocol)) throw new Error("protocol")
                 } catch {
-                    await interaction.reply({ content: "❌ Invalid card background URL. It must start with `http://` or `https://`.", ephemeral: true })
+                    await replyError(interaction, `${label} must be a valid http(s) URL.`)
                     return true
                 }
             }
 
             setWelcome(guild.id, channel.id, {
-                message,
-                useAI,
-                color:     colorStr,
-                thumbnail,
-                imageUrl,
-                footer,
-                cardEnabled,
-                cardTheme,
-                cardBackground,
-                accentColor,
+                message: interaction.options.getString("message"),
+                useAI: interaction.options.getBoolean("useai") ?? false,
+                color,
+                thumbnail: interaction.options.getBoolean("thumbnail") ?? true,
+                imageUrl: interaction.options.getString("image"),
+                footer: interaction.options.getString("footer"),
+                cardEnabled: interaction.options.getBoolean("card") ?? true,
+                cardTheme: interaction.options.getString("theme") ?? "classic",
+                cardBackground: interaction.options.getString("background"),
+                accentColor: accent,
+                mediaUrl: interaction.options.getString("media"),
             })
-
-            const embed = new EmbedBuilder()
-                .setColor(0x57F287)
-                .setTitle("✅ Welcome System Configured")
-                .addFields(
-                    { name: "📢 Channel",     value: `<#${channel.id}>`,               inline: true },
-                    { name: "🤖 AI Enabled",  value: useAI ? "Yes" : "No",             inline: true },
-                    { name: "🖼️ Thumbnail",   value: thumbnail ? "Yes" : "No",         inline: true },
-                    { name: "🪪 Card",        value: cardEnabled ? cardTheme : "Off",   inline: true },
-                    { name: "📝 Message",     value: (message || "*(default)*").slice(0, 512), inline: false },
-                )
-                .setFooter({ text: "Use /welcome preview to see the embed • /welcome test to send a live test" })
-                .setTimestamp()
-
-            if (colorStr)  embed.addFields({ name: "🎨 Color",  value: colorStr, inline: true })
-            if (accentColor) embed.addFields({ name: "🎨 Accent", value: accentColor, inline: true })
-            if (footer)    embed.addFields({ name: "📄 Footer", value: footer,   inline: true })
-            if (imageUrl)  embed.addFields({ name: "🖼️ Image",  value: imageUrl, inline: false })
-            if (cardBackground) embed.addFields({ name: "🪪 Card Background", value: cardBackground, inline: false })
-
-            await interaction.reply({ embeds: [embed] })
+            await interaction.reply({ content: `✅ Welcome messages are enabled in <#${channel.id}>.`, allowedMentions: SAFE_MENTIONS })
             return true
         }
 
-        // ── /welcome view ──────────────────────────────────────────────────────
+        const config = getWelcome(guild.id)
         if (sub === "view") {
-            const config = getWelcome(guild.id)
-
-            if (!config.welcomeChannelId) {
-                await interaction.reply({ content: "ℹ️ No welcome system is configured for this server. Use `/welcome setup` to get started.", ephemeral: true })
-                return true
-            }
-
             const embed = new EmbedBuilder()
                 .setColor(0x5865F2)
-                .setTitle("📋 Welcome System Configuration")
+                .setTitle("📋 Welcome Configuration")
                 .addFields(
-                    { name: "📢 Channel",    value: `<#${config.welcomeChannelId}>`,            inline: true },
-                    { name: "🤖 AI Enabled", value: config.welcomeUseAI ? "Yes" : "No",         inline: true },
-                    { name: "🖼️ Thumbnail",  value: config.welcomeThumbnail ? "Yes" : "No",     inline: true },
-                    { name: "🪪 Card",       value: config.welcomeCardEnabled ? config.welcomeCardTheme : "Off", inline: true },
-                    { name: "📝 Message",    value: (config.welcomeMessage || "*(default)*").slice(0, 512), inline: false },
+                    { name: "Status", value: config.welcomeEnabled && config.welcomeChannelId ? "Enabled" : "Disabled", inline: true },
+                    { name: "Channel", value: config.welcomeChannelId ? `<#${config.welcomeChannelId}>` : "Not selected", inline: true },
+                    { name: "AI", value: config.welcomeUseAI ? "Enabled" : "Disabled", inline: true },
+                    { name: "Card", value: config.welcomeCardEnabled ? config.welcomeCardTheme : "Disabled", inline: true },
+                    { name: "Message", value: (config.welcomeMessage || "Built-in default").slice(0, 1024), inline: false },
                 )
-                .setFooter({ text: "Use /welcome preview to see the embed • /welcome disable to turn off" })
-                .setTimestamp()
-
-            if (config.welcomeColor)    embed.addFields({ name: "🎨 Color",  value: config.welcomeColor,    inline: true })
-            if (config.welcomeAccentColor) embed.addFields({ name: "🎨 Accent", value: config.welcomeAccentColor, inline: true })
-            if (config.welcomeFooter)   embed.addFields({ name: "📄 Footer", value: config.welcomeFooter,   inline: true })
-            if (config.welcomeImageUrl) embed.addFields({ name: "🖼️ Image",  value: config.welcomeImageUrl, inline: false })
-            if (config.welcomeCardBackground) embed.addFields({ name: "🪪 Card Background", value: config.welcomeCardBackground, inline: false })
-
-            await interaction.reply({ embeds: [embed], ephemeral: true })
+            await interaction.reply({ embeds: [embed], ephemeral: true, allowedMentions: SAFE_MENTIONS })
             return true
         }
-
-        // ── /welcome preview ───────────────────────────────────────────────────
         if (sub === "preview") {
-            const config = getWelcome(guild.id)
-
-            if (!config.welcomeChannelId) {
-                await interaction.reply({ content: "⚠️ No welcome system is configured. Use `/welcome setup` first.", ephemeral: true })
-                return true
-            }
-
-            // Build preview using the command invoker as the "member"
-            const previewEmbed = buildPreviewEmbed(config, member)
-
-            await interaction.reply({
-                content: "👁️ **Welcome embed preview** — this is what new members will see:",
-                embeds: [previewEmbed],
-                ephemeral: true,
-            })
+            if (!config.welcomeChannelId) { await replyError(interaction, "Configure a welcome channel first."); return true }
+            await interaction.reply({ content: "👁️ Welcome preview", embeds: [buildPreviewEmbed(config, member)], ephemeral: true, allowedMentions: SAFE_MENTIONS })
             return true
         }
-
-        // ── /welcome test ──────────────────────────────────────────────────────
         if (sub === "test") {
-            if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-                await interaction.reply({ content: "❌ You need the **Manage Server** permission to test the welcome system.", ephemeral: true })
-                return true
-            }
-
-            const config = getWelcome(guild.id)
-            if (!config.welcomeChannelId) {
-                await interaction.reply({ content: "⚠️ No welcome system is configured. Use `/welcome setup` first.", ephemeral: true })
-                return true
-            }
-
+            if (!config.welcomeChannelId) { await replyError(interaction, "Configure a welcome channel first."); return true }
             await interaction.deferReply({ ephemeral: true })
-
+            const channel = await guild.channels.fetch(config.welcomeChannelId).catch(() => null)
+            if (!channel?.isTextBased()) { await interaction.editReply("❌ The configured welcome channel is unavailable."); return true }
             const { callAI } = require("../utils/ai")
-            try {
-                // Fetch the configured welcome channel and send there
-                const welcomeChannel = await guild.channels.fetch(config.welcomeChannelId).catch(() => null)
-                if (!welcomeChannel) {
-                    await interaction.editReply({ content: "❌ The configured welcome channel no longer exists. Update it with `/welcome setup`." })
-                    return true
-                }
-                await testWelcome(welcomeChannel, config, callAI, member)
-                await interaction.editReply({ content: `✅ Test welcome sent to <#${config.welcomeChannelId}>!` })
-            } catch (err) {
-                await interaction.editReply({ content: `❌ Failed to send test welcome: ${err.message}` })
-            }
+            await testWelcome(channel, config, callAI, member)
+            await interaction.editReply(`✅ Test welcome sent to <#${config.welcomeChannelId}>.`)
             return true
         }
-
-        // ── /welcome disable ───────────────────────────────────────────────────
         if (sub === "disable") {
-            if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
-                await interaction.reply({ content: "❌ You need the **Manage Server** permission to configure the welcome system.", ephemeral: true })
-                return true
-            }
-
             disableWelcome(guild.id)
-            await interaction.reply({ content: "✅ Welcome system has been **disabled**. New members will receive the default AI welcome." })
+            await interaction.reply({ content: "✅ Welcome messages are disabled. No fallback welcome will be sent.", ephemeral: true })
             return true
         }
-
-        return true
     }
 
-    // ── /autorole ──────────────────────────────────────────────────────────────
     if (commandName === "autorole") {
         const sub = interaction.options.getSubcommand()
-
-        // /autorole set
+        if (!member.permissions.has(PermissionFlagsBits.ManageRoles)) {
+            await replyError(interaction, "Manage Roles permission is required.")
+            return true
+        }
         if (sub === "set") {
-            if (!guild.members.me.permissions.has(PermissionFlagsBits.ManageRoles)) {
-                await interaction.reply({ content: "❌ I don't have the **Manage Roles** permission required to assign roles.", ephemeral: true })
-                return true
-            }
-
-            const role = interaction.options.getRole("role")
-
-            if (role.managed) {
-                await interaction.reply({ content: "❌ That role is managed by an integration and cannot be used as an autorole.", ephemeral: true })
-                return true
-            }
-
+            const role = interaction.options.getRole("role", true)
             const botMember = guild.members.me
-            if (botMember.roles.highest.position <= role.position) {
-                await interaction.reply({ content: `❌ I can't assign **${role.name}** because it is at or above my highest role in the hierarchy. Move my role above it first.`, ephemeral: true })
-                return true
-            }
-
+            if (role.managed) { await replyError(interaction, "Integration-managed roles cannot be used as autoroles."); return true }
+            if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) { await replyError(interaction, "I need Manage Roles permission."); return true }
+            if (botMember.roles.highest.comparePositionTo(role) <= 0) { await replyError(interaction, "Move my highest role above the selected role."); return true }
             setAutorole(guild.id, role.id, role.name)
-
-            const embed = new EmbedBuilder()
-                .setColor(0x57F287)
-                .setTitle("✅ Autorole Set")
-                .setDescription(`New members will automatically receive the <@&${role.id}> role when they join.`)
-                .setTimestamp()
-
-            await interaction.reply({ embeds: [embed] })
+            await interaction.reply({ content: `✅ New members will receive <@&${role.id}>.`, allowedMentions: SAFE_MENTIONS })
             return true
         }
-
-        // /autorole disable
         if (sub === "disable") {
-            const { autoroleId } = getAutorole(guild.id)
-            if (!autoroleId) {
-                await interaction.reply({ content: "ℹ️ Autorole is not currently configured for this server.", ephemeral: true })
-                return true
-            }
-
             disableAutorole(guild.id)
-
-            const embed = new EmbedBuilder()
-                .setColor(0xED4245)
-                .setTitle("🚫 Autorole Disabled")
-                .setDescription("New members will no longer be automatically assigned a role on join.")
-                .setTimestamp()
-
-            await interaction.reply({ embeds: [embed] })
+            await interaction.reply({ content: "✅ Autorole is disabled.", ephemeral: true })
             return true
         }
-
-        // /autorole view
         if (sub === "view") {
-            const { autoroleId, autoroleRoleName } = getAutorole(guild.id)
-
-            const embed = new EmbedBuilder()
-                .setColor(0x5865F2)
-                .setTitle("🔧 Autorole Configuration")
-                .setTimestamp()
-
-            if (autoroleId) {
-                const role = guild.roles.cache.get(autoroleId)
-                if (role) {
-                    embed.setDescription(`**Status:** ✅ Enabled\n**Role:** <@&${autoroleId}> (${role.name})`)
-                } else {
-                    embed.setDescription(`**Status:** ⚠️ Configured but role no longer exists\n**Role ID:** \`${autoroleId}\` (${autoroleRoleName || "unknown"})\n\nUse \`/autorole disable\` to clear this, or \`/autorole set\` to pick a new role.`)
-                }
-            } else {
-                embed.setDescription("**Status:** ❌ Disabled\n\nUse `/autorole set` to assign a role to new members automatically.")
-            }
-
-            await interaction.reply({ embeds: [embed], ephemeral: true })
+            const config = getAutorole(guild.id)
+            await interaction.reply({
+                content: config.autoroleId
+                    ? `✅ Autorole: <@&${config.autoroleId}>`
+                    : "❌ Autorole is disabled.",
+                ephemeral: true,
+                allowedMentions: SAFE_MENTIONS,
+            })
             return true
         }
     }
@@ -653,85 +710,52 @@ async function handleInteraction(interaction) {
     return false
 }
 
-// ─── Prefix command handler (admin config) ────────────────────────────────────
-
 async function handlePrefixCommand(message) {
     const msgLower = message.content.toLowerCase().trim()
     const { guild, member } = message
-
     if (!guild || !member) return false
     const isAdmin = member.permissions.has(PermissionFlagsBits.Administrator)
 
-    // !setmodlog — save current channel as mod-log channel
     if (msgLower === "!setmodlog") {
-        if (!isAdmin) {
-            await message.channel.send("❌ You need **Administrator** permission to do that.")
-            return true
-        }
+        if (!isAdmin) { await message.channel.send("❌ Administrator permission required."); return true }
         const { data, config } = getServerConfig(guild.id)
         config.modLogChannelId = message.channel.id
         saveConfig(data)
-        process.env.MOD_LOG_CHANNEL_ID = message.channel.id
-        await message.channel.send(`✅ Mod-log channel set to <#${message.channel.id}>. All moderation actions will be logged here.`)
+        await message.channel.send(`✅ Mod-log channel set to <#${message.channel.id}>.`)
         return true
     }
 
-    // !antispam on|off
-    if (msgLower.startsWith("!antispam ")) {
+    for (const [prefix, key, label] of [
+        ["!antispam ", "antiSpam", "Anti-spam"],
+        ["!antilink ", "antiLink", "Anti-link"],
+        ["!antiinvite ", "antiInvite", "Anti-invite"],
+    ]) {
+        if (!msgLower.startsWith(prefix)) continue
         if (!isAdmin) { await message.channel.send("❌ Administrator permission required."); return true }
-        const val = msgLower.split(" ")[1]
-        if (!["on", "off"].includes(val)) { await message.channel.send("Usage: `!antispam on|off`"); return true }
+        const value = msgLower.slice(prefix.length).trim()
+        if (!["on", "off"].includes(value)) { await message.channel.send(`Usage: \`${prefix.trim()} on|off\``); return true }
         const { data, config } = getServerConfig(guild.id)
-        config.antiSpam = val === "on"
+        config[key] = value === "on"
         saveConfig(data)
-        await message.channel.send(`✅ Anti-spam is now **${val.toUpperCase()}**.`)
+        await message.channel.send(`✅ ${label} is now **${value.toUpperCase()}**.`)
         return true
     }
 
-    // !antilink on|off
-    if (msgLower.startsWith("!antilink ")) {
-        if (!isAdmin) { await message.channel.send("❌ Administrator permission required."); return true }
-        const val = msgLower.split(" ")[1]
-        if (!["on", "off"].includes(val)) { await message.channel.send("Usage: `!antilink on|off`"); return true }
-        const { data, config } = getServerConfig(guild.id)
-        config.antiLink = val === "on"
-        saveConfig(data)
-        await message.channel.send(`✅ Anti-link is now **${val.toUpperCase()}**.`)
-        return true
-    }
-
-    // !antiinvite on|off
-    if (msgLower.startsWith("!antiinvite ")) {
-        if (!isAdmin) { await message.channel.send("❌ Administrator permission required."); return true }
-        const val = msgLower.split(" ")[1]
-        if (!["on", "off"].includes(val)) { await message.channel.send("Usage: `!antiinvite on|off`"); return true }
-        const { data, config } = getServerConfig(guild.id)
-        config.antiInvite = val === "on"
-        saveConfig(data)
-        await message.channel.send(`✅ Anti-invite is now **${val.toUpperCase()}**.`)
-        return true
-    }
-
-    // !whitelist add|remove <domain>
     if (msgLower.startsWith("!whitelist ")) {
         if (!isAdmin) { await message.channel.send("❌ Administrator permission required."); return true }
-        const parts  = message.content.trim().split(/\s+/)
-        const sub    = parts[1]?.toLowerCase()
-        const domain = parts[2]?.toLowerCase()
+        const parts = message.content.trim().split(/\s+/)
+        const sub = parts[1]?.toLowerCase()
+        const domain = parts[2]?.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0]
         if (!["add", "remove"].includes(sub) || !domain) {
             await message.channel.send("Usage: `!whitelist add <domain>` or `!whitelist remove <domain>`")
             return true
         }
         const { data, config } = getServerConfig(guild.id)
-        if (!config.linkWhitelist) config.linkWhitelist = []
-        if (sub === "add") {
-            if (!config.linkWhitelist.includes(domain)) config.linkWhitelist.push(domain)
-            await message.channel.send(`✅ **${domain}** added to the link whitelist.`)
-        } else {
-            config.linkWhitelist = config.linkWhitelist.filter(d => d !== domain)
-            await message.channel.send(`✅ **${domain}** removed from the link whitelist.`)
-        }
+        if (!Array.isArray(config.linkWhitelist)) config.linkWhitelist = []
+        if (sub === "add" && !config.linkWhitelist.includes(domain)) config.linkWhitelist.push(domain)
+        if (sub === "remove") config.linkWhitelist = config.linkWhitelist.filter(item => item !== domain)
         saveConfig(data)
+        await message.channel.send(`✅ **${domain}** ${sub === "add" ? "added to" : "removed from"} the whitelist.`)
         return true
     }
 
