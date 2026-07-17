@@ -4,6 +4,7 @@ const { getServerConfig } = require("./utils/serverConfig")
 const { createDashboardRouter } = require("./api/dashboard")
 const { createDashboardControlRouter } = require("./api/dashboardControl")
 const { createDashboardWelcomeRouter } = require("./api/dashboardWelcome")
+const { createDashboardModerationRouter } = require("./api/dashboardModeration")
 
 let discordClient = null
 
@@ -110,12 +111,12 @@ function startWebhookServer() {
     app.set("trust proxy", 1)
 
     app.use(express.json({
-        verify: (req, _res, buf) => { req.rawBody = buf }
+        verify: (req, _res, buf) => { req.rawBody = buf },
     }))
     app.use(express.urlencoded({ extended: true }))
 
-    app.get("/", (req, res) => res.send("👹 CURSED Bot is alive!"))
-    app.get("/health", (req, res) => res.json({
+    app.get("/", (_req, res) => res.send("👹 CURSED Bot is alive!"))
+    app.get("/health", (_req, res) => res.json({
         status: "ok",
         bot: discordClient?.isReady() ?? false,
         guilds: discordClient?.guilds.cache.size ?? 0,
@@ -129,6 +130,7 @@ function startWebhookServer() {
 
     app.use("/api/dashboard", createDashboardWelcomeRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardControlRouter(() => discordClient))
+    app.use("/api/dashboard", createDashboardModerationRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardRouter(() => discordClient))
 
     app.post("/webhook/kofi", async (req, res) => {
@@ -143,7 +145,7 @@ function startWebhookServer() {
             }
 
             console.log(`☕ Ko-fi donation from ${data.from_name} (${data.type})`)
-            const searchText = (data.message || "") + " " + (data.from_name || "")
+            const searchText = `${data.message || ""} ${data.from_name || ""}`
             const discordId = extractDiscordId(searchText)
 
             if (discordId) {
@@ -154,7 +156,7 @@ function startWebhookServer() {
                 console.log("⚠️ Ko-fi donation received but no valid Discord ID found in message. Manual grant needed.")
             }
             res.status(200).send("OK")
-        } catch (err) {
+        } catch {
             console.error("Ko-fi webhook error: request failed")
             res.status(500).send("Error")
         }
@@ -173,7 +175,7 @@ function startWebhookServer() {
             console.log(`🎨 Patreon webhook event: ${event}`)
 
             if (["members:pledge:create", "members:create"].includes(event)) {
-                const rawDiscordId = body?.included?.find(i => i.type === "user")
+                const rawDiscordId = body?.included?.find(item => item.type === "user")
                     ?.attributes?.social_connections?.discord?.user_id
                     || body?.data?.relationships?.user?.data?.id
 
@@ -184,7 +186,7 @@ function startWebhookServer() {
                 }
             }
             res.status(200).send("OK")
-        } catch (err) {
+        } catch {
             console.error("Patreon webhook error: request failed")
             res.status(500).send("Error")
         }
@@ -200,12 +202,12 @@ function startWebhookServer() {
 
             const data = req.body
             console.log(`☕ Buy Me a Coffee webhook from ${data?.supporter_name}`)
-            const searchText = (data?.support_note || "") + " " + (data?.supporter_name || "")
+            const searchText = `${data?.support_note || ""} ${data?.supporter_name || ""}`
             const discordId = extractDiscordId(searchText)
             if (discordId) await grantPremiumByDiscordId(discordId, "Buy Me a Coffee")
             else console.log("⚠️ BMC donation received but no valid Discord ID in note.")
             res.status(200).send("OK")
-        } catch (err) {
+        } catch {
             console.error("BMC webhook error: request failed")
             res.status(500).send("Error")
         }
@@ -213,10 +215,10 @@ function startWebhookServer() {
 
     app.listen(port, "0.0.0.0", () => {
         console.log(`\n🌐 Webhook server running on port ${port}`)
-        console.log(`   Ko-fi:   POST /webhook/kofi`)
-        console.log(`   Patreon: POST /webhook/patreon`)
-        console.log(`   BMC:     POST /webhook/bmc`)
-        console.log(`   Health:  GET  /health\n`)
+        console.log("   Ko-fi:   POST /webhook/kofi")
+        console.log("   Patreon: POST /webhook/patreon")
+        console.log("   BMC:     POST /webhook/bmc")
+        console.log("   Health:  GET  /health\n")
     })
 
     return app
