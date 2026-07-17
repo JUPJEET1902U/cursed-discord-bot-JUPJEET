@@ -33,6 +33,7 @@ function loadCommands() {
         { name: "summary",          module: require("../commands/summary")          },
         { name: "knowledge",        module: require("../commands/knowledge")        },
         { name: "server-insights",  module: require("../commands/serverInsights")   },
+        { name: "public-stats-status", module: require("../commands/publicStatsStatus") },
     ]
 
     log.info(`Loaded ${commandModules.length} command modules`)
