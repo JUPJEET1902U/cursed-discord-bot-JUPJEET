@@ -5,6 +5,8 @@ const { getPet, calcPetLevel } = require("../utils/pets")
 const { getUserPersonality, setUserPersonality, resetUserPersonality } = require("../utils/personalities")
 const { VALID_PERSONALITIES, formatPersonalityList } = require("../config/personalities")
 const { getEquipped } = require("../utils/shop")
+const { getLevelingConfig, getMemberRank } = require("../utils/leveling")
+const { getLevelProgress, buildProgressBar } = require("../utils/levelingMath")
 const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName } = require("../utils/sanitizer")
 
@@ -67,7 +69,7 @@ async function handle(message) {
         return true
     }
 
-    // ── !clearprofile ──────────────────────────────────────────────────────────
+    // ── !clearprofile ─────────────────────────────────────────────────────────
     if (msgLower === "!clearprofile") {
         setProfile(userId, null)
         await createSafeMessage(message.channel,
@@ -75,7 +77,7 @@ async function handle(message) {
         return true
     }
 
-    // ── !profile ───────────────────────────────────────────────────────────────
+    // ── !profile ──────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!profile")) {
         const mentioned = message.mentions.users.first()
         const targetId = mentioned ? mentioned.id : userId
@@ -88,9 +90,6 @@ async function handle(message) {
         const { pet } = getPet(targetId)
         const personality = await getUserPersonality(targetId)
         const equipped = getEquipped(user)
-        const nextLevelXP = xpToNextLevel(user.level)
-        const progress = Math.min(10, Math.floor((user.xp / nextLevelXP) * 10))
-        const xpBar = "█".repeat(progress) + "░".repeat(10 - progress)
         const badges = [
             user.prestige ? "🌟" : null,
             user.badge ? "💀" : null,
@@ -99,17 +98,47 @@ async function handle(message) {
         ].filter(Boolean).join(" ")
         const s = user.stats || {}
 
-        const allUsers = Object.values(loadEconomy()).sort((a, b) => b.xp - a.xp)
-        const rank = allUsers.findIndex(u => u.name === targetName) + 1
+        // Prefer the new server-specific MongoDB level whenever server leveling
+        // is enabled. Keep legacy economy XP as a compatibility fallback so
+        // profiles still work before setup or during a database outage.
+        let levelLine
+        let xpLine
+        let messageLine = `💬 AI Chats: **${s.chat || 0}**\n`
+        try {
+            const levelingConfig = await getLevelingConfig(message.guild.id)
+            const serverRank = levelingConfig.enabled
+                ? await getMemberRank(message.guild.id, targetId)
+                : null
+
+            if (levelingConfig.enabled) {
+                const progress = getLevelProgress(serverRank?.xp || 0)
+                const xpBar = buildProgressBar(progress.ratio, 10)
+                levelLine = `⭐ Server Level: **${progress.level}** | 🏅 Rank: **${serverRank?.rank ? `#${serverRank.rank}` : "Unranked"}**\n`
+                xpLine = `📊 Server XP: **${progress.current}** / ${progress.needed} \`[${xpBar}]\`\n`
+                messageLine = `💬 XP Messages: **${serverRank?.messageCount || 0}** | AI Chats: **${s.chat || 0}**\n`
+            }
+        } catch {
+            // Fall through to legacy economy XP below.
+        }
+
+        if (!levelLine || !xpLine) {
+            const nextLevelXP = xpToNextLevel(user.level)
+            const legacyProgress = Math.min(10, Math.floor((user.xp / nextLevelXP) * 10))
+            const legacyBar = "█".repeat(legacyProgress) + "░".repeat(10 - legacyProgress)
+            const allUsers = Object.values(loadEconomy()).sort((a, b) => b.xp - a.xp)
+            const legacyRank = allUsers.findIndex(u => u.name === targetName) + 1
+            levelLine = `⭐ Legacy Level: **${user.level}** | 🏅 Rank: **#${legacyRank > 0 ? legacyRank : "?"}**\n`
+            xpLine = `📊 Legacy XP: **${user.xp}** / ${Math.floor(nextLevelXP)} \`[${legacyBar}]\`\n`
+        }
 
         let msg = ""
         if (equipped.title) msg += `${equipped.title.display}\n`
         msg += `👤 **${targetName}'s Profile**${badges ? " " + badges : ""}\n\n`
-        msg += `⭐ Level: **${user.level}** | 🏅 Rank: **#${rank > 0 ? rank : "?"}**\n`
-        msg += `📊 XP: **${user.xp}** / ${Math.floor(nextLevelXP)} \`[${xpBar}]\`\n`
+        msg += levelLine
+        msg += xpLine
         msg += `🪙 Coins: **${user.coins}**\n`
         if (equipped.theme) msg += `🎨 Theme: **${equipped.theme.display}**\n`
-        msg += `💬 Messages: **${s.chat || 0}**\n`
+        msg += messageLine
         msg += `⚔️ Battles: **${s.battles || 0}** (${s.battlesWon || 0}W) | ✅ Quests: **${s.questClaimed || 0}**\n`
         if (pet) {
             const petLevel = calcPetLevel(pet.xp)
