@@ -3,8 +3,7 @@ const { createCanvas, loadImage } = require("@napi-rs/canvas")
 const WIDTH = 760
 const HEIGHT = 240
 
-// Built-in vector glyphs keep card text reliable on Railway without relying on
-// system fonts. The strokes are rounded and anti-aliased by canvas.
+// Built-in vector glyphs keep text reliable on Railway without shipping fonts.
 const GLYPHS = {
     " ": ["00000","00000","00000","00000","00000","00000","00000"],
     "A": ["01110","10001","10001","11111","10001","10001","10001"],
@@ -50,7 +49,6 @@ const GLYPHS = {
     "!": ["00100","00100","00100","00100","00100","00000","00100"],
     "?": ["01110","10001","00001","00010","00100","00000","00100"],
     ":": ["00000","00100","00100","00000","00100","00100","00000"],
-    "•": ["00000","00000","00100","01110","00100","00000","00000"],
     "/": ["00001","00010","00010","00100","01000","01000","10000"],
     "+": ["00000","00100","00100","11111","00100","00100","00000"],
     "&": ["01100","10010","10100","01000","10101","10010","01101"],
@@ -72,38 +70,6 @@ function roundRect(ctx, x, y, width, height, radius) {
     ctx.closePath()
 }
 
-function drawCoverImage(ctx, image, x, y, width, height) {
-    const sourceRatio = image.width / image.height
-    const targetRatio = width / height
-    let sx = 0
-    let sy = 0
-    let sw = image.width
-    let sh = image.height
-
-    if (sourceRatio > targetRatio) {
-        sw = image.height * targetRatio
-        sx = (image.width - sw) / 2
-    } else {
-        sh = image.width / targetRatio
-        sy = (image.height - sh) / 2
-    }
-
-    ctx.drawImage(image, sx, sy, sw, sh, x, y, width, height)
-}
-
-async function loadRemoteImage(url) {
-    if (!url || typeof fetch !== "function") return null
-    try {
-        const parsed = new URL(url)
-        if (!["https:", "http:"].includes(parsed.protocol)) return null
-        const response = await fetch(parsed)
-        if (!response.ok) return null
-        return await loadImage(Buffer.from(await response.arrayBuffer()))
-    } catch {
-        return null
-    }
-}
-
 function normalizeText(value, fallback = "MEMBER") {
     const source = String(value || fallback)
         .normalize("NFKD")
@@ -116,39 +82,45 @@ function normalizeText(value, fallback = "MEMBER") {
         else if (/\s/u.test(char) || char.codePointAt(0) > 127) result += " "
         else result += "?"
     }
-
     return result.replace(/\s+/g, " ").trim() || fallback
 }
 
-function textMetrics(height, spacingRatio = 0.16) {
+function metrics(height, spacingRatio = 0.16) {
     const stepY = height / 6
     const stepX = stepY * 0.82
     const stroke = Math.max(1.2, stepY * 0.82)
-    const glyphWidth = stepX * 4 + stroke
-    const spacing = height * spacingRatio
-    return { stepX, stepY, stroke, glyphWidth, spacing }
+    return {
+        stepX,
+        stepY,
+        stroke,
+        glyphWidth: stepX * 4 + stroke,
+        spacing: height * spacingRatio,
+    }
 }
 
-function measureText(text, height, spacingRatio = 0.16) {
+function measure(text, height, spacingRatio = 0.16) {
     const value = normalizeText(text, "")
     if (!value) return 0
-    const { glyphWidth, spacing } = textMetrics(height, spacingRatio)
+    const { glyphWidth, spacing } = metrics(height, spacingRatio)
     return value.length * glyphWidth + Math.max(0, value.length - 1) * spacing
 }
 
-function fitHeight(text, preferredHeight, maxWidth, minHeight, spacingRatio) {
-    const measured = measureText(text, preferredHeight, spacingRatio)
-    if (!maxWidth || measured <= maxWidth) return preferredHeight
-    return Math.max(minHeight, preferredHeight * (maxWidth / measured))
+function fitHeight(text, preferred, maxWidth, minHeight, spacingRatio) {
+    const width = measure(text, preferred, spacingRatio)
+    if (!maxWidth || width <= maxWidth) return preferred
+    return Math.max(minHeight, preferred * (maxWidth / width))
 }
 
 function hasCell(glyph, row, column) {
-    return Boolean(glyph[row]?.[column] === "1")
+    return glyph[row]?.[column] === "1"
 }
 
 function drawGlyph(ctx, glyph, x, y, height, color, options = {}) {
-    const { stepX, stepY, stroke } = textMetrics(height, options.spacingRatio)
-    const point = (row, column) => [x + column * stepX + stroke / 2, y + row * stepY + stroke / 2]
+    const { stepX, stepY, stroke } = metrics(height, options.spacingRatio)
+    const point = (row, column) => [
+        x + column * stepX + stroke / 2,
+        y + row * stepY + stroke / 2,
+    ]
 
     ctx.save()
     ctx.strokeStyle = color
@@ -203,8 +175,9 @@ function drawText(ctx, text, x, y, preferredHeight, options = {}) {
     const spacingRatio = options.spacingRatio ?? 0.16
     const value = normalizeText(text, options.fallback || "MEMBER")
     const height = fitHeight(value, preferredHeight, options.maxWidth, options.minHeight || 7, spacingRatio)
-    const { glyphWidth, spacing } = textMetrics(height, spacingRatio)
-    const width = measureText(value, height, spacingRatio)
+    const { glyphWidth, spacing } = metrics(height, spacingRatio)
+    const width = measure(value, height, spacingRatio)
+
     let cursorX = x
     if (options.align === "center") cursorX -= width / 2
     if (options.align === "right") cursorX -= width
@@ -218,6 +191,48 @@ function drawText(ctx, text, x, y, preferredHeight, options = {}) {
         cursorX += glyphWidth + spacing
     }
     return { value, width, height }
+}
+
+function drawLevelTransition(ctx, oldLevel, newLevel) {
+    const centerX = 622
+    const y = 101
+    const preferredHeight = 31
+    const maxSideWidth = 55
+    const oldText = String(oldLevel)
+    const newText = String(newLevel)
+    const sideHeight = Math.min(
+        fitHeight(oldText, preferredHeight, maxSideWidth, 17, 0.12),
+        fitHeight(newText, preferredHeight, maxSideWidth, 17, 0.12),
+    )
+
+    drawText(ctx, oldText, 576, y, sideHeight, {
+        color: "#FFFFFF",
+        align: "center",
+        maxWidth: maxSideWidth,
+        minHeight: 17,
+        spacingRatio: 0.12,
+        glowColor: "rgba(168,85,247,0.55)",
+        glowBlur: 6,
+    })
+
+    ctx.save()
+    ctx.fillStyle = "#D8B4FE"
+    ctx.shadowColor = "rgba(168,85,247,0.75)"
+    ctx.shadowBlur = 7
+    ctx.beginPath()
+    ctx.arc(centerX, y + sideHeight * 0.56, Math.max(3.5, sideHeight * 0.12), 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+
+    drawText(ctx, newText, 668, y, sideHeight, {
+        color: "#FFFFFF",
+        align: "center",
+        maxWidth: maxSideWidth,
+        minHeight: 17,
+        spacingRatio: 0.12,
+        glowColor: "rgba(168,85,247,0.55)",
+        glowBlur: 6,
+    })
 }
 
 function splitServerName(value) {
@@ -276,6 +291,37 @@ function drawServerFooter(ctx, guildName) {
         })
         y += heights[index] + gap
     })
+}
+
+function drawCoverImage(ctx, image, x, y, width, height) {
+    const sourceRatio = image.width / image.height
+    const targetRatio = width / height
+    let sx = 0
+    let sy = 0
+    let sw = image.width
+    let sh = image.height
+
+    if (sourceRatio > targetRatio) {
+        sw = image.height * targetRatio
+        sx = (image.width - sw) / 2
+    } else {
+        sh = image.width / targetRatio
+        sy = (image.height - sh) / 2
+    }
+    ctx.drawImage(image, sx, sy, sw, sh, x, y, width, height)
+}
+
+async function loadRemoteImage(url) {
+    if (!url || typeof fetch !== "function") return null
+    try {
+        const parsed = new URL(url)
+        if (!["https:", "http:"].includes(parsed.protocol)) return null
+        const response = await fetch(parsed)
+        if (!response.ok) return null
+        return await loadImage(Buffer.from(await response.arrayBuffer()))
+    } catch {
+        return null
+    }
 }
 
 async function generateLevelUpCard({ user, displayName, guildName, oldLevel, newLevel }) {
@@ -357,7 +403,8 @@ async function generateLevelUpCard({ user, displayName, guildName, oldLevel, new
         glowBlur: 10,
     })
 
-    drawText(ctx, displayName || user?.username || "Member", 235, 121, 23, {
+    // Use the account username here. The server name appears only in the footer.
+    drawText(ctx, user?.username || displayName || "Member", 235, 121, 23, {
         color: "#E9D5FF",
         maxWidth: 285,
         minHeight: 11,
@@ -376,16 +423,7 @@ async function generateLevelUpCard({ user, displayName, guildName, oldLevel, new
         spacingRatio: 0.13,
     })
 
-    drawText(ctx, `${oldLevel} • ${newLevel}`, 622, 101, 31, {
-        color: "#FFFFFF",
-        align: "center",
-        maxWidth: 150,
-        minHeight: 17,
-        spacingRatio: 0.15,
-        glowColor: "rgba(168,85,247,0.55)",
-        glowBlur: 6,
-    })
-
+    drawLevelTransition(ctx, oldLevel, newLevel)
     drawServerFooter(ctx, guildName || "Discord Server")
 
     return canvas.toBuffer("image/png")
