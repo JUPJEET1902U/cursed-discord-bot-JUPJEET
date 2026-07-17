@@ -1,33 +1,47 @@
 /**
- * Mod Log utility — sends structured embeds to the configured mod-logs channel.
- *
- * Set MOD_LOG_CHANNEL_ID in your environment variables to the channel ID where
- * moderation actions should be logged.
+ * Structured moderation logging plus MongoDB case creation.
+ * A moderation case is persisted even when no log channel is configured.
  */
 
 const { EmbedBuilder } = require("discord.js")
+const { createCase } = require("./moderationCases")
 
-// Colour palette per action type
 const ACTION_COLORS = {
-    WARN:       0xFFAA00, // amber
-    MUTE:       0xFF6600, // orange
-    UNMUTE:     0x00CC88, // teal
-    KICK:       0xFF4444, // red
-    BAN:        0xCC0000, // dark red
-    ANTI_LINK:  0xAA44FF, // purple
-    ANTI_INVITE:0xDD44AA, // pink
-    ANTI_SPAM:  0xFF8800, // deep orange
+    WARN: 0xFFAA00,
+    CLEAR_WARNINGS: 0x99AABB,
+    TIMEOUT: 0xFF6600,
+    MUTE: 0xFF6600,
+    UNTIMEOUT: 0x00CC88,
+    UNMUTE: 0x00CC88,
+    KICK: 0xFF4444,
+    BAN: 0xCC0000,
+    UNBAN: 0x00AA88,
+    PURGE: 0x5865F2,
+    LOCK: 0x9922CC,
+    UNLOCK: 0x22AA88,
+    SLOWMODE: 0x5865F2,
+    ANTI_LINK: 0xAA44FF,
+    ANTI_INVITE: 0xDD44AA,
+    ANTI_SPAM: 0xFF8800,
 }
 
 const ACTION_EMOJIS = {
-    WARN:        "⚠️",
-    MUTE:        "🔇",
-    UNMUTE:      "🔊",
-    KICK:        "👢",
-    BAN:         "🔨",
-    ANTI_LINK:   "🔗",
+    WARN: "⚠️",
+    CLEAR_WARNINGS: "🧹",
+    TIMEOUT: "🔇",
+    MUTE: "🔇",
+    UNTIMEOUT: "🔊",
+    UNMUTE: "🔊",
+    KICK: "👢",
+    BAN: "🔨",
+    UNBAN: "🕊️",
+    PURGE: "🧹",
+    LOCK: "🔒",
+    UNLOCK: "🔓",
+    SLOWMODE: "🐢",
+    ANTI_LINK: "🔗",
     ANTI_INVITE: "📨",
-    ANTI_SPAM:   "🚫",
+    ANTI_SPAM: "🚫",
 }
 
 let _client = null
@@ -42,23 +56,56 @@ function setClient(client) {
     }
 }
 
-/**
- * Send a mod-log embed to the designated channel.
- *
- * @param {object} guild   - Discord.js Guild object
- * @param {object} options
- * @param {string} options.action       - One of the ACTION_COLORS keys
- * @param {object} options.target       - { id, tag } of the affected user
- * @param {object} [options.moderator]  - { id, tag } of the acting moderator (omit for auto-actions)
- * @param {string} [options.reason]     - Reason for the action
- * @param {string} [options.extra]      - Any additional detail line
- */
-async function logAction(guild, { action, target, moderator, reason, extra }) {
-    if (!_client) return
+function inferDurationMs(extra) {
+    const text = String(extra || "")
+    const minuteMatch = text.match(/(\d+)\s*minute/i)
+    if (minuteMatch) return Number(minuteMatch[1]) * 60 * 1000
+    const hourMatch = text.match(/(\d+)\s*hour/i)
+    if (hourMatch) return Number(hourMatch[1]) * 60 * 60 * 1000
+    const dayMatch = text.match(/(\d+)\s*day/i)
+    if (dayMatch) return Number(dayMatch[1]) * 24 * 60 * 60 * 1000
+    return null
+}
 
-    // Prefer the per-guild modLogChannelId stored in serverConfig over the
-    // global env var. This prevents logs from one guild appearing in another
-    // guild's channel when MOD_LOG_CHANNEL_ID is set globally.
+function isAutoAction(action, moderator, source) {
+    return source === "automod" || (!moderator && String(action).startsWith("ANTI_"))
+}
+
+async function logAction(guild, {
+    action,
+    target,
+    moderator,
+    reason,
+    extra,
+    durationMs = null,
+    evidenceUrl = null,
+    source = null,
+    metadata = {},
+    createCaseRecord = true,
+}) {
+    const normalizedAction = String(action || "NOTE").toUpperCase()
+    const resolvedSource = source || (isAutoAction(normalizedAction, moderator, source) ? "automod" : "manual")
+
+    let caseRecord = null
+    if (createCaseRecord && guild?.id && target?.id) {
+        caseRecord = await createCase({
+            guildId: guild.id,
+            action: normalizedAction,
+            target,
+            moderator,
+            reason,
+            durationMs: durationMs || inferDurationMs(extra),
+            evidenceUrl,
+            source: resolvedSource,
+            metadata: {
+                ...(metadata && typeof metadata === "object" ? metadata : {}),
+                details: extra || null,
+            },
+        })
+    }
+
+    if (!_client) return { caseRecord, logged: false }
+
     let channelId = null
     try {
         const { getServerConfig } = require("./serverConfig")
@@ -68,38 +115,47 @@ async function logAction(guild, { action, target, moderator, reason, extra }) {
         channelId = process.env.MOD_LOG_CHANNEL_ID || null
     }
 
-    if (!channelId) return
+    if (!channelId) return { caseRecord, logged: false }
 
-    // Verify the channel actually belongs to this guild to prevent cross-guild logging
     const channel = guild.channels.cache.get(channelId)
-    if (!channel || !channel.isTextBased()) return
+    if (!channel || !channel.isTextBased()) return { caseRecord, logged: false }
 
-    const color  = ACTION_COLORS[action] ?? 0x99AABB
-    const emoji  = ACTION_EMOJIS[action] ?? "🛡️"
-    const label  = action.replace("_", " ")
+    const color = ACTION_COLORS[normalizedAction] ?? 0x99AABB
+    const emoji = ACTION_EMOJIS[normalizedAction] ?? "🛡️"
+    const label = normalizedAction.replace(/_/g, " ")
 
     const embed = new EmbedBuilder()
         .setColor(color)
         .setTitle(`${emoji} ${label}`)
         .addFields(
-            { name: "👤 User",      value: `<@${target.id}> (${target.tag})`,                    inline: true },
-            { name: "🆔 User ID",   value: target.id,                                             inline: true },
+            { name: "👤 User", value: `<@${target.id}> (${target.tag || "Unknown"})`, inline: true },
+            { name: "🆔 User ID", value: String(target.id), inline: true },
         )
         .setTimestamp()
 
-    if (moderator) {
-        embed.addFields({ name: "🛡️ Moderator", value: `<@${moderator.id}> (${moderator.tag})`, inline: true })
-    } else {
-        embed.addFields({ name: "🤖 Action by", value: "Auto-Moderation",                        inline: true })
+    if (caseRecord) {
+        embed.addFields({ name: "📁 Case", value: `#${caseRecord.caseNumber}`, inline: true })
     }
 
-    if (reason) embed.addFields({ name: "📝 Reason", value: reason, inline: false })
-    if (extra)  embed.addFields({ name: "ℹ️ Details", value: extra,  inline: false })
+    if (moderator) {
+        embed.addFields({
+            name: "🛡️ Moderator",
+            value: `<@${moderator.id}> (${moderator.tag || "Unknown"})`,
+            inline: true,
+        })
+    } else {
+        embed.addFields({ name: "🤖 Action by", value: "Auto-Moderation", inline: true })
+    }
+
+    if (reason) embed.addFields({ name: "📝 Reason", value: String(reason).slice(0, 1024), inline: false })
+    if (extra) embed.addFields({ name: "ℹ️ Details", value: String(extra).slice(0, 1024), inline: false })
 
     try {
-        await channel.send({ embeds: [embed] })
+        await channel.send({ embeds: [embed], allowedMentions: { parse: [] } })
+        return { caseRecord, logged: true }
     } catch (err) {
         console.error("Mod-log send error:", err.message)
+        return { caseRecord, logged: false }
     }
 }
 
