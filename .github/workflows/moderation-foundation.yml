@@ -1,0 +1,48 @@
+name: Moderation foundation CI
+
+on:
+  pull_request:
+    paths:
+      - "commands/moderation.js"
+      - "utils/moderation*.js"
+      - "utils/warnings.js"
+      - "utils/modlog.js"
+      - "api/dashboardModeration.js"
+      - "webhook.js"
+      - ".github/workflows/moderation-foundation.yml"
+  push:
+    branches:
+      - feature/moderation-foundation
+
+jobs:
+  syntax-and-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate JavaScript syntax
+        run: |
+          node --check commands/moderation.js
+          node --check utils/moderationConfig.js
+          node --check utils/moderationSafety.js
+          node --check utils/moderationCases.js
+          node --check utils/warnings.js
+          node --check utils/modlog.js
+          node --check api/dashboardModeration.js
+          node --check webhook.js
+      - name: Validate exported moderation contracts
+        run: |
+          node - <<'NODE'
+          const config = require('./utils/moderationConfig')
+          const cases = require('./utils/moderationCases')
+          const safety = require('./utils/moderationSafety')
+          const api = require('./api/dashboardModeration')
+          if (typeof config.normalizeModerationConfig !== 'function') throw new Error('missing config normalizer')
+          if (typeof cases.createCase !== 'function') throw new Error('missing case creator')
+          if (typeof safety.validateModerationTarget !== 'function') throw new Error('missing hierarchy validator')
+          if (typeof api.createDashboardModerationRouter !== 'function') throw new Error('missing dashboard router')
+          NODE
