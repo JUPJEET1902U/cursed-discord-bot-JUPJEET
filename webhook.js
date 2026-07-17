@@ -3,6 +3,7 @@ const crypto = require("crypto")
 const { getServerConfig } = require("./utils/serverConfig")
 const { createDashboardRouter } = require("./api/dashboard")
 const { createDashboardControlRouter } = require("./api/dashboardControl")
+const { createDashboardWelcomeRouter } = require("./api/dashboardWelcome")
 
 let discordClient = null
 
@@ -10,12 +11,7 @@ function setClient(client) {
     discordClient = client
 }
 
-// ── Discord ID validation ──────────────────────────────────────────────────────
-// Discord snowflake IDs are 17-19 digits and must be >= the Discord epoch
-// (2015-01-01T00:00:00.000Z = snowflake 0, first real IDs ~2015).
-// This rejects phone numbers, credit card numbers, and other numeric strings
-// that happen to be 17-20 digits long.
-const DISCORD_EPOCH_MS = 1420070400000 // 2015-01-01T00:00:00.000Z
+const DISCORD_EPOCH_MS = 1420070400000
 
 function isValidDiscordId(id) {
     if (!/^\d{17,19}$/.test(id)) return false
@@ -86,7 +82,6 @@ async function grantPremiumByDiscordId(discordId, platform) {
     }
 
     let granted = false
-
     for (const [guildId, guild] of discordClient.guilds.cache) {
         const { config } = getServerConfig(guildId)
         if (!config.premiumRoleId) continue
@@ -94,7 +89,6 @@ async function grantPremiumByDiscordId(discordId, platform) {
         try {
             const member = await guild.members.fetch(discordId).catch(() => null)
             if (!member) continue
-
             await member.roles.add(config.premiumRoleId)
             granted = true
             console.log(`✅ Premium granted to ${discordId} via ${platform} in guild: ${guild.name}`)
@@ -107,7 +101,6 @@ async function grantPremiumByDiscordId(discordId, platform) {
             console.error(`Failed to grant premium to ${discordId} in ${guild.name}:`, err.message)
         }
     }
-
     return granted
 }
 
@@ -134,8 +127,7 @@ function startWebhookServer() {
         timestamp: new Date().toISOString(),
     }))
 
-    // The focused control router is mounted first and falls through to the
-    // existing welcome/autorole/overview API for every other path.
+    app.use("/api/dashboard", createDashboardWelcomeRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardControlRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardRouter(() => discordClient))
 
@@ -156,15 +148,11 @@ function startWebhookServer() {
 
             if (discordId) {
                 const granted = await grantPremiumByDiscordId(discordId, "Ko-fi")
-                if (granted) {
-                    console.log(`✅ Auto-granted premium for Discord ID ${discordId}`)
-                } else {
-                    console.log(`⚠️ Could not find Discord user ${discordId} in any guild`)
-                }
+                if (granted) console.log(`✅ Auto-granted premium for Discord ID ${discordId}`)
+                else console.log(`⚠️ Could not find Discord user ${discordId} in any guild`)
             } else {
                 console.log("⚠️ Ko-fi donation received but no valid Discord ID found in message. Manual grant needed.")
             }
-
             res.status(200).send("OK")
         } catch (err) {
             console.error("Ko-fi webhook error: request failed")
@@ -195,7 +183,6 @@ function startWebhookServer() {
                     console.log("⚠️ Patreon webhook: no valid Discord ID found. User may need to connect Discord on Patreon.")
                 }
             }
-
             res.status(200).send("OK")
         } catch (err) {
             console.error("Patreon webhook error: request failed")
@@ -213,15 +200,10 @@ function startWebhookServer() {
 
             const data = req.body
             console.log(`☕ Buy Me a Coffee webhook from ${data?.supporter_name}`)
-
             const searchText = (data?.support_note || "") + " " + (data?.supporter_name || "")
             const discordId = extractDiscordId(searchText)
-            if (discordId) {
-                await grantPremiumByDiscordId(discordId, "Buy Me a Coffee")
-            } else {
-                console.log("⚠️ BMC donation received but no valid Discord ID in note.")
-            }
-
+            if (discordId) await grantPremiumByDiscordId(discordId, "Buy Me a Coffee")
+            else console.log("⚠️ BMC donation received but no valid Discord ID in note.")
             res.status(200).send("OK")
         } catch (err) {
             console.error("BMC webhook error: request failed")
