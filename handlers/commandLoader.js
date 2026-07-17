@@ -5,6 +5,7 @@
  */
 
 const logger = require("../utils/logger")
+const { trackDetailedCommand } = require("../utils/activityTracker")
 const log = logger.child("CommandLoader")
 
 /**
@@ -31,6 +32,7 @@ function loadCommands() {
         { name: "memory",           module: require("../commands/memory")           },
         { name: "summary",          module: require("../commands/summary")          },
         { name: "knowledge",        module: require("../commands/knowledge")        },
+        { name: "server-insights",  module: require("../commands/serverInsights")   },
     ]
 
     log.info(`Loaded ${commandModules.length} command modules`)
@@ -50,6 +52,15 @@ async function dispatchCommand(message, commandModules) {
             const handled = await module.handle(message)
             if (handled) {
                 log.debug(`Command handled by: ${name}`)
+                if (message.guild && !message.author.bot) {
+                    trackDetailedCommand(
+                        message.guild.id,
+                        message.author.id,
+                        message.channel.id,
+                        message.channel.type,
+                        { isBot: false }
+                    ).catch(err => log.error(`Detailed prefix command tracking failed: ${err.message}`))
+                }
                 return true
             }
         } catch (err) {
