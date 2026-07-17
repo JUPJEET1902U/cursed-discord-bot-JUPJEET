@@ -1,0 +1,36 @@
+name: Dashboard control CI
+
+on:
+  pull_request:
+    paths:
+      - "api/dashboardControl.js"
+      - "api/dashboardWelcome.js"
+      - "handlers/commandLoader.js"
+      - "index.js"
+      - "utils/cooldowns.js"
+      - "utils/dashboardControl.js"
+      - "utils/welcome.js"
+      - "webhook.js"
+      - ".github/workflows/dashboard-control-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check JavaScript syntax
+        run: |
+          node --check api/dashboardControl.js
+          node --check api/dashboardWelcome.js
+          node --check handlers/commandLoader.js
+          node --check index.js
+          node --check utils/cooldowns.js
+          node --check utils/dashboardControl.js
+          node --check utils/welcome.js
+          node --check webhook.js
