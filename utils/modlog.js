@@ -34,12 +34,6 @@ let _client = null
 
 function setClient(client) {
     _client = client
-    try {
-        const { attachActivityTracking } = require("./activityTracker")
-        attachActivityTracking(client)
-    } catch (err) {
-        console.error("Activity tracking listener setup error:", err.message)
-    }
 }
 
 /**
