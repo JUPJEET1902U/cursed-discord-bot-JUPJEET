@@ -6,6 +6,12 @@
 
 const logger = require("../utils/logger")
 const { trackDetailedCommand } = require("../utils/activityTracker")
+const { getServerConfig } = require("../utils/serverConfig")
+const {
+    extractCommandName,
+    isCommandEnabled,
+    isModuleEnabled,
+} = require("../utils/dashboardControl")
 const log = logger.child("CommandLoader")
 
 /**
@@ -49,7 +55,19 @@ function loadCommands() {
  * @returns {Promise<boolean>}
  */
 async function dispatchCommand(message, commandModules) {
+    const guildConfig = message.guild
+        ? getServerConfig(message.guild.id).config
+        : {}
+    const commandName = extractCommandName(message.content)
+
+    if (commandName && !isCommandEnabled(guildConfig, commandName)) {
+        await message.channel.send("⛔ That command is disabled in this server.").catch(() => {})
+        return true
+    }
+
     for (const { name, module } of commandModules) {
+        if (!isModuleEnabled(guildConfig, name)) continue
+
         try {
             const handled = await module.handle(message)
             if (handled) {
