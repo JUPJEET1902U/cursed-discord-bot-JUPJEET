@@ -1,61 +1,432 @@
 const { createCanvas, loadImage } = require("@napi-rs/canvas")
 
-const WIDTH = 1200
-const HEIGHT = 400
+const WIDTH = 760
+const HEIGHT = 240
 
-const G = {
-  " ":["00000","00000","00000","00000","00000","00000","00000"],
-  A:["01110","10001","10001","11111","10001","10001","10001"],B:["11110","10001","10001","11110","10001","10001","11110"],
-  C:["01111","10000","10000","10000","10000","10000","01111"],D:["11110","10001","10001","10001","10001","10001","11110"],
-  E:["11111","10000","10000","11110","10000","10000","11111"],F:["11111","10000","10000","11110","10000","10000","10000"],
-  G:["01111","10000","10000","10111","10001","10001","01111"],H:["10001","10001","10001","11111","10001","10001","10001"],
-  I:["11111","00100","00100","00100","00100","00100","11111"],J:["00111","00010","00010","00010","10010","10010","01100"],
-  K:["10001","10010","10100","11000","10100","10010","10001"],L:["10000","10000","10000","10000","10000","10000","11111"],
-  M:["10001","11011","10101","10101","10001","10001","10001"],N:["10001","11001","10101","10011","10001","10001","10001"],
-  O:["01110","10001","10001","10001","10001","10001","01110"],P:["11110","10001","10001","11110","10000","10000","10000"],
-  Q:["01110","10001","10001","10001","10101","10010","01101"],R:["11110","10001","10001","11110","10100","10010","10001"],
-  S:["01111","10000","10000","01110","00001","00001","11110"],T:["11111","00100","00100","00100","00100","00100","00100"],
-  U:["10001","10001","10001","10001","10001","10001","01110"],V:["10001","10001","10001","10001","10001","01010","00100"],
-  W:["10001","10001","10001","10101","10101","10101","01010"],X:["10001","10001","01010","00100","01010","10001","10001"],
-  Y:["10001","10001","01010","00100","00100","00100","00100"],Z:["11111","00001","00010","00100","01000","10000","11111"],
-  0:["01110","10001","10011","10101","11001","10001","01110"],1:["00100","01100","00100","00100","00100","00100","01110"],
-  2:["01110","10001","00001","00010","00100","01000","11111"],3:["11110","00001","00001","01110","00001","00001","11110"],
-  4:["00010","00110","01010","10010","11111","00010","00010"],5:["11111","10000","10000","11110","00001","00001","11110"],
-  6:["01110","10000","10000","11110","10001","10001","01110"],7:["11111","00001","00010","00100","01000","01000","01000"],
-  8:["01110","10001","10001","01110","10001","10001","01110"],9:["01110","10001","10001","01111","00001","00001","01110"],
-  "-":["00000","00000","00000","11111","00000","00000","00000"],"_":["00000","00000","00000","00000","00000","00000","11111"],
-  ".":["00000","00000","00000","00000","00000","00100","00100"],",":["00000","00000","00000","00000","00100","00100","01000"],
-  "!":["00100","00100","00100","00100","00100","00000","00100"],"?":["01110","10001","00001","00010","00100","00000","00100"],
-  "/":["00001","00010","00010","00100","01000","01000","10000"],"+":["00000","00100","00100","11111","00100","00100","00000"],
-  "&":["01100","10010","10100","01000","10101","10010","01101"],"'":["00100","00100","00000","00000","00000","00000","00000"]
+// Built-in vector glyphs keep text reliable on Railway without shipping fonts.
+const GLYPHS = {
+    " ": ["00000","00000","00000","00000","00000","00000","00000"],
+    "A": ["01110","10001","10001","11111","10001","10001","10001"],
+    "B": ["11110","10001","10001","11110","10001","10001","11110"],
+    "C": ["01111","10000","10000","10000","10000","10000","01111"],
+    "D": ["11110","10001","10001","10001","10001","10001","11110"],
+    "E": ["11111","10000","10000","11110","10000","10000","11111"],
+    "F": ["11111","10000","10000","11110","10000","10000","10000"],
+    "G": ["01111","10000","10000","10111","10001","10001","01111"],
+    "H": ["10001","10001","10001","11111","10001","10001","10001"],
+    "I": ["11111","00100","00100","00100","00100","00100","11111"],
+    "J": ["00111","00010","00010","00010","10010","10010","01100"],
+    "K": ["10001","10010","10100","11000","10100","10010","10001"],
+    "L": ["10000","10000","10000","10000","10000","10000","11111"],
+    "M": ["10001","11011","10101","10101","10001","10001","10001"],
+    "N": ["10001","11001","10101","10011","10001","10001","10001"],
+    "O": ["01110","10001","10001","10001","10001","10001","01110"],
+    "P": ["11110","10001","10001","11110","10000","10000","10000"],
+    "Q": ["01110","10001","10001","10001","10101","10010","01101"],
+    "R": ["11110","10001","10001","11110","10100","10010","10001"],
+    "S": ["01111","10000","10000","01110","00001","00001","11110"],
+    "T": ["11111","00100","00100","00100","00100","00100","00100"],
+    "U": ["10001","10001","10001","10001","10001","10001","01110"],
+    "V": ["10001","10001","10001","10001","10001","01010","00100"],
+    "W": ["10001","10001","10001","10101","10101","10101","01010"],
+    "X": ["10001","10001","01010","00100","01010","10001","10001"],
+    "Y": ["10001","10001","01010","00100","00100","00100","00100"],
+    "Z": ["11111","00001","00010","00100","01000","10000","11111"],
+    "0": ["01110","10001","10011","10101","11001","10001","01110"],
+    "1": ["00100","01100","00100","00100","00100","00100","01110"],
+    "2": ["01110","10001","00001","00010","00100","01000","11111"],
+    "3": ["11110","00001","00001","01110","00001","00001","11110"],
+    "4": ["00010","00110","01010","10010","11111","00010","00010"],
+    "5": ["11111","10000","10000","11110","00001","00001","11110"],
+    "6": ["01110","10000","10000","11110","10001","10001","01110"],
+    "7": ["11111","00001","00010","00100","01000","01000","01000"],
+    "8": ["01110","10001","10001","01110","10001","10001","01110"],
+    "9": ["01110","10001","10001","01111","00001","00001","01110"],
+    "-": ["00000","00000","00000","11111","00000","00000","00000"],
+    "_": ["00000","00000","00000","00000","00000","00000","11111"],
+    ".": ["00000","00000","00000","00000","00000","00100","00100"],
+    ",": ["00000","00000","00000","00000","00100","00100","01000"],
+    "!": ["00100","00100","00100","00100","00100","00000","00100"],
+    "?": ["01110","10001","00001","00010","00100","00000","00100"],
+    ":": ["00000","00100","00100","00000","00100","00100","00000"],
+    "/": ["00001","00010","00010","00100","01000","01000","10000"],
+    "+": ["00000","00100","00100","11111","00100","00100","00000"],
+    "&": ["01100","10010","10100","01000","10101","10010","01101"],
+    "'": ["00100","00100","00000","00000","00000","00000","00000"],
 }
 
-function rr(c,x,y,w,h,r){r=Math.min(r,w/2,h/2);c.beginPath();c.moveTo(x+r,y);c.lineTo(x+w-r,y);c.quadraticCurveTo(x+w,y,x+w,y+r);c.lineTo(x+w,y+h-r);c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);c.lineTo(x+r,y+h);c.quadraticCurveTo(x,y+h,x,y+h-r);c.lineTo(x,y+r);c.quadraticCurveTo(x,y,x+r,y);c.closePath()}
-function poly(c,p){c.beginPath();c.moveTo(p[0][0],p[0][1]);for(let i=1;i<p.length;i++)c.lineTo(p[i][0],p[i][1]);c.closePath()}
-function clean(v,f="MEMBER"){let o="";for(const ch of String(v||f).normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toUpperCase()){if(G[ch])o+=ch;else if(/\s/u.test(ch)||ch.codePointAt(0)>127)o+=" ";else o+="?"}return o.replace(/\s+/g," ").trim()||f}
-function met(h,sp=.14,wr=.82){const sy=h/6,sx=sy*wr,st=Math.max(1.1,sy*.72);return{sx,sy,st,gw:sx*4+st,gap:h*sp}}
-function tw(t,h,sp=.14,wr=.82){const v=clean(t,"");if(!v)return 0;const m=met(h,sp,wr);return v.length*m.gw+Math.max(0,v.length-1)*m.gap}
-function fit(t,h,mw,mh,sp=.14,wr=.82){const w=tw(t,h,sp,wr);return !mw||w<=mw?h:Math.max(mh,h*(mw/w))}
-function cell(g,r,col){return g[r]?.[col]==="1"}
-function glyph(c,g,x,y,h,color,o={}){const m=met(h,o.sp,o.wr),pt=(r,k)=>[x+k*m.sx+m.st/2,y+r*m.sy+m.st/2];c.save();c.strokeStyle=color;c.fillStyle=color;c.lineWidth=m.st;c.lineCap="round";c.lineJoin="round";if(o.glow){c.shadowColor=o.glow;c.shadowBlur=o.blur||8}const used=new Set(),line=(a,b,d,e)=>{const p=pt(a,b),q=pt(d,e);c.beginPath();c.moveTo(...p);c.lineTo(...q);c.stroke();used.add(`${a}:${b}`);used.add(`${d}:${e}`)};for(let r=0;r<7;r++)for(let k=0;k<5;k++){if(!cell(g,r,k))continue;if(cell(g,r,k+1))line(r,k,r,k+1);if(cell(g,r+1,k))line(r,k,r+1,k);if(cell(g,r+1,k+1)&&!cell(g,r,k+1)&&!cell(g,r+1,k))line(r,k,r+1,k+1);if(cell(g,r+1,k-1)&&!cell(g,r,k-1)&&!cell(g,r+1,k))line(r,k,r+1,k-1)}for(let r=0;r<7;r++)for(let k=0;k<5;k++)if(cell(g,r,k)&&!used.has(`${r}:${k}`)){const p=pt(r,k);c.beginPath();c.arc(p[0],p[1],m.st/2,0,Math.PI*2);c.fill()}c.restore()}
-function text(c,t,x,y,h,o={}){const sp=o.sp??.14,wr=o.wr??.82,v=clean(t,o.fallback||"MEMBER"),hh=fit(v,h,o.max,o.min||7,sp,wr),m=met(hh,sp,wr),w=tw(v,hh,sp,wr);let cx=x;if(o.align==="center")cx-=w/2;if(o.align==="right")cx-=w;for(const ch of v){glyph(c,G[ch]||G["?"],cx,y,hh,o.color||"#fff",{sp,wr,glow:o.glow,blur:o.blur});cx+=m.gw+m.gap}return{w,h:hh}}
-function cover(c,img,x,y,w,h){const sr=img.width/img.height,tr=w/h;let sx=0,sy=0,sw=img.width,sh=img.height;if(sr>tr){sw=img.height*tr;sx=(img.width-sw)/2}else{sh=img.width/tr;sy=(img.height-sh)/2}c.drawImage(img,sx,sy,sw,sh,x,y,w,h)}
-async function remote(url){if(!url||typeof fetch!=="function")return null;try{const u=new URL(url);if(!["http:","https:"].includes(u.protocol))return null;const r=await fetch(u);if(!r.ok)return null;return loadImage(Buffer.from(await r.arrayBuffer()))}catch{return null}}
-
-function background(c){let g=c.createLinearGradient(0,0,WIDTH,HEIGHT);g.addColorStop(0,"#04000A");g.addColorStop(.52,"#12031F");g.addColorStop(1,"#29053E");c.fillStyle=g;c.fillRect(0,0,WIDTH,HEIGHT);g=c.createRadialGradient(590,180,0,590,180,520);g.addColorStop(0,"rgba(126,34,206,.34)");g.addColorStop(1,"rgba(5,0,12,0)");c.fillStyle=g;c.fillRect(0,0,WIDTH,HEIGHT);for(let i=0;i<58;i++){const x=25+(i*193)%1150,y=25+(i*97)%280,r=1+(i%4)*.55;c.save();c.globalAlpha=.18+(i%6)*.09;c.fillStyle=i%5===0?"#F0ABFC":"#A855F7";c.shadowColor="#D946EF";c.shadowBlur=8;c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fill();c.restore()}c.save();c.shadowColor="#D946EF";c.shadowBlur=20;c.strokeStyle="#D946EF";c.lineWidth=2.5;rr(c,22,18,WIDTH-44,HEIGHT-36,30);c.stroke();c.restore();c.strokeStyle="rgba(244,114,182,.3)";c.lineWidth=1;rr(c,30,26,WIDTH-60,HEIGHT-52,24);c.stroke()}
-function avatar(c,img,n){const x=190,y=168,r=111;c.save();c.shadowColor="#D946EF";c.shadowBlur=30;c.strokeStyle="#D946EF";c.lineWidth=9;c.beginPath();c.arc(x,y,r+7,0,Math.PI*2);c.stroke();c.restore();c.save();c.strokeStyle="#F0ABFC";c.lineWidth=3;c.setLineDash?.([18,10]);c.beginPath();c.arc(x,y,r+18,-.4,5.9);c.stroke();c.restore();c.save();c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.clip();if(img)cover(c,img,x-r,y-r,r*2,r*2);else{c.fillStyle="#26053E";c.fillRect(x-r,y-r,r*2,r*2);text(c,"?",x,y-48,82,{align:"center",color:"#F5D0FE",glow:"#D946EF",blur:12})}c.restore();const cy=275,p=[[x,cy-34],[x+35,cy-15],[x+35,cy+31],[x,cy+52],[x-35,cy+31],[x-35,cy-15]];c.save();c.shadowColor="#D946EF";c.shadowBlur=15;c.fillStyle="#170622";c.strokeStyle="#D946EF";c.lineWidth=3;poly(c,p);c.fill();c.stroke();c.restore();text(c,"LEVEL",x,cy-14,10,{align:"center",max:55,min:7,color:"#E9D5FF",sp:.08});text(c,String(n),x,cy+7,31,{align:"center",max:48,min:19,color:"#fff",glow:"#D946EF",blur:8,sp:.08})}
-function title(c,user){text(c,"CURSED LEVELING",610,42,19,{align:"center",max:410,min:13,color:"#F5D0FE",glow:"#D946EF",blur:7,sp:.24});text(c,"LEVEL-UP!",610,86,67,{align:"center",max:505,min:45,color:"#6D28D9",glow:"#7C3AED",blur:10,sp:.08,wr:.86});text(c,"LEVEL-UP!",610,78,67,{align:"center",max:505,min:45,color:"#fff",glow:"#D946EF",blur:16,sp:.08,wr:.86});const name=clean(user,"MEMBER"),h=fit(name,31,360,17,.12,.82),w=tw(name,h,.12,.82),lx=610-w/2-82,rx=610+w/2+22;c.save();let g=c.createLinearGradient(lx,0,rx+60,0);g.addColorStop(0,"rgba(168,85,247,0)");g.addColorStop(.35,"#A855F7");g.addColorStop(.65,"#D946EF");g.addColorStop(1,"rgba(168,85,247,0)");c.strokeStyle=g;c.lineWidth=3;c.beginPath();c.moveTo(lx,230);c.lineTo(lx+60,230);c.moveTo(rx,230);c.lineTo(rx+60,230);c.stroke();c.restore();text(c,name,610,210,31,{align:"center",max:360,min:17,color:"#E9D5FF",glow:"rgba(168,85,247,.55)",blur:7,sp:.12});text(c,"YOU LEVELED UP! KEEP GOING, LEGEND!",610,267,15,{align:"center",max:500,min:9,color:"#E9D5FF",sp:.08,wr:.78})}
-function panel(c,a,b){const x=875,y=38,w=285,h=270;c.save();c.shadowColor="rgba(217,70,239,.58)";c.shadowBlur=22;let g=c.createLinearGradient(x,y,x+w,y+h);g.addColorStop(0,"rgba(34,10,53,.96)");g.addColorStop(1,"rgba(13,4,25,.97)");c.fillStyle=g;c.strokeStyle="rgba(232,121,249,.8)";c.lineWidth=2;rr(c,x,y,w,h,28);c.fill();c.stroke();c.restore();g=c.createLinearGradient(x+72,y+15,x+72,y+57);g.addColorStop(0,"#A21CAF");g.addColorStop(1,"#6D28D9");c.fillStyle=g;c.shadowColor="#D946EF";c.shadowBlur=12;rr(c,x+72,y+15,141,42,9);c.fill();c.shadowBlur=0;text(c,"LEVEL",x+w/2,y+25,19,{align:"center",max:110,min:13,color:"#fff",sp:.12});const nh=Math.min(fit(String(a),55,72,28,.08),fit(String(b),55,72,28,.08));text(c,String(a),x+72,y+77,nh,{align:"center",max:72,min:28,color:"#fff",glow:"#D946EF",blur:9,sp:.08});c.save();c.fillStyle="#E879F9";c.shadowColor="#D946EF";c.shadowBlur=12;c.beginPath();c.arc(x+w/2,y+77+nh*.57,7,0,Math.PI*2);c.fill();c.restore();text(c,String(b),x+w-72,y+77,nh,{align:"center",max:72,min:28,color:"#fff",glow:"#D946EF",blur:9,sp:.08});text(c,"LEVEL UNLOCKED",x+w/2,y+151,18,{align:"center",max:190,min:12,color:"#D946EF",glow:"#D946EF",blur:6,sp:.1});c.strokeStyle="rgba(255,255,255,.24)";c.lineWidth=1.5;c.beginPath();c.moveTo(x+34,y+186);c.lineTo(x+w-34,y+186);c.stroke();text(c,"XP PROGRESS",x+w/2,y+199,13,{align:"center",max:160,min:9,color:"#E9D5FF",sp:.1});c.fillStyle="rgba(255,255,255,.12)";c.strokeStyle="rgba(216,180,254,.42)";rr(c,x+34,y+231,w-68,17,9);c.fill();c.stroke();g=c.createLinearGradient(x+34,0,x+w-34,0);g.addColorStop(0,"#7C3AED");g.addColorStop(.52,"#C026D3");g.addColorStop(1,"#E879F9");c.fillStyle=g;c.shadowColor="#D946EF";c.shadowBlur=10;rr(c,x+34,y+231,w-68,17,9);c.fill();c.shadowBlur=0;text(c,`LEVEL ${b} COMPLETE`,x+w/2,y+257,11,{align:"center",max:205,min:7,color:"#C4B5FD",sp:.08})}
-function pill(c,x,y,label,color){const w=Math.max(76,tw(label,12,.09,.78)+34);c.fillStyle="rgba(8,3,16,.66)";c.strokeStyle="rgba(168,85,247,.25)";rr(c,x,y,w,26,13);c.fill();c.stroke();c.fillStyle=color;c.shadowColor=color;c.shadowBlur=6;c.beginPath();c.arc(x+13,y+13,4.5,0,Math.PI*2);c.fill();c.shadowBlur=0;text(c,label,x+25,y+7,12,{max:w-31,min:8,color:"#F5D0FE",sp:.09,wr:.78});return w}
-function splitName(v){const t=clean(v,"DISCORD SERVER");if(t.length<=32)return[t];const words=t.split(" ");let a="",b="";for(const w of words){const n=a?`${a} ${w}`:w;if(!a||(n.length<=32&&a.length<=b.length))a=n;else b=b?`${b} ${w}`:w}return b?[a,b]:[a]}
-function footer(c,guild){const x=44,y=320,w=1112,h=60;let g=c.createLinearGradient(x,y,x+w,y);g.addColorStop(0,"rgba(26,8,45,.96)");g.addColorStop(.55,"rgba(62,13,88,.94)");g.addColorStop(1,"rgba(103,22,143,.94)");c.save();c.shadowColor="rgba(217,70,239,.52)";c.shadowBlur=13;c.fillStyle=g;c.strokeStyle="rgba(232,121,249,.72)";c.lineWidth=1.8;poly(c,[[x+24,y],[x+w-14,y],[x+w,y+15],[x+w-28,y+h],[x+10,y+h],[x,y+42]]);c.fill();c.stroke();c.restore();const cx=x+52,cy=y+30,r=42,p=[];for(let i=0;i<6;i++){const a=Math.PI/3*i-Math.PI/2;p.push([cx+Math.cos(a)*r,cy+Math.sin(a)*r])}c.save();c.fillStyle="#190623";c.strokeStyle="#C026D3";c.lineWidth=3;c.shadowColor="#D946EF";c.shadowBlur=14;poly(c,p);c.fill();c.stroke();c.restore();text(c,"C",cx,cy-25,36,{align:"center",color:"#F5D0FE",glow:"#D946EF",blur:8});const lines=splitName(guild),nx=x+112;if(lines.length===1)text(c,lines[0],nx,y+8,23,{max:420,min:13,color:"#fff",glow:"rgba(217,70,239,.45)",blur:5,sp:.1});else{text(c,lines[0],nx,y+5,15,{max:420,min:10,color:"#fff",sp:.09});text(c,lines[1],nx,y+25,13,{max:420,min:9,color:"#DDD6FE",sp:.09})}let bx=nx,by=y+34;bx+=pill(c,bx,by,"ACTIVE","#22C55E")+8;bx+=pill(c,bx,by,"GAMING","#A78BFA")+8;bx+=pill(c,bx,by,"LEVELING","#EC4899")+8;pill(c,bx,by,"CURSED","#F59E0B")}
-
-async function generateLevelUpCard({user,displayName,guildName,oldLevel,newLevel}){
-  const canvas=createCanvas(WIDTH,HEIGHT),c=canvas.getContext("2d")
-  const url=user?.displayAvatarURL?.({extension:"png",forceStatic:true,size:512}),img=await remote(url)
-  const username=user?.username||displayName||"Member"
-  background(c);avatar(c,img,newLevel);title(c,username);panel(c,oldLevel,newLevel);footer(c,guildName||"Discord Server")
-  return canvas.toBuffer("image/png")
+function roundRect(ctx, x, y, width, height, radius) {
+    const r = Math.min(radius, width / 2, height / 2)
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.lineTo(x + width - r, y)
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r)
+    ctx.lineTo(x + width, y + height - r)
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height)
+    ctx.lineTo(x + r, y + height)
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r)
+    ctx.lineTo(x, y + r)
+    ctx.quadraticCurveTo(x, y, x + r, y)
+    ctx.closePath()
 }
 
-module.exports={generateLevelUpCard,WIDTH,HEIGHT}
+function normalizeText(value, fallback = "MEMBER") {
+    const source = String(value || fallback)
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toUpperCase()
+
+    let result = ""
+    for (const char of source) {
+        if (GLYPHS[char]) result += char
+        else if (/\s/u.test(char) || char.codePointAt(0) > 127) result += " "
+        else result += "?"
+    }
+    return result.replace(/\s+/g, " ").trim() || fallback
+}
+
+function metrics(height, spacingRatio = 0.16) {
+    const stepY = height / 6
+    const stepX = stepY * 0.82
+    const stroke = Math.max(1.2, stepY * 0.82)
+    return {
+        stepX,
+        stepY,
+        stroke,
+        glyphWidth: stepX * 4 + stroke,
+        spacing: height * spacingRatio,
+    }
+}
+
+function measure(text, height, spacingRatio = 0.16) {
+    const value = normalizeText(text, "")
+    if (!value) return 0
+    const { glyphWidth, spacing } = metrics(height, spacingRatio)
+    return value.length * glyphWidth + Math.max(0, value.length - 1) * spacing
+}
+
+function fitHeight(text, preferred, maxWidth, minHeight, spacingRatio) {
+    const width = measure(text, preferred, spacingRatio)
+    if (!maxWidth || width <= maxWidth) return preferred
+    return Math.max(minHeight, preferred * (maxWidth / width))
+}
+
+function hasCell(glyph, row, column) {
+    return glyph[row]?.[column] === "1"
+}
+
+function drawGlyph(ctx, glyph, x, y, height, color, options = {}) {
+    const { stepX, stepY, stroke } = metrics(height, options.spacingRatio)
+    const point = (row, column) => [
+        x + column * stepX + stroke / 2,
+        y + row * stepY + stroke / 2,
+    ]
+
+    ctx.save()
+    ctx.strokeStyle = color
+    ctx.fillStyle = color
+    ctx.lineWidth = stroke
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+    if (options.glowColor && options.glowBlur) {
+        ctx.shadowColor = options.glowColor
+        ctx.shadowBlur = options.glowBlur
+    }
+
+    const connected = new Set()
+    const connect = (rowA, colA, rowB, colB) => {
+        const [ax, ay] = point(rowA, colA)
+        const [bx, by] = point(rowB, colB)
+        ctx.beginPath()
+        ctx.moveTo(ax, ay)
+        ctx.lineTo(bx, by)
+        ctx.stroke()
+        connected.add(`${rowA}:${colA}`)
+        connected.add(`${rowB}:${colB}`)
+    }
+
+    for (let row = 0; row < 7; row++) {
+        for (let column = 0; column < 5; column++) {
+            if (!hasCell(glyph, row, column)) continue
+            if (hasCell(glyph, row, column + 1)) connect(row, column, row, column + 1)
+            if (hasCell(glyph, row + 1, column)) connect(row, column, row + 1, column)
+            if (hasCell(glyph, row + 1, column + 1) && !hasCell(glyph, row, column + 1) && !hasCell(glyph, row + 1, column)) {
+                connect(row, column, row + 1, column + 1)
+            }
+            if (hasCell(glyph, row + 1, column - 1) && !hasCell(glyph, row, column - 1) && !hasCell(glyph, row + 1, column)) {
+                connect(row, column, row + 1, column - 1)
+            }
+        }
+    }
+
+    for (let row = 0; row < 7; row++) {
+        for (let column = 0; column < 5; column++) {
+            if (!hasCell(glyph, row, column) || connected.has(`${row}:${column}`)) continue
+            const [px, py] = point(row, column)
+            ctx.beginPath()
+            ctx.arc(px, py, stroke / 2, 0, Math.PI * 2)
+            ctx.fill()
+        }
+    }
+    ctx.restore()
+}
+
+function drawText(ctx, text, x, y, preferredHeight, options = {}) {
+    const spacingRatio = options.spacingRatio ?? 0.16
+    const value = normalizeText(text, options.fallback || "MEMBER")
+    const height = fitHeight(value, preferredHeight, options.maxWidth, options.minHeight || 7, spacingRatio)
+    const { glyphWidth, spacing } = metrics(height, spacingRatio)
+    const width = measure(value, height, spacingRatio)
+
+    let cursorX = x
+    if (options.align === "center") cursorX -= width / 2
+    if (options.align === "right") cursorX -= width
+
+    for (const char of value) {
+        drawGlyph(ctx, GLYPHS[char] || GLYPHS["?"], cursorX, y, height, options.color || "#FFFFFF", {
+            spacingRatio,
+            glowColor: options.glowColor,
+            glowBlur: options.glowBlur,
+        })
+        cursorX += glyphWidth + spacing
+    }
+    return { value, width, height }
+}
+
+function drawLevelTransition(ctx, oldLevel, newLevel) {
+    const centerX = 622
+    const y = 101
+    const preferredHeight = 31
+    const maxSideWidth = 55
+    const oldText = String(oldLevel)
+    const newText = String(newLevel)
+    const sideHeight = Math.min(
+        fitHeight(oldText, preferredHeight, maxSideWidth, 17, 0.12),
+        fitHeight(newText, preferredHeight, maxSideWidth, 17, 0.12),
+    )
+
+    drawText(ctx, oldText, 576, y, sideHeight, {
+        color: "#FFFFFF",
+        align: "center",
+        maxWidth: maxSideWidth,
+        minHeight: 17,
+        spacingRatio: 0.12,
+        glowColor: "rgba(168,85,247,0.55)",
+        glowBlur: 6,
+    })
+
+    ctx.save()
+    ctx.fillStyle = "#D8B4FE"
+    ctx.shadowColor = "rgba(168,85,247,0.75)"
+    ctx.shadowBlur = 7
+    ctx.beginPath()
+    ctx.arc(centerX, y + sideHeight * 0.56, Math.max(3.5, sideHeight * 0.12), 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+
+    drawText(ctx, newText, 668, y, sideHeight, {
+        color: "#FFFFFF",
+        align: "center",
+        maxWidth: maxSideWidth,
+        minHeight: 17,
+        spacingRatio: 0.12,
+        glowColor: "rgba(168,85,247,0.55)",
+        glowBlur: 6,
+    })
+}
+
+function splitServerName(value) {
+    const text = normalizeText(value, "DISCORD SERVER")
+    if (text.length <= 44) return [text]
+
+    const words = text.split(" ").filter(Boolean)
+    if (words.length === 1) {
+        const midpoint = Math.ceil(text.length / 2)
+        return [text.slice(0, midpoint), text.slice(midpoint)]
+    }
+
+    let first = ""
+    let second = ""
+    for (const word of words) {
+        if (!first || (first.length <= second.length && `${first} ${word}`.length <= 52)) {
+            first = first ? `${first} ${word}` : word
+        } else {
+            second = second ? `${second} ${word}` : word
+        }
+    }
+    return second ? [first, second] : [first]
+}
+
+function drawServerFooter(ctx, guildName) {
+    const footerX = 225
+    const footerY = 174
+    const footerWidth = 484
+    const footerHeight = 38
+
+    ctx.fillStyle = "rgba(7, 3, 16, 0.46)"
+    roundRect(ctx, footerX, footerY, footerWidth, footerHeight, 13)
+    ctx.fill()
+
+    ctx.fillStyle = "rgba(168, 85, 247, 0.55)"
+    roundRect(ctx, footerX, footerY, 5, footerHeight, 3)
+    ctx.fill()
+
+    const lines = splitServerName(guildName)
+    const preferredHeight = lines.length === 1 ? 14 : 10
+    const minHeight = lines.length === 1 ? 9 : 7
+    const gap = lines.length === 1 ? 0 : 3
+    const heights = lines.map(line => fitHeight(line, preferredHeight, 452, minHeight, 0.12))
+    const totalHeight = heights.reduce((sum, height) => sum + height, 0) + gap * Math.max(0, lines.length - 1)
+    let y = footerY + (footerHeight - totalHeight) / 2
+
+    lines.forEach((line, index) => {
+        drawText(ctx, line, footerX + footerWidth / 2 + 2, y, heights[index], {
+            color: "#DDD6FE",
+            align: "center",
+            maxWidth: 452,
+            minHeight,
+            spacingRatio: 0.12,
+            glowColor: "rgba(168,85,247,0.32)",
+            glowBlur: 3,
+        })
+        y += heights[index] + gap
+    })
+}
+
+function drawCoverImage(ctx, image, x, y, width, height) {
+    const sourceRatio = image.width / image.height
+    const targetRatio = width / height
+    let sx = 0
+    let sy = 0
+    let sw = image.width
+    let sh = image.height
+
+    if (sourceRatio > targetRatio) {
+        sw = image.height * targetRatio
+        sx = (image.width - sw) / 2
+    } else {
+        sh = image.width / targetRatio
+        sy = (image.height - sh) / 2
+    }
+    ctx.drawImage(image, sx, sy, sw, sh, x, y, width, height)
+}
+
+async function loadRemoteImage(url) {
+    if (!url || typeof fetch !== "function") return null
+    try {
+        const parsed = new URL(url)
+        if (!["https:", "http:"].includes(parsed.protocol)) return null
+        const response = await fetch(parsed)
+        if (!response.ok) return null
+        return await loadImage(Buffer.from(await response.arrayBuffer()))
+    } catch {
+        return null
+    }
+}
+
+async function generateLevelUpCard({ user, displayName, guildName, oldLevel, newLevel }) {
+    const canvas = createCanvas(WIDTH, HEIGHT)
+    const ctx = canvas.getContext("2d")
+
+    const background = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
+    background.addColorStop(0, "#08030F")
+    background.addColorStop(0.48, "#160822")
+    background.addColorStop(1, "#2D0A48")
+    ctx.fillStyle = background
+    ctx.fillRect(0, 0, WIDTH, HEIGHT)
+
+    ctx.save()
+    ctx.globalAlpha = 0.24
+    const glow = ctx.createRadialGradient(610, 10, 10, 610, 10, 260)
+    glow.addColorStop(0, "#D946EF")
+    glow.addColorStop(1, "rgba(217, 70, 239, 0)")
+    ctx.fillStyle = glow
+    ctx.fillRect(350, 0, 410, HEIGHT)
+    ctx.restore()
+
+    ctx.fillStyle = "rgba(255,255,255,0.075)"
+    roundRect(ctx, 18, 18, WIDTH - 36, HEIGHT - 36, 26)
+    ctx.fill()
+
+    ctx.fillStyle = "#A855F7"
+    roundRect(ctx, 18, 18, 8, HEIGHT - 36, 5)
+    ctx.fill()
+
+    const avatarSize = 154
+    const avatarX = 50
+    const avatarY = 43
+    const avatarUrl = user?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 256 })
+    const avatar = await loadRemoteImage(avatarUrl)
+
+    ctx.save()
+    ctx.shadowColor = "rgba(168, 85, 247, 0.8)"
+    ctx.shadowBlur = 20
+    ctx.fillStyle = "#A855F7"
+    ctx.beginPath()
+    ctx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2 + 6, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2)
+    ctx.clip()
+    if (avatar) {
+        drawCoverImage(ctx, avatar, avatarX, avatarY, avatarSize, avatarSize)
+    } else {
+        ctx.fillStyle = "#252033"
+        ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize)
+        drawText(ctx, "?", avatarX + avatarSize / 2, avatarY + 50, 58, {
+            color: "#D8B4FE",
+            align: "center",
+            glowColor: "rgba(168,85,247,0.65)",
+            glowBlur: 8,
+        })
+    }
+    ctx.restore()
+
+    drawText(ctx, "CURSED LEVELING", 235, 29, 17, {
+        color: "#F5D0FE",
+        maxWidth: 285,
+        minHeight: 11,
+        spacingRatio: 0.14,
+        glowColor: "rgba(168,85,247,0.42)",
+        glowBlur: 5,
+    })
+
+    drawText(ctx, "LEVEL-UP!", 235, 63, 36, {
+        color: "#FFFFFF",
+        maxWidth: 285,
+        minHeight: 24,
+        spacingRatio: 0.14,
+        glowColor: "rgba(168,85,247,0.80)",
+        glowBlur: 10,
+    })
+
+    // Use the account username here. The server name appears only in the footer.
+    drawText(ctx, user?.username || displayName || "Member", 235, 121, 23, {
+        color: "#E9D5FF",
+        maxWidth: 285,
+        minHeight: 11,
+        spacingRatio: 0.13,
+    })
+
+    ctx.fillStyle = "rgba(255,255,255,0.10)"
+    roundRect(ctx, 535, 52, 174, 112, 22)
+    ctx.fill()
+
+    drawText(ctx, "LEVEL", 622, 65, 14, {
+        color: "#D8B4FE",
+        align: "center",
+        maxWidth: 142,
+        minHeight: 10,
+        spacingRatio: 0.13,
+    })
+
+    drawLevelTransition(ctx, oldLevel, newLevel)
+    drawServerFooter(ctx, guildName || "Discord Server")
+
+    return canvas.toBuffer("image/png")
+}
+
+module.exports = { generateLevelUpCard, WIDTH, HEIGHT }
