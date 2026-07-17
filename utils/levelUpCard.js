@@ -3,8 +3,9 @@ const { createCanvas, loadImage } = require("@napi-rs/canvas")
 const WIDTH = 760
 const HEIGHT = 240
 
-// Built-in 5x7 vector glyphs. These are drawn as canvas shapes, so the card
-// never depends on Railway/Linux system fonts and can never lose its text.
+// Compact built-in glyph map. The renderer connects these points with rounded,
+// anti-aliased strokes, producing smooth neon-style lettering without relying
+// on Railway/Linux fonts or shipping a font file.
 const GLYPHS = {
     " ": ["00000","00000","00000","00000","00000","00000","00000"],
     "A": ["01110","10001","10001","11111","10001","10001","10001"],
@@ -45,12 +46,16 @@ const GLYPHS = {
     "9": ["01110","10001","10001","01111","00001","00001","01110"],
     "-": ["00000","00000","00000","11111","00000","00000","00000"],
     "_": ["00000","00000","00000","00000","00000","00000","11111"],
-    ".": ["00000","00000","00000","00000","00000","00110","00110"],
+    ".": ["00000","00000","00000","00000","00000","00100","00100"],
+    ",": ["00000","00000","00000","00000","00100","00100","01000"],
     "!": ["00100","00100","00100","00100","00100","00000","00100"],
     "?": ["01110","10001","00001","00010","00100","00000","00100"],
-    ":": ["00000","00110","00110","00000","00110","00110","00000"],
+    ":": ["00000","00100","00100","00000","00100","00100","00000"],
     "•": ["00000","00000","00100","01110","00100","00000","00000"],
     "/": ["00001","00010","00010","00100","01000","01000","10000"],
+    "+": ["00000","00100","00100","11111","00100","00100","00000"],
+    "&": ["01100","10010","10100","01000","10101","10010","01101"],
+    "'": ["00100","00100","00000","00000","00000","00000","00000"],
 }
 
 function roundRect(ctx, x, y, width, height, radius) {
@@ -101,74 +106,256 @@ async function loadRemoteImage(url) {
     }
 }
 
-function normalizeBitmapText(value, fallback = "MEMBER") {
-    const normalized = String(value || fallback)
+function normalizeSmoothText(value, fallback = "MEMBER") {
+    const source = String(value || fallback)
         .normalize("NFKD")
         .replace(/[\u0300-\u036f]/g, "")
         .toUpperCase()
-    return [...normalized].map(char => GLYPHS[char] ? char : "?").join("")
-}
 
-function bitmapTextWidth(text, scale, spacing = 1) {
-    const value = normalizeBitmapText(text, "")
-    if (!value.length) return 0
-    return value.length * 5 * scale + (value.length - 1) * spacing * scale
-}
-
-function truncateBitmapText(text, maxWidth, scale, spacing = 1) {
-    let value = normalizeBitmapText(text)
-    if (bitmapTextWidth(value, scale, spacing) <= maxWidth) return value
-
-    const suffix = "..."
-    while (value.length > 1 && bitmapTextWidth(`${value}${suffix}`, scale, spacing) > maxWidth) {
-        value = value.slice(0, -1)
+    let normalized = ""
+    for (const char of source) {
+        if (GLYPHS[char]) {
+            normalized += char
+        } else if (/\s/u.test(char) || char.codePointAt(0) > 127) {
+            // Decorative emoji are omitted rather than becoming ugly question marks.
+            normalized += " "
+        } else {
+            normalized += "?"
+        }
     }
-    return `${value}${suffix}`
+
+    return normalized.replace(/\s+/g, " ").trim() || String(fallback || "")
 }
 
-function drawBitmapText(ctx, text, x, y, scale, options = {}) {
-    const {
-        color = "#FFFFFF",
-        align = "left",
-        spacing = 1,
-        glowColor = null,
-        glowBlur = 0,
-        maxWidth = null,
-    } = options
+function smoothMetrics(height, letterSpacingRatio = 0.22) {
+    const stepY = height / 6
+    const stepX = stepY * 0.82
+    const stroke = Math.max(1.15, stepY * 0.66)
+    const glyphWidth = stepX * 4 + stroke
+    const spacing = height * letterSpacingRatio
+    return { stepX, stepY, stroke, glyphWidth, spacing }
+}
 
-    const value = maxWidth
-        ? truncateBitmapText(text, maxWidth, scale, spacing)
-        : normalizeBitmapText(text)
-    const width = bitmapTextWidth(value, scale, spacing)
-    let startX = x
-    if (align === "center") startX -= width / 2
-    if (align === "right") startX -= width
+function measureSmoothText(text, height, letterSpacingRatio = 0.22) {
+    const value = normalizeSmoothText(text, "")
+    if (!value) return 0
+    const { glyphWidth, spacing } = smoothMetrics(height, letterSpacingRatio)
+    return value.length * glyphWidth + Math.max(0, value.length - 1) * spacing
+}
+
+function fitSmoothHeight(text, preferredHeight, maxWidth, minHeight = 3, letterSpacingRatio = 0.22) {
+    if (!maxWidth) return preferredHeight
+    const width = measureSmoothText(text, preferredHeight, letterSpacingRatio)
+    if (width <= maxWidth) return preferredHeight
+    return Math.max(minHeight, preferredHeight * (maxWidth / width))
+}
+
+function hasCell(glyph, row, column) {
+    return Boolean(glyph[row]?.[column] === "1")
+}
+
+function drawSmoothGlyph(ctx, glyph, x, y, height, color, options = {}) {
+    const { stepX, stepY, stroke } = smoothMetrics(height, options.letterSpacingRatio)
+    const point = (row, column) => [x + column * stepX + stroke / 2, y + row * stepY + stroke / 2]
 
     ctx.save()
+    ctx.strokeStyle = color
     ctx.fillStyle = color
-    if (glowColor && glowBlur > 0) {
-        ctx.shadowColor = glowColor
-        ctx.shadowBlur = glowBlur
+    ctx.lineWidth = stroke
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+
+    if (options.glowColor && options.glowBlur > 0) {
+        ctx.shadowColor = options.glowColor
+        ctx.shadowBlur = options.glowBlur
     }
 
-    let cursorX = startX
-    for (const char of value) {
-        const glyph = GLYPHS[char] || GLYPHS["?"]
-        for (let row = 0; row < glyph.length; row++) {
-            for (let column = 0; column < glyph[row].length; column++) {
-                if (glyph[row][column] !== "1") continue
-                const px = cursorX + column * scale
-                const py = y + row * scale
-                const radius = Math.max(0.8, scale * 0.22)
-                roundRect(ctx, px, py, scale, scale, radius)
-                ctx.fill()
+    const drawnNodes = new Set()
+    const connect = (rowA, colA, rowB, colB) => {
+        const [ax, ay] = point(rowA, colA)
+        const [bx, by] = point(rowB, colB)
+        ctx.beginPath()
+        ctx.moveTo(ax, ay)
+        ctx.lineTo(bx, by)
+        ctx.stroke()
+        drawnNodes.add(`${rowA}:${colA}`)
+        drawnNodes.add(`${rowB}:${colB}`)
+    }
+
+    for (let row = 0; row < 7; row++) {
+        for (let column = 0; column < 5; column++) {
+            if (!hasCell(glyph, row, column)) continue
+
+            if (hasCell(glyph, row, column + 1)) connect(row, column, row, column + 1)
+            if (hasCell(glyph, row + 1, column)) connect(row, column, row + 1, column)
+
+            // Join diagonal stair-steps only when no orthogonal route exists.
+            if (
+                hasCell(glyph, row + 1, column + 1) &&
+                !hasCell(glyph, row, column + 1) &&
+                !hasCell(glyph, row + 1, column)
+            ) {
+                connect(row, column, row + 1, column + 1)
+            }
+            if (
+                hasCell(glyph, row + 1, column - 1) &&
+                !hasCell(glyph, row, column - 1) &&
+                !hasCell(glyph, row + 1, column)
+            ) {
+                connect(row, column, row + 1, column - 1)
             }
         }
-        cursorX += (5 + spacing) * scale
+    }
+
+    // Preserve isolated punctuation dots and any intentionally isolated nodes.
+    for (let row = 0; row < 7; row++) {
+        for (let column = 0; column < 5; column++) {
+            if (!hasCell(glyph, row, column) || drawnNodes.has(`${row}:${column}`)) continue
+            const [px, py] = point(row, column)
+            ctx.beginPath()
+            ctx.arc(px, py, stroke / 2, 0, Math.PI * 2)
+            ctx.fill()
+        }
     }
 
     ctx.restore()
-    return width
+}
+
+function drawSmoothText(ctx, text, x, y, preferredHeight, options = {}) {
+    const {
+        color = "#FFFFFF",
+        align = "left",
+        maxWidth = null,
+        minHeight = 3,
+        letterSpacingRatio = 0.22,
+        glowColor = null,
+        glowBlur = 0,
+    } = options
+
+    const value = normalizeSmoothText(text)
+    const height = fitSmoothHeight(value, preferredHeight, maxWidth, minHeight, letterSpacingRatio)
+    const { glyphWidth, spacing } = smoothMetrics(height, letterSpacingRatio)
+    const width = measureSmoothText(value, height, letterSpacingRatio)
+    let cursorX = x
+    if (align === "center") cursorX -= width / 2
+    if (align === "right") cursorX -= width
+
+    for (const char of value) {
+        drawSmoothGlyph(ctx, GLYPHS[char] || GLYPHS["?"], cursorX, y, height, color, {
+            letterSpacingRatio,
+            glowColor,
+            glowBlur,
+        })
+        cursorX += glyphWidth + spacing
+    }
+
+    return { width, height, text: value }
+}
+
+function splitBalanced(text, lineCount) {
+    const value = normalizeSmoothText(text)
+    if (lineCount <= 1 || value.length <= 1) return [value]
+
+    const words = value.split(" ").filter(Boolean)
+    if (words.length > 1) {
+        const lines = Array.from({ length: lineCount }, () => "")
+        const targetLength = value.length / lineCount
+        let lineIndex = 0
+
+        for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
+            const word = words[wordIndex]
+            const candidate = lines[lineIndex] ? `${lines[lineIndex]} ${word}` : word
+            const wordsRemaining = words.length - wordIndex - 1
+            const linesRemaining = lineCount - lineIndex - 1
+
+            if (lines[lineIndex] && candidate.length > targetLength && wordsRemaining >= linesRemaining) {
+                lineIndex = Math.min(lineIndex + 1, lineCount - 1)
+            }
+            lines[lineIndex] = lines[lineIndex] ? `${lines[lineIndex]} ${word}` : word
+        }
+        return lines.filter(Boolean)
+    }
+
+    const lines = []
+    let start = 0
+    for (let index = 0; index < lineCount; index++) {
+        const remaining = value.length - start
+        const slots = lineCount - index
+        const take = Math.ceil(remaining / slots)
+        lines.push(value.slice(start, start + take))
+        start += take
+    }
+    return lines.filter(Boolean)
+}
+
+function fitWrappedSmoothText(text, maxWidth, maxHeight, options = {}) {
+    const {
+        preferredHeight = 11,
+        maxLines = 3,
+        minHeight = 3,
+        lineGapRatio = 0.28,
+        letterSpacingRatio = 0.16,
+    } = options
+
+    let best = null
+    for (let lineCount = 1; lineCount <= maxLines; lineCount++) {
+        const lines = splitBalanced(text, lineCount)
+        const maxHeightPerLine = maxHeight / (lines.length + lineGapRatio * Math.max(0, lines.length - 1))
+        let height = Math.min(preferredHeight, maxHeightPerLine)
+
+        for (const line of lines) {
+            height = Math.min(height, fitSmoothHeight(line, height, maxWidth, minHeight, letterSpacingRatio))
+        }
+
+        const gap = height * lineGapRatio
+        const totalHeight = lines.length * height + Math.max(0, lines.length - 1) * gap
+        const fits = totalHeight <= maxHeight + 0.5 &&
+            lines.every(line => measureSmoothText(line, height, letterSpacingRatio) <= maxWidth + 0.5)
+
+        if (!fits) continue
+        const score = height - (lines.length - 1) * 0.06
+        if (!best || score > best.score) {
+            best = { lines, height, gap, totalHeight, score, letterSpacingRatio }
+        }
+    }
+
+    if (best) return best
+
+    // Discord guild names are bounded, but this final fallback still preserves
+    // every character by shrinking rather than adding an ellipsis.
+    const lines = splitBalanced(text, maxLines)
+    let height = minHeight
+    while (height > 2.2 && lines.some(line => measureSmoothText(line, height, letterSpacingRatio) > maxWidth)) {
+        height -= 0.2
+    }
+    const gap = height * lineGapRatio
+    return {
+        lines,
+        height,
+        gap,
+        totalHeight: lines.length * height + Math.max(0, lines.length - 1) * gap,
+        score: height,
+        letterSpacingRatio,
+    }
+}
+
+function drawWrappedSmoothText(ctx, text, centerX, topY, maxWidth, maxHeight, options = {}) {
+    const layout = fitWrappedSmoothText(text, maxWidth, maxHeight, options)
+    const startY = topY + Math.max(0, (maxHeight - layout.totalHeight) / 2)
+
+    layout.lines.forEach((line, index) => {
+        drawSmoothText(ctx, line, centerX, startY + index * (layout.height + layout.gap), layout.height, {
+            color: options.color || "#FFFFFF",
+            align: "center",
+            maxWidth,
+            minHeight: 2.2,
+            letterSpacingRatio: layout.letterSpacingRatio,
+            glowColor: options.glowColor || null,
+            glowBlur: options.glowBlur || 0,
+        })
+    })
+
+    return layout
 }
 
 async function generateLevelUpCard({ user, displayName, guildName, oldLevel, newLevel }) {
@@ -223,7 +410,7 @@ async function generateLevelUpCard({ user, displayName, guildName, oldLevel, new
     } else {
         ctx.fillStyle = "#252033"
         ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize)
-        drawBitmapText(ctx, "?", avatarX + avatarSize / 2, avatarY + 50, 8, {
+        drawSmoothText(ctx, "?", avatarX + avatarSize / 2, avatarY + 48, 58, {
             color: "#D8B4FE",
             align: "center",
             glowColor: "rgba(168,85,247,0.65)",
@@ -232,46 +419,60 @@ async function generateLevelUpCard({ user, displayName, guildName, oldLevel, new
     }
     ctx.restore()
 
-    drawBitmapText(ctx, "CURSED LEVELING", 235, 31, 3, {
+    drawSmoothText(ctx, "CURSED LEVELING", 235, 29, 17, {
         color: "#F5D0FE",
-        glowColor: "rgba(168,85,247,0.45)",
+        maxWidth: 285,
+        minHeight: 10,
+        letterSpacingRatio: 0.18,
+        glowColor: "rgba(168,85,247,0.42)",
         glowBlur: 5,
-        maxWidth: 285,
     })
 
-    drawBitmapText(ctx, "LEVEL-UP!", 235, 68, 5, {
+    drawSmoothText(ctx, "LEVEL-UP!", 235, 64, 36, {
         color: "#FFFFFF",
-        glowColor: "rgba(168,85,247,0.8)",
-        glowBlur: 10,
         maxWidth: 285,
+        minHeight: 23,
+        letterSpacingRatio: 0.18,
+        glowColor: "rgba(168,85,247,0.80)",
+        glowBlur: 10,
     })
 
-    drawBitmapText(ctx, displayName || user?.username || "Member", 235, 126, 4, {
+    drawSmoothText(ctx, displayName || user?.username || "Member", 235, 124, 23, {
         color: "#E9D5FF",
         maxWidth: 285,
+        minHeight: 10,
+        letterSpacingRatio: 0.16,
     })
 
     ctx.fillStyle = "rgba(255,255,255,0.10)"
     roundRect(ctx, 535, 53, 174, 128, 22)
     ctx.fill()
 
-    drawBitmapText(ctx, "LEVEL", 622, 65, 3, {
+    drawSmoothText(ctx, "LEVEL", 622, 65, 14, {
         color: "#D8B4FE",
         align: "center",
+        maxWidth: 142,
+        minHeight: 9,
+        letterSpacingRatio: 0.16,
     })
 
-    drawBitmapText(ctx, `${oldLevel} • ${newLevel}`, 622, 103, 5, {
+    drawSmoothText(ctx, `${oldLevel} • ${newLevel}`, 622, 98, 31, {
         color: "#FFFFFF",
         align: "center",
+        maxWidth: 150,
+        minHeight: 15,
+        letterSpacingRatio: 0.18,
         glowColor: "rgba(168,85,247,0.55)",
         glowBlur: 6,
-        maxWidth: 154,
     })
 
-    drawBitmapText(ctx, guildName || "Discord Server", 622, 151, 2, {
+    drawWrappedSmoothText(ctx, guildName || "Discord Server", 622, 142, 150, 33, {
         color: "#C4B5FD",
-        align: "center",
-        maxWidth: 145,
+        preferredHeight: 11,
+        maxLines: 3,
+        minHeight: 3,
+        lineGapRatio: 0.26,
+        letterSpacingRatio: 0.13,
     })
 
     return canvas.toBuffer("image/png")
