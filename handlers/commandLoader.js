@@ -18,6 +18,10 @@ const {
 } = require("../utils/prefix")
 const log = logger.child("CommandLoader")
 
+/**
+ * Load all command handlers in priority order.
+ * Each handler exports a { handle(message) } function returning true if handled.
+ */
 function loadCommands() {
     const commandModules = [
         { name: "moderation-prefix", module: require("../commands/moderationPrefix") },
@@ -49,6 +53,13 @@ function loadCommands() {
     return commandModules
 }
 
+/**
+ * Dispatch a message to all command handlers in order.
+ * Returns true if any handler consumed the message.
+ * @param {import("discord.js").Message} message
+ * @param {Array} commandModules
+ * @returns {Promise<boolean>}
+ */
 async function dispatchCommand(message, commandModules) {
     const guildConfig = message.guild
         ? getServerConfig(message.guild.id).config
