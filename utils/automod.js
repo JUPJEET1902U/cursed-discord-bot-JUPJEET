@@ -8,17 +8,13 @@
 
 const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./serverConfig")
+const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
 const { handleLevelingMessage } = require("./leveling")
 const premiumCmd = require("../commands/premium")
 
-// Regex patterns — pre-compiled outside functions to avoid repeated compilation.
-// Kept deliberately simple (no nested quantifiers) to prevent ReDoS.
-// LINK_REGEX: matches http(s):// or www. followed by a non-whitespace hostname segment.
-const LINK_REGEX   = /https?:\/\/\S+|www\.\S+\.\S+/gi
-// INVITE_REGEX: matches discord.gg/<code> or discord.com/invite/<code>.
-// The invite code is limited to 2-32 alphanumeric/hyphen chars to bound backtracking.
+const LINK_REGEX = /https?:\/\/\S+|www\.\S+\.\S+/gi
 const INVITE_REGEX = /discord(?:\.gg|(?:app)?\.com\/invite)\/[a-zA-Z0-9-]{2,32}/gi
 
 const CHANNEL_CONTROL_COMMANDS = new Set([
@@ -34,34 +30,18 @@ function queueLeveling(message) {
     })
 }
 
-/**
- * Check whether the bot has permission to manage messages in this channel.
- */
 function canManageMessages(guild) {
     return guild.members.me?.permissions.has(PermissionFlagsBits.ManageMessages) ?? false
 }
 
-/**
- * Safely delete a message, ignoring errors (already deleted, no perms, etc.)
- */
 async function safeDelete(message) {
     try { await message.delete() } catch { /* ignore */ }
 }
 
-/**
- * Run all enabled auto-mod filters against an incoming message.
- *
- * @param {import("discord.js").Message} message
- * @returns {Promise<boolean>} true if the message was actioned
- */
 async function runAutoMod(message) {
     if (message.author.bot) return false
-    if (!message.guild)     return false
+    if (!message.guild) return false
 
-    // Channel-control commands must be reachable even when the current channel
-    // is outside the allow-list. The main MessageCreate handler runs auto-mod
-    // before its channel gate, so handling these exact commands here prevents
-    // admins from being locked out after removing the final allowed channel.
     const normalizedContent = message.content.toLowerCase().trim()
     if (CHANNEL_CONTROL_COMMANDS.has(normalizedContent)) {
         return premiumCmd.handle(message)
@@ -69,22 +49,31 @@ async function runAutoMod(message) {
 
     const { guild, member, author, content } = message
     const guildId = guild.id
-    const userId  = author.id
+    const userId = author.id
 
-    // Moderators are exempt from auto-mod, but their normal messages may still
-    // earn leveling XP under the same cooldown and anti-spam rules as everyone.
     if (member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
         queueLeveling(message)
         return false
     }
 
-    const { config } = getServerConfig(guildId)
+    const phase2 = getPhase2Config(guildId)
+    const whitelistMatch = getWhitelistMatch({
+        guildId,
+        member,
+        userId,
+        channelId: message.channel.id,
+        isBot: author.bot,
+    })
+    if (whitelistMatch && phase2.whitelist.exemptFromAutomod) {
+        queueLeveling(message)
+        return false
+    }
 
+    const { config } = getServerConfig(guildId)
     const target = { id: author.id, tag: author.tag }
 
-    // ── Anti-invite ────────────────────────────────────────────────────────────
     if (config.antiInvite) {
-        INVITE_REGEX.lastIndex = 0 // reset global regex state before each use
+        INVITE_REGEX.lastIndex = 0
         if (INVITE_REGEX.test(content)) {
             if (canManageMessages(guild)) await safeDelete(message)
             try {
@@ -97,26 +86,25 @@ async function runAutoMod(message) {
                 action: "ANTI_INVITE",
                 target,
                 reason: "Posted a Discord invite link",
-                extra:  `Channel: <#${message.channel.id}>\nContent: \`${content.slice(0, 200)}\``,
+                extra: `Channel: <#${message.channel.id}>\nContent: \`${content.slice(0, 200)}\``,
+                metadata: { channelId: message.channel.id, messageId: message.id },
             })
             return true
         }
     }
 
-    // ── Anti-link ─────────────────────────────────────────────────────────────
     if (config.antiLink) {
         const whitelist = config.linkWhitelist || []
-        LINK_REGEX.lastIndex = 0 // reset global regex state before each use
-        const matches   = content.match(LINK_REGEX) || []
+        LINK_REGEX.lastIndex = 0
+        const matches = content.match(LINK_REGEX) || []
 
         const blockedLinks = matches.filter(link => {
-            // Extract hostname for whitelist check
             try {
-                const url      = link.startsWith("http") ? link : `https://${link}`
+                const url = link.startsWith("http") ? link : `https://${link}`
                 const hostname = new URL(url).hostname.replace(/^www\./, "")
                 return !whitelist.some(allowed => hostname === allowed || hostname.endsWith(`.${allowed}`))
             } catch {
-                return true // malformed URL — block it
+                return true
             }
         })
 
@@ -132,15 +120,14 @@ async function runAutoMod(message) {
                 action: "ANTI_LINK",
                 target,
                 reason: "Posted a link",
-                extra:  `Channel: <#${message.channel.id}>\nLinks: ${blockedLinks.slice(0, 3).join(", ")}`,
+                extra: `Channel: <#${message.channel.id}>\nLinks: ${blockedLinks.slice(0, 3).join(", ")}`,
+                metadata: { channelId: message.channel.id, messageId: message.id, blockedLinks: blockedLinks.slice(0, 10) },
             })
             return true
         }
     }
 
-    // ── Anti-spam ─────────────────────────────────────────────────────────────
     if (config.antiSpam) {
-        // If already muted by anti-spam, delete the message silently
         if (isMuted(guildId, userId)) {
             if (canManageMessages(guild)) await safeDelete(message)
             return true
@@ -149,11 +136,8 @@ async function runAutoMod(message) {
         const { spam } = recordMessage(guildId, userId)
         if (spam) {
             const muteDurationSec = MUTE_DURATION_MS / 1000
-
-            // Delete the triggering message
             if (canManageMessages(guild)) await safeDelete(message)
 
-            // Apply Discord timeout if we have permission
             const canTimeout = guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers) ?? false
             if (canTimeout && member) {
                 try {
@@ -163,14 +147,12 @@ async function runAutoMod(message) {
                 }
             }
 
-            // Schedule unmute callback (removes from our internal set)
             markMuted(guildId, userId, async () => {
-                // Timeout is lifted automatically by Discord after MUTE_DURATION_MS;
-                // nothing extra needed here, but we log the unmute.
                 await logAction(guild, {
                     action: "UNMUTE",
                     target,
                     reason: `Anti-spam timeout expired (${muteDurationSec}s)`,
+                    source: "system",
                 })
             })
 
@@ -184,14 +166,14 @@ async function runAutoMod(message) {
                 action: "ANTI_SPAM",
                 target,
                 reason: "Rapid message spam detected",
-                extra:  `Muted for **${muteDurationSec} seconds**`,
+                extra: `Muted for **${muteDurationSec} seconds**`,
+                durationMs: MUTE_DURATION_MS,
+                metadata: { channelId: message.channel.id, messageId: message.id },
             })
             return true
         }
     }
 
-    // The message passed auto-moderation. Leveling runs here so blocked messages
-    // never earn XP and CURSED's separate AI channel allow-list remains untouched.
     queueLeveling(message)
     return false
 }
