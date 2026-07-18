@@ -12,6 +12,10 @@ const {
     isCommandEnabled,
     isModuleEnabled,
 } = require("../utils/dashboardControl")
+const {
+    createCommandMessage,
+    resolveCommandPrefix,
+} = require("../utils/prefix")
 const log = logger.child("CommandLoader")
 
 /**
@@ -20,6 +24,7 @@ const log = logger.child("CommandLoader")
  */
 function loadCommands() {
     const commandModules = [
+        { name: "moderation-prefix", module: require("../commands/moderationPrefix") },
         { name: "help",             module: require("../commands/help")             },
         { name: "premium",          module: require("../commands/premium")          },
         { name: "fun",              module: require("../commands/fun")              },
@@ -58,7 +63,11 @@ async function dispatchCommand(message, commandModules) {
     const guildConfig = message.guild
         ? getServerConfig(message.guild.id).config
         : {}
-    const commandName = extractCommandName(message.content)
+    const resolvedPrefix = resolveCommandPrefix(message.content, guildConfig)
+    if (!resolvedPrefix) return false
+
+    const commandMessage = createCommandMessage(message, resolvedPrefix.canonicalContent)
+    const commandName = extractCommandName(commandMessage.content)
 
     if (commandName && !isCommandEnabled(guildConfig, commandName)) {
         await message.channel.send("⛔ That command is disabled in this server.").catch(() => {})
@@ -69,7 +78,7 @@ async function dispatchCommand(message, commandModules) {
         if (!isModuleEnabled(guildConfig, name)) continue
 
         try {
-            const handled = await module.handle(message)
+            const handled = await module.handle(commandMessage)
             if (handled) {
                 log.debug(`Command handled by: ${name}`)
                 if (message.guild && !message.author.bot) {
