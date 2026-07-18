@@ -1,0 +1,41 @@
+name: CURSED Ticket System CI
+on:
+  pull_request:
+    paths:
+      - 'utils/ticket*.js'
+      - 'commands/tickets*.js'
+      - 'api/dashboardTickets.js'
+      - 'handlers/commandLoader.js'
+      - 'utils/modlog.js'
+      - 'webhook.js'
+      - '.github/workflows/ticket-system.yml'
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: JavaScript syntax
+        run: |
+          node --check utils/ticketConfig.js
+          node --check utils/ticketModels.js
+          node --check utils/ticketTranscript.js
+          node --check utils/ticketUi.js
+          node --check utils/ticketService.js
+          node --check utils/ticketBootstrap.js
+          node --check commands/tickets.js
+          node --check commands/ticketsPrefix.js
+          node --check api/dashboardTickets.js
+          node --check handlers/commandLoader.js
+          node --check utils/modlog.js
+          node --check webhook.js
+      - name: Ticket contract smoke test
+        run: |
+          node -e "const c=require('./utils/ticketConfig'); const x=c.normalizeTicketConfig({tickets:{enabled:true,maxOpenPerUser:99}}); if(!x.enabled||x.maxOpenPerUser!==10) process.exit(1)"
+          grep -q 'initializeTicketSystem' utils/modlog.js
+          grep -q 'createDashboardTicketsRouter' webhook.js
+          grep -q 'ticketsPrefix' handlers/commandLoader.js
