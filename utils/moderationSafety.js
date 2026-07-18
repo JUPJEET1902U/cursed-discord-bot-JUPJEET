@@ -1,4 +1,5 @@
 const { PermissionFlagsBits } = require("discord.js")
+const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config")
 
 const ACTION_PERMISSIONS = {
     WARN: PermissionFlagsBits.ModerateMembers,
@@ -7,10 +8,13 @@ const ACTION_PERMISSIONS = {
     KICK: PermissionFlagsBits.KickMembers,
     BAN: PermissionFlagsBits.BanMembers,
     UNBAN: PermissionFlagsBits.BanMembers,
+    TEMPBAN: PermissionFlagsBits.BanMembers,
+    SOFTBAN: PermissionFlagsBits.BanMembers,
     PURGE: PermissionFlagsBits.ManageMessages,
     LOCK: PermissionFlagsBits.ManageChannels,
     UNLOCK: PermissionFlagsBits.ManageChannels,
     SLOWMODE: PermissionFlagsBits.ManageChannels,
+    NICKNAME: PermissionFlagsBits.ManageNicknames,
 }
 
 function actionLabel(action) {
@@ -27,7 +31,14 @@ async function resolveTargetMember(guild, targetUser) {
         || await guild.members.fetch(targetUser.id).catch(() => null)
 }
 
-async function validateModerationTarget({ guild, actorMember, targetUser, action, skipActorPermission = false }) {
+async function validateModerationTarget({
+    guild,
+    actorMember,
+    targetUser,
+    action,
+    skipActorPermission = false,
+    ignoreWhitelist = false,
+}) {
     const normalizedAction = String(action || "").toUpperCase()
     const label = actionLabel(normalizedAction)
     const botMember = guild?.members?.me
@@ -53,8 +64,31 @@ async function validateModerationTarget({ guild, actorMember, targetUser, action
     }
 
     const targetMember = await resolveTargetMember(guild, targetUser)
+
+    if (!ignoreWhitelist) {
+        const phase2 = getPhase2Config(guild.id)
+        const whitelist = getWhitelistMatch({
+            guildId: guild.id,
+            member: targetMember,
+            userId: targetUser.id,
+            isBot: targetUser.bot,
+        })
+        if (
+            whitelist
+            && phase2.whitelist.protectFromManualModeration
+            && actorMember.id !== guild.ownerId
+        ) {
+            return {
+                ok: false,
+                error: `That target is protected by the moderation whitelist (${whitelist.type}). Only the server owner can override it.`,
+            }
+        }
+    }
+
     if (!targetMember) {
-        if (["BAN", "UNBAN"].includes(normalizedAction)) return { ok: true, targetMember: null }
+        if (["BAN", "UNBAN", "TEMPBAN", "SOFTBAN"].includes(normalizedAction)) {
+            return { ok: true, targetMember: null }
+        }
         return { ok: false, error: "That user is not currently in this server." }
     }
 
@@ -83,8 +117,11 @@ async function validateModerationTarget({ guild, actorMember, targetUser, action
     if (normalizedAction === "KICK" && !targetMember.kickable) {
         return { ok: false, error: "Discord will not allow me to kick that member." }
     }
-    if (normalizedAction === "BAN" && !targetMember.bannable) {
+    if (["BAN", "TEMPBAN", "SOFTBAN"].includes(normalizedAction) && !targetMember.bannable) {
         return { ok: false, error: "Discord will not allow me to ban that member." }
+    }
+    if (normalizedAction === "NICKNAME" && !targetMember.manageable) {
+        return { ok: false, error: "Discord will not allow me to change that member's nickname." }
     }
 
     return { ok: true, targetMember }
