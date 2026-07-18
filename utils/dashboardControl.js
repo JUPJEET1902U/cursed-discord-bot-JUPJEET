@@ -15,8 +15,6 @@ const CONTROL_MODULES = [
     { key: "leaderboards", label: "Leaderboards", description: "Economy and activity leaderboards." },
     { key: "images", label: "Image Generation", description: "Imagine and meme image generation." },
     { key: "memory", label: "Memory", description: "User-managed long-term memory commands." },
-    { key: "summary", label: "Summaries", description: "Conversation and channel summary commands." },
-    { key: "knowledge", label: "Knowledge", description: "Knowledge and information commands." },
     { key: "server-insights", label: "Server Insights", description: "Server activity and insight commands." },
     { key: "public-stats-status", label: "Public Stats", description: "Public bot and server status commands." },
     { key: "leveling", label: "Leveling Commands", description: "Rank, levels, and leveling administration commands." },
