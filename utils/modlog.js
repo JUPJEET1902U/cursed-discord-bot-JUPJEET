@@ -88,6 +88,15 @@ function setClient(client) {
     } catch (err) {
         console.error("Moderation Phase 3 setup error:", err.message)
     }
+
+    // Tickets are additive and isolated. Setup or scheduler failures are logged
+    // without stopping AI, economy, moderation, welcome, or other CURSED systems.
+    try {
+        const { initializeTicketSystem } = require("./ticketBootstrap")
+        initializeTicketSystem(client)
+    } catch (err) {
+        console.error("Ticket System setup error:", err.message)
+    }
 }
 
 function inferDurationMs(extra) {

@@ -25,6 +25,7 @@ const log = logger.child("CommandLoader")
 function loadCommands() {
     const commandModules = [
         { name: "moderation-prefix", module: require("../commands/moderationPrefix") },
+        { name: "tickets",           module: require("../commands/ticketsPrefix")   },
         { name: "help",             module: require("../commands/help")             },
         { name: "premium",          module: require("../commands/premium")          },
         { name: "fun",              module: require("../commands/fun")              },

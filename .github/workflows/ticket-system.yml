@@ -1,0 +1,71 @@
+name: CURSED Ticket System CI
+on:
+  pull_request:
+    paths:
+      - 'utils/ticket*.js'
+      - 'commands/tickets*.js'
+      - 'api/dashboardTickets.js'
+      - 'handlers/commandLoader.js'
+      - 'utils/modlog.js'
+      - 'webhook.js'
+      - '.github/workflows/ticket-system.yml'
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: JavaScript syntax
+        run: |
+          node --check utils/ticketConfig.js
+          node --check utils/ticketModels.js
+          node --check utils/ticketTranscript.js
+          node --check utils/ticketUi.js
+          node --check utils/ticketService.js
+          node --check utils/ticketBootstrap.js
+          node --check commands/tickets.js
+          node --check commands/ticketsPrefix.js
+          node --check api/dashboardTickets.js
+          node --check handlers/commandLoader.js
+          node --check utils/modlog.js
+          node --check webhook.js
+      - name: Ticket contract smoke test
+        run: |
+          node <<'NODE'
+          const config = require('./utils/ticketConfig')
+          const normalized = config.normalizeTicketConfig({ tickets: { enabled: true, maxOpenPerUser: 99 } })
+          if (!normalized.enabled || normalized.maxOpenPerUser !== 10) process.exit(1)
+
+          const ticketCommands = require('./commands/tickets')
+          const slash = ticketCommands.commands[0].toJSON()
+          if (slash.name !== 'ticket' || slash.options.length < 10) process.exit(1)
+          require('./commands/ticketsPrefix')
+          require('./utils/ticketService')
+          require('./utils/ticketBootstrap')
+
+          const { buildPanelMessage } = require('./utils/ticketUi')
+          const panelMessage = buildPanelMessage({
+            _id: '507f1f77bcf86cd799439011',
+            title: 'CURSED Support Center',
+            description: 'Choose a category.',
+            color: '#8B5CF6',
+            footer: 'Powered by CURSED Support',
+            style: 'buttons',
+            categories: [
+              { id: 'general', label: 'General Support', emoji: '💬' },
+              { id: 'billing', label: 'Billing', emoji: '💳' },
+            ],
+          })
+          if (panelMessage.embeds.length !== 1 || panelMessage.components.length !== 1) process.exit(1)
+          panelMessage.components.forEach(row => row.toJSON())
+
+          const dashboard = require('./api/dashboardTickets')
+          if (typeof dashboard.createDashboardTicketsRouter !== 'function') process.exit(1)
+          NODE
+          grep -q 'initializeTicketSystem' utils/modlog.js
+          grep -q 'createDashboardTicketsRouter' webhook.js
+          grep -q 'ticketsPrefix' handlers/commandLoader.js
