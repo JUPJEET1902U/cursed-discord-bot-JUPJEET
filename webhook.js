@@ -6,6 +6,7 @@ const { createDashboardControlRouter } = require("./api/dashboardControl")
 const { createDashboardWelcomeRouter } = require("./api/dashboardWelcome")
 const { createDashboardModerationRouter } = require("./api/dashboardModeration")
 const { createDashboardModerationPhase2Router } = require("./api/dashboardModerationPhase2")
+const { createDashboardSecurityRouter } = require("./api/dashboardSecurity")
 
 let discordClient = null
 
@@ -133,6 +134,7 @@ function startWebhookServer() {
     app.use("/api/dashboard", createDashboardControlRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardModerationRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardModerationPhase2Router(() => discordClient))
+    app.use("/api/dashboard", createDashboardSecurityRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardRouter(() => discordClient))
 
     app.post("/webhook/kofi", async (req, res) => {
