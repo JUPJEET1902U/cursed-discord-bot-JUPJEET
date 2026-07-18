@@ -295,7 +295,7 @@ function createDashboardSecurityRouter(getClient) {
         const resolved = getGuildOrResponse(getClient, req.params.guildId, res)
         if (!resolved) return
         try {
-            res.json(await payloadForGuild(resolved.guild))
+            res.json({ data: await payloadForGuild(resolved.guild) })
         } catch (err) {
             console.error("Dashboard security GET error:", err.message)
             res.status(500).json({ error: "Could not load Server Protection.", code: "SECURITY_LOAD_FAILED" })
@@ -310,7 +310,7 @@ function createDashboardSecurityRouter(getClient) {
         try {
             const config = normalizeSecurityPhase3Config(req.body)
             await updateGuildConfigAndWait(resolved.guild.id, { securityPhase3: config })
-            res.json(await payloadForGuild(resolved.guild))
+            res.json({ data: await payloadForGuild(resolved.guild) })
         } catch (err) {
             console.error("Dashboard security PUT error:", err.message)
             res.status(err.code === "MONGO_UNAVAILABLE" ? 503 : 500).json({ error: "Could not save Server Protection settings.", code: err.code || "SECURITY_SAVE_FAILED" })
@@ -324,7 +324,7 @@ function createDashboardSecurityRouter(getClient) {
             const config = normalizeSecurityPhase3Config(getServerConfig(resolved.guild.id).config)
             const result = await performAction(resolved.guild, config, req.body, actorFromRequest(req))
             if (!result.ok) return res.status(400).json({ error: result.error || "Security action failed.", code: "SECURITY_ACTION_FAILED" })
-            res.json({ result, data: await payloadForGuild(resolved.guild) })
+            res.json({ data: { result, data: await payloadForGuild(resolved.guild) } })
         } catch (err) {
             console.error("Dashboard security action error:", err.message)
             res.status(500).json({ error: "Security action failed safely.", code: "SECURITY_ACTION_FAILED" })
@@ -341,7 +341,7 @@ function createDashboardSecurityRouter(getClient) {
         }
         const incident = await updateSecurityIncident(resolved.guild.id, req.params.incidentId, { action, note }, actorFromRequest(req))
         if (!incident) return res.status(404).json({ error: "Incident not found.", code: "INCIDENT_NOT_FOUND" })
-        res.json({ incident: serializeIncident(incident), stats: await getSecurityIncidentStats(resolved.guild.id) })
+        res.json({ data: { incident: serializeIncident(incident), stats: await getSecurityIncidentStats(resolved.guild.id) } })
     })
 
     return router
