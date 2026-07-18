@@ -42,8 +42,6 @@ function loadCommands() {
         { name: "images",           module: require("../commands/images")           },
         { name: "admin",            module: require("../commands/admin")            },
         { name: "memory",           module: require("../commands/memory")           },
-        { name: "summary",          module: require("../commands/summary")          },
-        { name: "knowledge",        module: require("../commands/knowledge")        },
         { name: "server-insights",  module: require("../commands/serverInsights")   },
         { name: "public-stats-status", module: require("../commands/publicStatsStatus") },
         { name: "leveling",         module: require("../commands/leveling")         },
