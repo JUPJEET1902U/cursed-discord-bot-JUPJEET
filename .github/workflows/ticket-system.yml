@@ -35,7 +35,37 @@ jobs:
           node --check webhook.js
       - name: Ticket contract smoke test
         run: |
-          node -e "const c=require('./utils/ticketConfig'); const x=c.normalizeTicketConfig({tickets:{enabled:true,maxOpenPerUser:99}}); if(!x.enabled||x.maxOpenPerUser!==10) process.exit(1)"
+          node <<'NODE'
+          const config = require('./utils/ticketConfig')
+          const normalized = config.normalizeTicketConfig({ tickets: { enabled: true, maxOpenPerUser: 99 } })
+          if (!normalized.enabled || normalized.maxOpenPerUser !== 10) process.exit(1)
+
+          const ticketCommands = require('./commands/tickets')
+          const slash = ticketCommands.commands[0].toJSON()
+          if (slash.name !== 'ticket' || slash.options.length < 10) process.exit(1)
+          require('./commands/ticketsPrefix')
+          require('./utils/ticketService')
+          require('./utils/ticketBootstrap')
+
+          const { buildPanelMessage } = require('./utils/ticketUi')
+          const panelMessage = buildPanelMessage({
+            _id: '507f1f77bcf86cd799439011',
+            title: 'CURSED Support Center',
+            description: 'Choose a category.',
+            color: '#8B5CF6',
+            footer: 'Powered by CURSED Support',
+            style: 'buttons',
+            categories: [
+              { id: 'general', label: 'General Support', emoji: '💬' },
+              { id: 'billing', label: 'Billing', emoji: '💳' },
+            ],
+          })
+          if (panelMessage.embeds.length !== 1 || panelMessage.components.length !== 1) process.exit(1)
+          panelMessage.components.forEach(row => row.toJSON())
+
+          const dashboard = require('./api/dashboardTickets')
+          if (typeof dashboard.createDashboardTicketsRouter !== 'function') process.exit(1)
+          NODE
           grep -q 'initializeTicketSystem' utils/modlog.js
           grep -q 'createDashboardTicketsRouter' webhook.js
           grep -q 'ticketsPrefix' handlers/commandLoader.js
