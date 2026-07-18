@@ -16,10 +16,14 @@ const ACTION_COLORS = {
     KICK: 0xFF4444,
     BAN: 0xCC0000,
     UNBAN: 0x00AA88,
+    TEMPBAN: 0xCC5500,
+    SOFTBAN: 0xCC7700,
     PURGE: 0x5865F2,
     LOCK: 0x9922CC,
     UNLOCK: 0x22AA88,
     SLOWMODE: 0x5865F2,
+    NICKNAME: 0x3498DB,
+    NOTE: 0x95A5A6,
     ANTI_LINK: 0xAA44FF,
     ANTI_INVITE: 0xDD44AA,
     ANTI_SPAM: 0xFF8800,
@@ -35,10 +39,14 @@ const ACTION_EMOJIS = {
     KICK: "👢",
     BAN: "🔨",
     UNBAN: "🕊️",
+    TEMPBAN: "⏳",
+    SOFTBAN: "🧹",
     PURGE: "🧹",
     LOCK: "🔒",
     UNLOCK: "🔓",
     SLOWMODE: "🐢",
+    NICKNAME: "🏷️",
+    NOTE: "📝",
     ANTI_LINK: "🔗",
     ANTI_INVITE: "📨",
     ANTI_SPAM: "🚫",
@@ -53,6 +61,15 @@ function setClient(client) {
         attachActivityTracking(client)
     } catch (err) {
         console.error("Activity tracking listener setup error:", err.message)
+    }
+
+    // Phase 2 is isolated behind a guarded bootstrap. Any setup failure is logged
+    // without affecting existing AI, economy, welcome, leveling, or moderation.
+    try {
+        const { initializeModerationPhase2 } = require("./moderationPhase2Bootstrap")
+        initializeModerationPhase2(client)
+    } catch (err) {
+        console.error("Moderation Phase 2 setup error:", err.message)
     }
 }
 
@@ -123,13 +140,17 @@ async function logAction(guild, {
     const color = ACTION_COLORS[normalizedAction] ?? 0x99AABB
     const emoji = ACTION_EMOJIS[normalizedAction] ?? "🛡️"
     const label = normalizedAction.replace(/_/g, " ")
+    const targetType = metadata?.targetType === "channel" ? "channel" : "user"
+    const targetDisplay = targetType === "channel"
+        ? `<#${target.id}> (${target.tag || "Unknown channel"})`
+        : `<@${target.id}> (${target.tag || "Unknown"})`
 
     const embed = new EmbedBuilder()
         .setColor(color)
         .setTitle(`${emoji} ${label}`)
         .addFields(
-            { name: "👤 User", value: `<@${target.id}> (${target.tag || "Unknown"})`, inline: true },
-            { name: "🆔 User ID", value: String(target.id), inline: true },
+            { name: targetType === "channel" ? "📢 Channel" : "👤 User", value: targetDisplay, inline: true },
+            { name: "🆔 Target ID", value: String(target.id), inline: true },
         )
         .setTimestamp()
 
@@ -149,6 +170,7 @@ async function logAction(guild, {
 
     if (reason) embed.addFields({ name: "📝 Reason", value: String(reason).slice(0, 1024), inline: false })
     if (extra) embed.addFields({ name: "ℹ️ Details", value: String(extra).slice(0, 1024), inline: false })
+    if (evidenceUrl) embed.addFields({ name: "🔎 Evidence", value: String(evidenceUrl).slice(0, 1024), inline: false })
 
     try {
         await channel.send({ embeds: [embed], allowedMentions: { parse: [] } })
