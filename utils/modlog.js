@@ -24,6 +24,10 @@ const ACTION_COLORS = {
     SLOWMODE: 0x5865F2,
     NICKNAME: 0x3498DB,
     NOTE: 0x95A5A6,
+    QUARANTINE: 0xE67E22,
+    UNQUARANTINE: 0x2ECC71,
+    LOCKDOWN_ENABLE: 0xC0392B,
+    LOCKDOWN_DISABLE: 0x27AE60,
     ANTI_LINK: 0xAA44FF,
     ANTI_INVITE: 0xDD44AA,
     ANTI_SPAM: 0xFF8800,
@@ -47,6 +51,10 @@ const ACTION_EMOJIS = {
     SLOWMODE: "🐢",
     NICKNAME: "🏷️",
     NOTE: "📝",
+    QUARANTINE: "🛡️",
+    UNQUARANTINE: "✅",
+    LOCKDOWN_ENABLE: "🚨",
+    LOCKDOWN_DISABLE: "🔓",
     ANTI_LINK: "🔗",
     ANTI_INVITE: "📨",
     ANTI_SPAM: "🚫",
@@ -70,6 +78,15 @@ function setClient(client) {
         initializeModerationPhase2(client)
     } catch (err) {
         console.error("Moderation Phase 2 setup error:", err.message)
+    }
+
+    // Phase 3 is a second additive and isolated bootstrap. It never replaces
+    // Phase 1/2 handlers, and a setup failure cannot stop unrelated CURSED features.
+    try {
+        const { initializeSecurityPhase3 } = require("./securityPhase3Bootstrap")
+        initializeSecurityPhase3(client)
+    } catch (err) {
+        console.error("Moderation Phase 3 setup error:", err.message)
     }
 }
 
