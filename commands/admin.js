@@ -12,6 +12,7 @@ const log = logger.child("Admin")
 
 const BOT_OWNER_IDS = (process.env.BOT_OWNER_IDS || "").split(",").map(s => s.trim()).filter(Boolean)
 const START_TIME = Date.now()
+const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
 
 function isOwner(message) {
     return BOT_OWNER_IDS.includes(message.author.id)
@@ -39,17 +40,83 @@ function formatBytes(bytes) {
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+function safeGuildName(name) {
+    return String(name || "Unknown Server")
+        .replace(/[\r\n]+/g, " ")
+        .replace(/@/g, "＠")
+        .replace(/`/g, "ˋ")
+        .slice(0, 100)
+}
+
+function buildPrivateServerListChunks(guilds, botName = "CURSED") {
+    const header = `🌐 **${botName} Server List**\nTotal servers: **${guilds.length}**\n\n`
+    const entries = guilds.map((guild, index) =>
+        `${index + 1}. **${safeGuildName(guild.name)}**\nID: \`${guild.id}\``
+    )
+
+    const chunks = []
+    let current = header
+
+    if (entries.length === 0) {
+        return [`${header}No servers are currently cached.`]
+    }
+
+    for (const entry of entries) {
+        const addition = `${entry}\n\n`
+        if ((current + addition).length > 1850 && current !== header) {
+            chunks.push(current.trimEnd())
+            current = `🌐 **${botName} Server List — continued**\n\n${addition}`
+        } else {
+            current += addition
+        }
+    }
+
+    if (current.trim()) chunks.push(current.trimEnd())
+    return chunks
+}
+
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
     const userId = message.author.id
     const isGiveCoinsCommand = msgLower === "!givecoins" || msgLower.startsWith("!givecoins ")
+    const isServerListCommand = msgLower === "!botservers" || msgLower === "!servers"
 
     if (!msgLower.startsWith("!botstats") &&
         !msgLower.startsWith("!aistats") &&
         !msgLower.startsWith("!memorydebug") &&
         !msgLower.startsWith("!economystats") &&
-        !isGiveCoinsCommand) {
+        !isGiveCoinsCommand &&
+        !isServerListCommand) {
         return false
+    }
+
+    // ── !botservers / !servers ──────────────────────────────────────────────────
+    // Strictly bot-owner-only. Server owners and Discord administrators cannot bypass it.
+    // Details are sent only through the bot owner's DMs so server names and IDs never
+    // appear in a public server channel.
+    if (isServerListCommand) {
+        if (!isOwner(message)) {
+            await createSafeMessage(message.channel, "🔒 This command is restricted to the CURSED bot owner.")
+            return true
+        }
+
+        const guilds = [...message.client.guilds.cache.values()]
+            .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }))
+        const chunks = buildPrivateServerListChunks(guilds)
+
+        try {
+            for (const content of chunks) {
+                await message.author.send({ content, allowedMentions: SAFE_MENTIONS })
+            }
+            await createSafeMessage(message.channel, "✅ I sent the private server list to your DMs.")
+        } catch (err) {
+            log.warn(`Could not DM private server list to owner ${userId}: ${err.message}`)
+            await createSafeMessage(
+                message.channel,
+                "❌ I couldn't send you a DM. Enable direct messages for this server and run `!botservers` again."
+            )
+        }
+        return true
     }
 
     // ── !givecoins @user amount ────────────────────────────────────────────────
@@ -113,7 +180,8 @@ async function handle(message) {
     if (msgLower === "!botstats") {
         const uptime = formatUptime(Date.now() - START_TIME)
         const mem = process.memoryUsage()
-        const guildCount = message.client?.guilds?.cache?.size || "N/A"
+        const guildCount = message.client?.guilds?.cache?.size || 0
+        const visibleGuildCount = isOwner(message) ? `**${guildCount}**` : "`Restricted to bot owner`"
         const userCount = message.client?.users?.cache?.size || "N/A"
         const ecoData = loadEconomy()
         const totalUsers = Object.keys(ecoData).length
@@ -122,7 +190,7 @@ async function handle(message) {
             `📊 **CURSED Bot Statistics**\n\n` +
             `⏱️ Uptime: **${uptime}**\n` +
             `🖥️ Memory: **${formatBytes(mem.heapUsed)}** / ${formatBytes(mem.heapTotal)}\n` +
-            `🌐 Servers: **${guildCount}**\n` +
+            `🌐 Servers: ${visibleGuildCount}\n` +
             `👥 Cached Users: **${userCount}**\n` +
             `💾 Economy Users: **${totalUsers}**\n` +
             `🟢 Node.js: **${process.version}**\n` +
