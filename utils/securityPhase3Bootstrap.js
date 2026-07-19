@@ -2,6 +2,7 @@ const { Events, REST, Routes } = require("discord.js")
 const logger = require("./logger")
 const securityCommands = require("../commands/securityProtection")
 const { attachSecurityProtection } = require("./securityProtection")
+const { startSnapshotScheduler } = require("./securitySnapshots")
 
 const log = logger.child("SecurityPhase3")
 let initialized = false
@@ -38,8 +39,8 @@ async function registerSecurityCommands(client) {
 }
 
 function scheduleRegistration(client, attempt = 0) {
-    // Phase 2 registers at 8 seconds. Phase 3 waits longer and merges the latest
-    // command set, preventing either additive command pack from replacing the other.
+    // Phase 2 registers at 8 seconds. Fortress waits longer and merges the latest
+    // command set, preventing additive command packs from replacing each other.
     const delay = attempt === 0 ? 30000 : Math.min(90000, 20000 * (attempt + 1))
     const timer = setTimeout(async () => {
         try {
@@ -61,7 +62,7 @@ function initializeSecurityPhase3(client) {
             log.error(`Security command failed safely: ${err.message}`)
             if (!securityCommands.COMMAND_NAMES.has(interaction.commandName)) return
             const payload = {
-                content: "❌ Server Protection failed safely. Existing CURSED features were not changed.",
+                content: "❌ CURSED Fortress failed safely. Existing CURSED features were not changed.",
                 ephemeral: true,
                 allowedMentions: { parse: [] },
             }
@@ -71,8 +72,9 @@ function initializeSecurityPhase3(client) {
     })
 
     attachSecurityProtection(client)
+    startSnapshotScheduler(client)
     scheduleRegistration(client)
-    log.info("Moderation Phase 3 Server Protection initialized")
+    log.info("Moderation Fortress initialized")
 }
 
 module.exports = {

@@ -236,19 +236,18 @@ async function recreateDeletedRole(role, reason) {
 }
 
 async function revertChannelUpdate(oldChannel, newChannel, reason) {
-    if (!oldChannel || !newChannel || !newChannel.manageable) return { ok: false, error: "Channel update cannot be reverted." }
+    if (!oldChannel || !newChannel || !newChannel.guild?.members?.me?.permissions.has(PermissionFlagsBits.ManageChannels)) return { ok: false, error: "Channel update cannot be reverted." }
     markInternalAction(newChannel.guild.id, "channelUpdates", newChannel.id, 20_000)
     const edits = {
         name: oldChannel.name,
         position: oldChannel.rawPosition,
         parent: oldChannel.parentId || null,
         permissionOverwrites: serializeOverwrites(oldChannel),
-        reason,
     }
     if ("topic" in oldChannel) edits.topic = oldChannel.topic || null
     if ("nsfw" in oldChannel) edits.nsfw = oldChannel.nsfw
     if ("rateLimitPerUser" in oldChannel) edits.rateLimitPerUser = oldChannel.rateLimitPerUser || 0
-    await newChannel.edit(edits)
+    await newChannel.edit(edits, reason)
     return { ok: true }
 }
 
@@ -261,8 +260,7 @@ async function revertRoleUpdate(oldRole, newRole, reason) {
         hoist: oldRole.hoist,
         mentionable: oldRole.mentionable,
         permissions: new PermissionsBitField(oldRole.permissions.bitfield),
-        reason,
-    })
+    }, reason)
     await newRole.setPosition(oldRole.position, { reason }).catch(() => {})
     return { ok: true }
 }

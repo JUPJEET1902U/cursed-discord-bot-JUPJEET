@@ -1,14 +1,14 @@
 /**
- * Auto-moderation filters: anti-link, anti-invite, anti-spam.
- *
- * Call `runAutoMod(message)` from the MessageCreate handler.
- * Returns true if the message was actioned (deleted / user muted) so the
- * caller can skip further processing.
+ * Auto-moderation filters: legacy anti-link/anti-invite/anti-spam plus the
+ * optional Fortress heat engine. Legacy behavior is preserved unless the
+ * Fortress AutoMod layer is explicitly enabled.
  */
 
 const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./serverConfig")
 const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config")
+const { getFortressConfig } = require("./fortressConfig")
+const { runHeatAutoMod } = require("./automodHeat")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
 const { handleLevelingMessage } = require("./leveling")
@@ -71,6 +71,20 @@ async function runAutoMod(message) {
 
     const { config } = getServerConfig(guildId)
     const target = { id: author.id, tag: author.tag }
+
+    const fortress = getFortressConfig(guildId)
+    if (fortress.enabled && fortress.automod.enabled) {
+        try {
+            const result = await runHeatAutoMod(message, fortress, config)
+            if (result.handled) return true
+            if (result.active) {
+                queueLeveling(message)
+                return false
+            }
+        } catch (err) {
+            console.error("Fortress AutoMod error; using legacy filters:", err.message)
+        }
+    }
 
     if (config.antiInvite) {
         INVITE_REGEX.lastIndex = 0

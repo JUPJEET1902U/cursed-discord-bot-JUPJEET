@@ -1,0 +1,66 @@
+name: Moderation Fortress CI
+
+on:
+  pull_request:
+    paths:
+      - "commands/securityProtection.js"
+      - "utils/fortressConfig.js"
+      - "utils/securityProtection.js"
+      - "utils/securityRecovery.js"
+      - "utils/securitySnapshots.js"
+      - "utils/securityHealth.js"
+      - "utils/automodHeat.js"
+      - "utils/automod.js"
+      - "utils/securityPhase3Bootstrap.js"
+      - "api/dashboardFortress.js"
+      - "webhook.js"
+      - "test/moderationFortress.test.js"
+      - ".github/workflows/moderation-fortress.yml"
+  push:
+    branches:
+      - feature/moderation-fortress
+
+jobs:
+  fortress-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate JavaScript syntax
+        run: |
+          node --check commands/securityProtection.js
+          node --check utils/fortressConfig.js
+          node --check utils/securityProtection.js
+          node --check utils/securityRecovery.js
+          node --check utils/securitySnapshots.js
+          node --check utils/securityHealth.js
+          node --check utils/automodHeat.js
+          node --check utils/automod.js
+          node --check utils/securityPhase3Bootstrap.js
+          node --check api/dashboardFortress.js
+          node --check webhook.js
+      - name: Run focused Fortress tests
+        run: node --test test/moderationFortress.test.js
+      - name: Validate isolated runtime contracts
+        run: |
+          node - <<'NODE'
+          const commands = require('./commands/securityProtection')
+          const fortress = require('./utils/fortressConfig')
+          const recovery = require('./utils/securityRecovery')
+          const snapshots = require('./utils/securitySnapshots')
+          const health = require('./utils/securityHealth')
+          const protection = require('./utils/securityProtection')
+          const api = require('./api/dashboardFortress')
+          if (commands.commands.length < 7) throw new Error('Fortress slash commands missing')
+          for (const command of commands.commands) command.toJSON()
+          if (!fortress.normalizeFortressConfig({}).rollback.enabled) throw new Error('rollback default missing')
+          if (typeof recovery.neutralizeExecutor !== 'function') throw new Error('containment missing')
+          if (typeof snapshots.restoreGuildSnapshot !== 'function') throw new Error('snapshot restore missing')
+          if (typeof health.evaluateSecurityHealth !== 'function') throw new Error('security health missing')
+          if (typeof protection.processAuditEvent !== 'function') throw new Error('protection runtime missing')
+          if (typeof api.createDashboardFortressRouter !== 'function') throw new Error('Fortress dashboard API missing')
+          NODE

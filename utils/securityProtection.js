@@ -56,17 +56,9 @@ const EVENT_DEFINITIONS = Object.freeze({
     inviteDeletes: { thresholdKey: "webhookChanges", scope: "manageChannels", severity: "medium", label: "Invite deletion", heat: 3, instant: false },
 })
 
-function now() {
-    return Date.now()
-}
-
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function userTag(user) {
-    return user?.tag || user?.username || user?.displayName || "Unknown user"
-}
+function now() { return Date.now() }
+function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
+function userTag(user) { return user?.tag || user?.username || user?.displayName || "Unknown user" }
 
 function rememberAuditId(guildId, id) {
     if (!id) return false
@@ -88,9 +80,7 @@ function pruneTimes(times, windowMs) {
     return times.filter(timestamp => timestamp >= cutoff)
 }
 
-function counterKey(guildId, executorId, eventType) {
-    return `${guildId}:${executorId}:${eventType}`
-}
+function counterKey(guildId, executorId, eventType) { return `${guildId}:${executorId}:${eventType}` }
 
 function addActionCount(guildId, executorId, eventType, windowMs) {
     const key = counterKey(guildId, executorId, eventType)
@@ -149,7 +139,6 @@ async function sendSecurityAlert(guild, incident, config, fortress) {
     if (channel?.isTextBased()) {
         await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => {})
     }
-
     if (fortress.notifyOwner && incident.severity === "critical") {
         const owner = await guild.fetchOwner().catch(() => null)
         if (owner) {
@@ -186,7 +175,6 @@ async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null, fortr
     const types = Array.isArray(auditTypes) ? auditTypes : [auditTypes]
     const retries = fortress?.auditRetryCount || 3
     const retryDelay = fortress?.auditRetryDelayMs || 450
-
     for (let attempt = 0; attempt < retries; attempt += 1) {
         const candidates = await fetchAuditCandidates(guild, types)
         const match = candidates
@@ -233,13 +221,12 @@ function significantGuildUpdate(oldGuild, newGuild) {
 }
 
 async function rollbackGuildUpdate(oldGuild, newGuild, reason) {
-    const edits = {
+    await newGuild.edit({
         name: oldGuild.name,
         verificationLevel: oldGuild.verificationLevel,
         explicitContentFilter: oldGuild.explicitContentFilter,
         defaultMessageNotifications: oldGuild.defaultMessageNotifications,
-    }
-    await newGuild.edit(edits, reason)
+    }, reason)
     return { ok: true }
 }
 
@@ -308,17 +295,13 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     const definition = EVENT_DEFINITIONS[eventType]
     if (!guild || !definition) return false
     if (consumeInternalAction(guild.id, eventType, target?.id || null)) return false
-
     const security = getSecurityPhase3Config(guild.id)
     const fortress = getFortressConfig(guild.id)
     if (!security.enabled || !security.antiNuke.enabled) return false
-
     const entry = await fetchMatchingAuditEntry(guild, auditTypes, target?.id || extra.auditTargetId || null, fortress)
     if (!entry || !rememberAuditId(guild.id, entry.id)) return false
-
     const executorId = String(entry.executorId || entry.executor?.id || "")
     if (!executorId || executorId === guild.members.me?.id) return false
-
     const executorMember = guild.members.cache.get(executorId)
         || await guild.members.fetch(executorId).catch(() => null)
 
@@ -358,7 +341,6 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     const thresholdReached = count >= threshold
     const heatReached = fortress.enabled && fortress.heat.enabled && heat.points >= fortress.heat.threshold
     const trigger = (instant || thresholdReached || heatReached) && shouldTrigger(guild.id, executorId, eventType, windowMs)
-
     const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds}s. Event heat ${definition.heat}; executor heat ${heat.points}.`
     const reason = `CURSED Fortress: ${summary}`
     const actor = { id: guild.members.me?.id, tag: "CURSED Fortress" }
@@ -491,7 +473,6 @@ async function processJoin(member) {
     const thresholdReached = security.antiRaid.enabled && times.length >= raid.joinThreshold
     if (thresholdReached) activeRaids.set(guild.id, now() + raid.activeRaidSeconds * 1000)
     const raidActive = thresholdReached || (activeRaids.get(guild.id) || 0) > now()
-
     const risk = calculateJoinRisk(member, fortress.joinGate)
     const joinGateTriggered = fortress.enabled
         && fortress.joinGate.enabled
@@ -515,9 +496,7 @@ async function processJoin(member) {
             })
             response = { ok: result.ok, action: result.ok ? "lockdown" : "alert", error: result.error }
         }
-    } else {
-        return false
-    }
+    } else return false
 
     const summary = `Detected ${times.length} joins within ${raid.windowSeconds}s. ${member.user.tag} risk ${risk.score}: ${risk.reasons.join(", ") || "join wave"}.`
     await recordAndAlert(guild, security, fortress, {
@@ -544,11 +523,8 @@ function attachSecurityProtection(client) {
     attached = true
 
     client.on(Events.GuildMemberAdd, safeListener("member-add", async member => {
-        if (member.user?.bot) {
-            await processAuditEvent(member.guild, "botAdds", AuditLogEvent.BotAdd, member)
-        } else {
-            await processJoin(member)
-        }
+        if (member.user?.bot) await processAuditEvent(member.guild, "botAdds", AuditLogEvent.BotAdd, member)
+        else await processJoin(member)
     }))
     client.on(Events.GuildBanAdd, safeListener("ban-add", ban => processAuditEvent(ban.guild, "bans", AuditLogEvent.MemberBanAdd, ban.user)))
     client.on(Events.GuildMemberRemove, safeListener("member-remove", member => processAuditEvent(member.guild, "kicks", AuditLogEvent.MemberKick, member.user)))
@@ -563,7 +539,10 @@ function attachSecurityProtection(client) {
     client.on(Events.GuildRoleUpdate, safeListener("role-update", async (oldRole, newRole) => {
         const security = getSecurityPhase3Config(newRole.guild.id)
         const quarantineTamper = security.quarantine.roleId === newRole.id
-        if (!quarantineTamper && !dangerousPermissionsAdded(oldRole, newRole) && !hasDangerousPermissions(newRole)) return
+        const permissionChanged = oldRole.permissions.bitfield !== newRole.permissions.bitfield
+        const dangerousPermissionChange = dangerousPermissionsAdded(oldRole, newRole)
+            || (permissionChanged && hasDangerousPermissions(oldRole))
+        if (!quarantineTamper && !dangerousPermissionChange) return
         await processAuditEvent(newRole.guild, "roleUpdates", AuditLogEvent.RoleUpdate, newRole, { oldTarget: oldRole })
     }))
     client.on(Events.GuildMemberUpdate, safeListener("member-update", async (oldMember, newMember) => {
@@ -589,9 +568,8 @@ function attachSecurityProtection(client) {
         for (const guild of client.guilds.cache.values()) {
             await processAuditEvent(guild, "prunes", AuditLogEvent.MemberPrune, null).catch(() => {})
         }
-    }, 10_000)
+    }, 20_000)
     prunePoller.unref?.()
-
     log.info("Fortress protection listeners attached")
 }
 

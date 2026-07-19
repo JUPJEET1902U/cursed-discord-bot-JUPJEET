@@ -16,6 +16,7 @@ on:
   push:
     branches:
       - feature/moderation-phase-3
+      - feature/moderation-fortress
 
 jobs:
   syntax-and-contracts:
@@ -50,7 +51,7 @@ jobs:
           const protection = require('./utils/securityProtection')
           const bootstrap = require('./utils/securityPhase3Bootstrap')
           const api = require('./api/dashboardSecurity')
-          if (!Array.isArray(commands.commands) || commands.commands.length !== 4) throw new Error('security commands missing')
+          if (!Array.isArray(commands.commands) || commands.commands.length < 7) throw new Error('security commands missing')
           for (const command of commands.commands) command.toJSON()
           const normalized = config.normalizeSecurityPhase3Config({ enabled: true, antiRaid: { enabled: true } })
           if (!normalized.enabled || !normalized.antiRaid.enabled) throw new Error('security config normalizer failed')

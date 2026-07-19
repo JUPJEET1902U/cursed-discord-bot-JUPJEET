@@ -5,12 +5,23 @@ const {
 } = require("discord.js")
 const { getModerationConfig, isModerator } = require("../utils/moderationConfig")
 const { getSecurityPhase3Config, isTrustedForScope } = require("../utils/securityPhase3Config")
+const { getFortressConfig } = require("../utils/fortressConfig")
 const { quarantineMember, releaseQuarantine, getActiveQuarantineCount } = require("../utils/quarantineState")
 const { enableEmergencyLockdown, disableEmergencyLockdown, getLockdownStatus } = require("../utils/lockdownState")
 const { getSecurityIncidentStats } = require("../utils/securityIncidents")
+const { captureGuildSnapshot, listGuildSnapshots, restoreGuildSnapshot } = require("../utils/securitySnapshots")
+const { evaluateSecurityHealth } = require("../utils/securityHealth")
 const { logAction } = require("../utils/modlog")
 
-const COMMAND_NAMES = new Set(["quarantine", "unquarantine", "lockdown", "security-status"])
+const COMMAND_NAMES = new Set([
+    "quarantine",
+    "unquarantine",
+    "lockdown",
+    "security-status",
+    "panic",
+    "security-check",
+    "security-snapshot",
+])
 
 const commands = [
     new SlashCommandBuilder()
@@ -40,8 +51,40 @@ const commands = [
         .addSubcommand(option => option.setName("status").setDescription("Show current lockdown state")),
     new SlashCommandBuilder()
         .setName("security-status")
-        .setDescription("Show CURSED anti-raid, anti-nuke, quarantine, and lockdown status")
+        .setDescription("Show CURSED anti-raid, anti-nuke, Fortress, quarantine, and lockdown status")
         .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
+    new SlashCommandBuilder()
+        .setName("panic")
+        .setDescription("Immediately seal or release the server during an active attack")
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+        .addSubcommand(option => option
+            .setName("enable")
+            .setDescription("Create a recovery snapshot and immediately lock the server")
+            .addStringOption(input => input.setName("reason").setDescription("Reason for panic mode").setRequired(true).setMaxLength(1000)))
+        .addSubcommand(option => option
+            .setName("disable")
+            .setDescription("Release panic mode and restore saved channel permissions")
+            .addStringOption(input => input.setName("reason").setDescription("Reason for release").setMaxLength(1000)))
+        .addSubcommand(option => option.setName("status").setDescription("Show panic and lockdown status")),
+    new SlashCommandBuilder()
+        .setName("security-check")
+        .setDescription("Audit CURSED permissions, hierarchy, recovery, and protection readiness")
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    new SlashCommandBuilder()
+        .setName("security-snapshot")
+        .setDescription("Create, list, or restore structural security snapshots")
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+        .addSubcommand(option => option
+            .setName("create")
+            .setDescription("Create a manual server structure snapshot")
+            .addStringOption(input => input.setName("reason").setDescription("Snapshot label").setMaxLength(500)))
+        .addSubcommand(option => option.setName("list").setDescription("List recent security snapshots"))
+        .addSubcommand(option => option
+            .setName("restore")
+            .setDescription("Recreate missing roles and channels from a snapshot")
+            .addStringOption(input => input.setName("snapshot_id").setDescription("Snapshot ID from the list").setRequired(true).setMaxLength(32))
+            .addBooleanOption(input => input.setName("confirm").setDescription("Confirm structural restoration").setRequired(true))
+            .addStringOption(input => input.setName("reason").setDescription("Restore reason").setMaxLength(500))),
 ]
 
 function safeReply(interaction, payload) {
@@ -66,6 +109,7 @@ async function guard(interaction, { requireSecurityEnabled = true, permission = 
     if (!interaction.inGuild() || !interaction.isChatInputCommand()) return { ok: false, handled: false }
     const moderation = getModerationConfig(interaction.guildId)
     const security = getSecurityPhase3Config(interaction.guildId)
+    const fortress = getFortressConfig(interaction.guildId)
     if (!moderation.moderationCommandsEnabled) {
         await safeReply(interaction, { content: "⛔ Moderation is disabled in this server.", ephemeral: true })
         return { ok: false, handled: true }
@@ -86,7 +130,7 @@ async function guard(interaction, { requireSecurityEnabled = true, permission = 
         await safeReply(interaction, { content: "❌ CURSED does not have the Discord permission required for that action.", ephemeral: true })
         return { ok: false, handled: true }
     }
-    return { ok: true, handled: true, moderation, security }
+    return { ok: true, handled: true, moderation, security, fortress }
 }
 
 async function validateQuarantineTarget(interaction, user, security) {
@@ -128,7 +172,7 @@ async function handleQuarantine(interaction, guardResult) {
         moderator: actor(interaction),
     })
     if (!result.ok) {
-        await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+        await interaction.editReply({ content: `❌ ${result.error}`, allowedMentions: { parse: [] } })
         return true
     }
     const log = await logAction(interaction.guild, {
@@ -139,9 +183,9 @@ async function handleQuarantine(interaction, guardResult) {
         source: "manual",
         metadata: { originalRoleIds: result.state.originalRoleIds || [] },
     })
-    await safeReply(interaction, {
+    await interaction.editReply({
         content: `🛡️ **${user.tag}** was quarantined safely${log.caseRecord ? ` • Case #${log.caseRecord.caseNumber}` : ""}.`,
-        ephemeral: true,
+        allowedMentions: { parse: [] },
     })
     return true
 }
@@ -157,7 +201,7 @@ async function handleUnquarantine(interaction) {
     await interaction.deferReply({ ephemeral: true })
     const result = await releaseQuarantine(interaction.guild, member, { reason, moderator: actor(interaction) })
     if (!result.ok) {
-        await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+        await interaction.editReply({ content: `❌ ${result.error}`, allowedMentions: { parse: [] } })
         return true
     }
     const log = await logAction(interaction.guild, {
@@ -169,9 +213,9 @@ async function handleUnquarantine(interaction) {
         metadata: { missingRoleIds: result.missingRoleIds || [] },
     })
     const missing = result.missingRoleIds?.length ? ` ${result.missingRoleIds.length} deleted or unmanageable role(s) could not be restored.` : ""
-    await safeReply(interaction, {
+    await interaction.editReply({
         content: `✅ **${user.tag}** was released from quarantine${log.caseRecord ? ` • Case #${log.caseRecord.caseNumber}` : ""}.${missing}`,
-        ephemeral: true,
+        allowedMentions: { parse: [] },
     })
     return true
 }
@@ -193,12 +237,12 @@ async function handleLockdown(interaction, guardResult) {
     await interaction.deferReply({ ephemeral: true })
     if (subcommand === "enable") {
         if (!guardResult.security.lockdown.enabled) {
-            await safeReply(interaction, { content: "❌ Emergency lockdown is disabled in dashboard settings.", ephemeral: true })
+            await interaction.editReply({ content: "❌ Emergency lockdown is disabled in dashboard settings.", allowedMentions: { parse: [] } })
             return true
         }
         const result = await enableEmergencyLockdown(interaction.guild, guardResult.security, { reason, actor: actor(interaction) })
         if (!result.ok) {
-            await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+            await interaction.editReply({ content: `❌ ${result.error}`, allowedMentions: { parse: [] } })
             return true
         }
         await logAction(interaction.guild, {
@@ -209,12 +253,12 @@ async function handleLockdown(interaction, guardResult) {
             source: "manual",
             metadata: { affectedChannels: result.affectedChannels },
         })
-        await safeReply(interaction, { content: `🔒 Emergency lockdown enabled for **${result.affectedChannels}** channel(s).`, ephemeral: true })
+        await interaction.editReply({ content: `🔒 Emergency lockdown enabled for **${result.affectedChannels}** channel(s).`, allowedMentions: { parse: [] } })
         return true
     }
     const result = await disableEmergencyLockdown(interaction.guild, { reason, actor: actor(interaction) })
     if (!result.ok) {
-        await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+        await interaction.editReply({ content: `❌ ${result.error}`, allowedMentions: { parse: [] } })
         return true
     }
     await logAction(interaction.guild, {
@@ -225,29 +269,175 @@ async function handleLockdown(interaction, guardResult) {
         source: "manual",
         metadata: { missingChannelIds: result.missingChannelIds || [] },
     })
-    await safeReply(interaction, { content: "🔓 Emergency lockdown ended. Saved channel permissions were restored.", ephemeral: true })
+    await interaction.editReply({ content: "🔓 Emergency lockdown ended. Saved channel permissions were restored.", allowedMentions: { parse: [] } })
     return true
 }
 
-async function handleStatus(interaction, security) {
-    const [stats, lockdown, quarantined] = await Promise.all([
+async function handlePanic(interaction, guardResult) {
+    const subcommand = interaction.options.getSubcommand(true)
+    if (subcommand === "status") return handleLockdown(interaction, guardResult)
+
+    const reason = interaction.options.getString("reason")?.trim()
+        || (subcommand === "enable" ? "Manual Fortress panic mode" : "Manual Fortress panic release")
+    await interaction.deferReply({ ephemeral: true })
+
+    if (subcommand === "disable") {
+        const result = await disableEmergencyLockdown(interaction.guild, { reason, actor: actor(interaction) })
+        if (!result.ok) {
+            await interaction.editReply({ content: `❌ ${result.error}`, allowedMentions: { parse: [] } })
+            return true
+        }
+        await logAction(interaction.guild, {
+            action: "PANIC_DISABLE",
+            target: { id: interaction.guildId, tag: interaction.guild.name },
+            moderator: actor(interaction),
+            reason,
+            source: "manual",
+        })
+        await interaction.editReply({ content: "🔓 Panic mode ended and saved channel permissions were restored.", allowedMentions: { parse: [] } })
+        return true
+    }
+
+    if (!guardResult.fortress.panic.enabled) {
+        await interaction.editReply({ content: "❌ Fortress panic mode is disabled in dashboard settings.", allowedMentions: { parse: [] } })
+        return true
+    }
+
+    let snapshotNote = "Snapshot skipped."
+    if (guardResult.fortress.backups.enabled) {
+        const snapshot = await captureGuildSnapshot(interaction.guild, {
+            reason: `Pre-panic snapshot: ${reason}`,
+            actor: actor(interaction),
+            maxSnapshots: guardResult.fortress.backups.maxSnapshots,
+        })
+        snapshotNote = snapshot.ok ? `Snapshot \`${snapshot.snapshot.snapshotId}\` created.` : `Snapshot failed: ${snapshot.error}`
+    }
+
+    const result = await enableEmergencyLockdown(interaction.guild, guardResult.security, { reason, actor: actor(interaction) })
+    if (!result.ok) {
+        await interaction.editReply({ content: `❌ Panic mode could not lock the server: ${result.error}\n${snapshotNote}`, allowedMentions: { parse: [] } })
+        return true
+    }
+    await logAction(interaction.guild, {
+        action: "PANIC_ENABLE",
+        target: { id: interaction.guildId, tag: interaction.guild.name },
+        moderator: actor(interaction),
+        reason,
+        source: "manual",
+        metadata: { affectedChannels: result.affectedChannels, snapshotNote },
+    })
+    await interaction.editReply({
+        content: `🚨 **PANIC MODE ACTIVE** • ${result.affectedChannels} channel(s) locked. ${snapshotNote}`,
+        allowedMentions: { parse: [] },
+    })
+    return true
+}
+
+async function handleStatus(interaction, security, fortress) {
+    const [stats, lockdown, quarantined, health] = await Promise.all([
         getSecurityIncidentStats(interaction.guildId),
         getLockdownStatus(interaction.guildId),
         getActiveQuarantineCount(interaction.guildId),
+        evaluateSecurityHealth(interaction.guild),
     ])
     const embed = new EmbedBuilder()
-        .setColor(security.enabled ? 0x57F287 : 0x99AABB)
-        .setTitle("🛡️ CURSED Server Protection")
+        .setColor(health.score >= 90 ? 0x57F287 : health.score >= 70 ? 0xFEE75C : 0xED4245)
+        .setTitle("🛡️ CURSED Fortress Status")
         .addFields(
+            { name: "Readiness", value: `**${health.score}/100** • ${health.status}`, inline: true },
             { name: "Master protection", value: security.enabled ? "Enabled" : "Disabled", inline: true },
+            { name: "Fortress", value: fortress.enabled ? `${fortress.mode} mode` : "Disabled", inline: true },
             { name: "Anti-raid", value: security.antiRaid.enabled ? `${security.antiRaid.joinThreshold} joins / ${security.antiRaid.windowSeconds}s` : "Disabled", inline: true },
-            { name: "Anti-nuke", value: security.antiNuke.enabled ? `Enabled • ${security.antiNuke.action}` : "Disabled", inline: true },
+            { name: "Anti-nuke", value: security.antiNuke.enabled ? `Enabled • rollback ${fortress.rollback.enabled ? "on" : "off"}` : "Disabled", inline: true },
+            { name: "Heat AutoMod", value: fortress.automod.enabled ? (fortress.automod.dryRun ? "Monitor only" : "Active") : "Disabled", inline: true },
             { name: "Lockdown", value: lockdown.active ? "Active" : "Inactive", inline: true },
             { name: "Quarantined", value: String(quarantined), inline: true },
             { name: "Open incidents", value: stats.available ? String(stats.open) : "Unavailable", inline: true },
         )
+        .setFooter({ text: health.issues.length ? `${health.issues.length} readiness issue(s) • run /security-check` : "No readiness issues detected" })
         .setTimestamp()
     await safeReply(interaction, { embeds: [embed], ephemeral: true })
+    return true
+}
+
+async function handleSecurityCheck(interaction) {
+    await interaction.deferReply({ ephemeral: true })
+    const health = await evaluateSecurityHealth(interaction.guild)
+    const issues = health.issues.slice(0, 10).map(item =>
+        `**${item.severity.toUpperCase()} • ${item.title}**\n${item.detail}\nFix: ${item.fix}`
+    ).join("\n\n")
+    const embed = new EmbedBuilder()
+        .setColor(health.score >= 90 ? 0x57F287 : health.score >= 70 ? 0xFEE75C : 0xED4245)
+        .setTitle(`🩺 Security Readiness: ${health.score}/100`)
+        .setDescription(issues || "✅ CURSED passed the current permission, hierarchy, persistence, quarantine, lockdown, and recovery checks.")
+        .setFooter({ text: health.issues.length > 10 ? `${health.issues.length - 10} additional issue(s) are available in the dashboard.` : "CURSED Fortress preflight" })
+        .setTimestamp()
+    await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } })
+    return true
+}
+
+async function handleSnapshot(interaction, guardResult) {
+    const subcommand = interaction.options.getSubcommand(true)
+    await interaction.deferReply({ ephemeral: true })
+
+    if (subcommand === "create") {
+        const reason = interaction.options.getString("reason")?.trim() || "Manual security snapshot"
+        const result = await captureGuildSnapshot(interaction.guild, {
+            reason,
+            actor: actor(interaction),
+            maxSnapshots: guardResult.fortress.backups.maxSnapshots,
+        })
+        if (!result.ok) {
+            await interaction.editReply({ content: `❌ ${result.error}`, allowedMentions: { parse: [] } })
+            return true
+        }
+        await interaction.editReply({
+            content: `✅ Structural snapshot created: \`${result.snapshot.snapshotId}\` • ${result.snapshot.stats.roleCount} roles • ${result.snapshot.stats.channelCount} channels.`,
+            allowedMentions: { parse: [] },
+        })
+        return true
+    }
+
+    if (subcommand === "list") {
+        const snapshots = await listGuildSnapshots(interaction.guildId, 10)
+        if (!snapshots.length) {
+            await interaction.editReply({ content: "No security snapshots are stored for this server.", allowedMentions: { parse: [] } })
+            return true
+        }
+        const description = snapshots.map(item =>
+            `• \`${item.snapshotId}\` • <t:${Math.floor(new Date(item.createdAt).getTime() / 1000)}:R> • ${item.stats?.roleCount || 0} roles / ${item.stats?.channelCount || 0} channels\n  ${String(item.reason || "Snapshot").slice(0, 120)}`
+        ).join("\n")
+        await interaction.editReply({
+            embeds: [new EmbedBuilder().setColor(0x7C3AED).setTitle("Fortress Snapshots").setDescription(description).setFooter({ text: "Snapshots restore structure, not deleted message history." })],
+            allowedMentions: { parse: [] },
+        })
+        return true
+    }
+
+    const confirmed = interaction.options.getBoolean("confirm", true)
+    if (!confirmed) {
+        await interaction.editReply({ content: "Restore cancelled because confirmation was false.", allowedMentions: { parse: [] } })
+        return true
+    }
+    const snapshotId = interaction.options.getString("snapshot_id", true).trim()
+    const reason = interaction.options.getString("reason")?.trim() || `Manual restore from ${snapshotId}`
+    const result = await restoreGuildSnapshot(interaction.guild, snapshotId, { reason, actor: actor(interaction) })
+    if (!result.ok) {
+        await interaction.editReply({ content: `❌ ${result.error}`, allowedMentions: { parse: [] } })
+        return true
+    }
+    await logAction(interaction.guild, {
+        action: "SECURITY_SNAPSHOT_RESTORE",
+        target: { id: interaction.guildId, tag: interaction.guild.name },
+        moderator: actor(interaction),
+        reason,
+        source: "manual",
+        metadata: { snapshotId, rolesCreated: result.rolesCreated, channelsCreated: result.channelsCreated, warnings: result.warnings },
+    })
+    await interaction.editReply({
+        content: `✅ Snapshot \`${snapshotId}\` restore completed • **${result.rolesCreated}** role(s) and **${result.channelsCreated}** channel(s) recreated. Warnings: **${result.warnings.length}**. Deleted message history cannot be restored by Discord.`,
+        allowedMentions: { parse: [] },
+    })
     return true
 }
 
@@ -269,10 +459,25 @@ async function handleInteraction(interaction) {
         if (!result.ok) return result.handled
         return handleLockdown(interaction, result)
     }
+    if (interaction.commandName === "panic") {
+        const result = await guard(interaction, { permission: PermissionFlagsBits.ManageGuild })
+        if (!result.ok) return result.handled
+        return handlePanic(interaction, result)
+    }
     if (interaction.commandName === "security-status") {
         const result = await guard(interaction, { requireSecurityEnabled: false })
         if (!result.ok) return result.handled
-        return handleStatus(interaction, result.security)
+        return handleStatus(interaction, result.security, result.fortress)
+    }
+    if (interaction.commandName === "security-check") {
+        const result = await guard(interaction, { requireSecurityEnabled: false, permission: PermissionFlagsBits.ManageGuild })
+        if (!result.ok) return result.handled
+        return handleSecurityCheck(interaction)
+    }
+    if (interaction.commandName === "security-snapshot") {
+        const result = await guard(interaction, { permission: PermissionFlagsBits.ManageGuild })
+        if (!result.ok) return result.handled
+        return handleSnapshot(interaction, result)
     }
     return false
 }
