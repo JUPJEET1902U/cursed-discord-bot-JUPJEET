@@ -101,13 +101,7 @@ function selectableRoles(guild) {
     return [...guild.roles.cache.values()]
         .filter(role => role.id !== guild.id && !role.managed)
         .sort((a, b) => b.position - a.position)
-        .map(role => ({
-            id: role.id,
-            name: role.name,
-            color: role.color,
-            position: role.position,
-            editable: role.editable,
-        }))
+        .map(role => ({ id: role.id, name: role.name, color: role.color, position: role.position, editable: role.editable }))
 }
 
 function permissionState(guild) {
@@ -115,6 +109,8 @@ function permissionState(guild) {
     return {
         manageChannels: me?.permissions.has(PermissionFlagsBits.ManageChannels) === true,
         manageRoles: me?.permissions.has(PermissionFlagsBits.ManageRoles) === true,
+        manageWebhooks: me?.permissions.has(PermissionFlagsBits.ManageWebhooks) === true,
+        manageMessages: me?.permissions.has(PermissionFlagsBits.ManageMessages) === true,
         viewAuditLog: me?.permissions.has(PermissionFlagsBits.ViewAuditLog) === true,
         moderateMembers: me?.permissions.has(PermissionFlagsBits.ModerateMembers) === true,
         kickMembers: me?.permissions.has(PermissionFlagsBits.KickMembers) === true,
@@ -131,42 +127,44 @@ function validInteger(value, min, max) {
     return Number.isInteger(Number(value)) && Number(value) >= min && Number(value) <= max
 }
 
+function requireBoolean(errors, body, key) {
+    if (typeof body[key] !== "boolean") errors[key] = ["Expected a boolean."]
+}
+
 function validateConfig(body, guild) {
     const errors = {}
     if (!isRecord(body)) return { body: ["Expected a JSON object."] }
-    const expected = new Set(["enabled", "securityLogChannelId", "antiRaid", "antiNuke", "quarantine", "lockdown", "trusted"])
+    const expected = new Set(["enabled", "securityLogChannelId", "antiRaid", "antiNuke", "messageShield", "quarantine", "lockdown", "trusted"])
     for (const key of Object.keys(body)) if (!expected.has(key)) errors[key] = ["Unknown field."]
     if (typeof body.enabled !== "boolean") errors.enabled = ["Expected a boolean."]
 
     const channels = new Set(guild.channels.cache.keys())
     const roles = new Set(guild.roles.cache.keys())
-    if (body.securityLogChannelId !== null && !channels.has(String(body.securityLogChannelId))) {
-        errors.securityLogChannelId = ["Choose a channel from this server."]
-    }
+    if (body.securityLogChannelId !== null && !channels.has(String(body.securityLogChannelId))) errors.securityLogChannelId = ["Choose a channel from this server."]
 
     if (!isRecord(body.antiRaid)) errors.antiRaid = ["Expected anti-raid settings."]
     else {
-        if (typeof body.antiRaid.enabled !== "boolean") errors["antiRaid.enabled"] = ["Expected a boolean."]
+        requireBoolean(errors, body.antiRaid, "enabled")
         if (!validInteger(body.antiRaid.joinThreshold, 3, 100)) errors["antiRaid.joinThreshold"] = ["Use 3 to 100 joins."]
         if (!validInteger(body.antiRaid.windowSeconds, 5, 300)) errors["antiRaid.windowSeconds"] = ["Use 5 to 300 seconds."]
         if (!validInteger(body.antiRaid.minAccountAgeHours, 0, 8760)) errors["antiRaid.minAccountAgeHours"] = ["Use 0 to 8760 hours."]
-        if (!SECURITY_ACTIONS.includes(body.antiRaid.action)) errors["antiRaid.action"] = ["Choose alert, quarantine, or lockdown."]
+        if (!SECURITY_ACTIONS.includes(body.antiRaid.action)) errors["antiRaid.action"] = ["Choose alert, quarantine, lockdown, or neutralize."]
         if (!validInteger(body.antiRaid.activeRaidSeconds, 30, 1800)) errors["antiRaid.activeRaidSeconds"] = ["Use 30 to 1800 seconds."]
     }
 
     if (!isRecord(body.antiNuke)) errors.antiNuke = ["Expected anti-nuke settings."]
     else {
-        if (typeof body.antiNuke.enabled !== "boolean") errors["antiNuke.enabled"] = ["Expected a boolean."]
-        if (!SECURITY_ACTIONS.includes(body.antiNuke.action)) errors["antiNuke.action"] = ["Choose alert, quarantine, or lockdown."]
+        requireBoolean(errors, body.antiNuke, "enabled")
+        if (!SECURITY_ACTIONS.includes(body.antiNuke.action)) errors["antiNuke.action"] = ["Choose alert, quarantine, lockdown, or neutralize."]
         if (!validInteger(body.antiNuke.windowSeconds, 5, 300)) errors["antiNuke.windowSeconds"] = ["Use 5 to 300 seconds."]
+        for (const key of ["restoreDeletedChannels", "restoreDeletedRoles", "removeDangerousRoles", "banMaliciousBots", "autoLockdown", "ownerAlerts"]) {
+            if (typeof body.antiNuke[key] !== "boolean") errors[`antiNuke.${key}`] = ["Expected a boolean."]
+        }
+        if (!validInteger(body.antiNuke.neutralizeTimeoutMinutes, 1, 40320)) errors["antiNuke.neutralizeTimeoutMinutes"] = ["Use 1 to 40320 minutes."]
         const thresholdLimits = {
-            bans: 50,
-            kicks: 50,
-            channelDeletes: 25,
-            roleDeletes: 25,
-            webhookChanges: 25,
-            dangerousRoleChanges: 25,
-            botAdds: 25,
+            bans: 50, kicks: 50, channelDeletes: 25, channelCreates: 50, channelUpdates: 50,
+            roleDeletes: 25, roleCreates: 50, roleUpdates: 50, webhookChanges: 25,
+            dangerousRoleChanges: 25, botAdds: 25, guildUpdates: 25,
         }
         if (!isRecord(body.antiNuke.thresholds)) errors["antiNuke.thresholds"] = ["Expected threshold settings."]
         else for (const [key, max] of Object.entries(thresholdLimits)) {
@@ -174,9 +172,21 @@ function validateConfig(body, guild) {
         }
     }
 
+    if (!isRecord(body.messageShield)) errors.messageShield = ["Expected Message Shield settings."]
+    else {
+        requireBoolean(errors, body.messageShield, "enabled")
+        const limits = {
+            windowSeconds: [3, 60], repeatedMessageThreshold: [2, 15], rapidMessageThreshold: [3, 30],
+            botInviteThreshold: [1, 10], inviteThreshold: [1, 20], linkThreshold: [1, 30], maxMentions: [2, 50],
+        }
+        for (const [key, [min, max]] of Object.entries(limits)) {
+            if (!validInteger(body.messageShield[key], min, max)) errors[`messageShield.${key}`] = [`Use ${min} to ${max}.`]
+        }
+    }
+
     if (!isRecord(body.quarantine)) errors.quarantine = ["Expected quarantine settings."]
     else {
-        if (typeof body.quarantine.enabled !== "boolean") errors["quarantine.enabled"] = ["Expected a boolean."]
+        requireBoolean(errors, body.quarantine, "enabled")
         if (body.quarantine.roleId !== null && !roles.has(String(body.quarantine.roleId))) errors["quarantine.roleId"] = ["Choose a role from this server."]
         if (body.quarantine.channelId !== null && !channels.has(String(body.quarantine.channelId))) errors["quarantine.channelId"] = ["Choose a channel from this server."]
         if (typeof body.quarantine.removeManageableRoles !== "boolean") errors["quarantine.removeManageableRoles"] = ["Expected a boolean."]
@@ -184,7 +194,7 @@ function validateConfig(body, guild) {
 
     if (!isRecord(body.lockdown)) errors.lockdown = ["Expected lockdown settings."]
     else {
-        if (typeof body.lockdown.enabled !== "boolean") errors["lockdown.enabled"] = ["Expected a boolean."]
+        requireBoolean(errors, body.lockdown, "enabled")
         if (typeof body.lockdown.raiseVerificationLevel !== "boolean") errors["lockdown.raiseVerificationLevel"] = ["Expected a boolean."]
         if (!Array.isArray(body.lockdown.channelIds) || body.lockdown.channelIds.length > 200 || body.lockdown.channelIds.some(id => !channels.has(String(id)))) {
             errors["lockdown.channelIds"] = ["Choose up to 200 text channels from this server."]
@@ -193,7 +203,7 @@ function validateConfig(body, guild) {
 
     if (!isRecord(body.trusted)) errors.trusted = ["Expected trusted-subject settings."]
     else {
-        if (typeof body.trusted.enabled !== "boolean") errors["trusted.enabled"] = ["Expected a boolean."]
+        requireBoolean(errors, body.trusted, "enabled")
         if (!Array.isArray(body.trusted.entries) || body.trusted.entries.length > 200) errors["trusted.entries"] = ["Use up to 200 trusted entries."]
         else body.trusted.entries.forEach((entry, index) => {
             if (!isRecord(entry)) { errors[`trusted.entries.${index}`] = ["Expected an entry object."]; return }
