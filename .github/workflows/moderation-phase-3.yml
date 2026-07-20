@@ -7,6 +7,7 @@ on:
       - "utils/securityPhase3*.js"
       - "utils/securityProtection.js"
       - "utils/securityResponse.js"
+      - "utils/securityOwnerNotification.js"
       - "utils/securityMessageShield.js"
       - "utils/securityIncidents.js"
       - "utils/quarantineState.js"
@@ -15,12 +16,14 @@ on:
       - "utils/modlog.js"
       - "api/dashboardSecurity.js"
       - "test/moderation-hardening.test.js"
+      - "test/security-owner-notification.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-3.yml"
   push:
     branches:
       - feature/moderation-phase-3
       - feature/wick-level-moderation
+      - fix/professional-security-owner-dms
 
 jobs:
   syntax-and-contracts:
@@ -40,6 +43,7 @@ jobs:
           node --check utils/quarantineState.js
           node --check utils/lockdownState.js
           node --check utils/securityResponse.js
+          node --check utils/securityOwnerNotification.js
           node --check utils/securityMessageShield.js
           node --check utils/securityProtection.js
           node --check utils/securityPhase3Bootstrap.js
@@ -47,9 +51,12 @@ jobs:
           node --check utils/modlog.js
           node --check api/dashboardSecurity.js
           node --check test/moderation-hardening.test.js
+          node --check test/security-owner-notification.test.js
           node --check webhook.js
       - name: Run focused moderation hardening test
         run: node test/moderation-hardening.test.js
+      - name: Run security owner notification test
+        run: node test/security-owner-notification.test.js
       - name: Validate hardened security contracts
         run: |
           node - <<'NODE'
@@ -59,6 +66,7 @@ jobs:
           const quarantine = require('./utils/quarantineState')
           const lockdown = require('./utils/lockdownState')
           const response = require('./utils/securityResponse')
+          const notifications = require('./utils/securityOwnerNotification')
           const shield = require('./utils/securityMessageShield')
           const protection = require('./utils/securityProtection')
           const bootstrap = require('./utils/securityPhase3Bootstrap')
@@ -73,6 +81,7 @@ jobs:
           if (typeof quarantine.quarantineMember !== 'function' || typeof quarantine.releaseQuarantine !== 'function') throw new Error('quarantine recovery missing')
           if (typeof lockdown.enableEmergencyLockdown !== 'function' || typeof lockdown.disableEmergencyLockdown !== 'function') throw new Error('lockdown recovery missing')
           if (typeof response.neutralizeExecutor !== 'function' || typeof response.restoreDeletedChannel !== 'function' || typeof response.restoreDeletedRole !== 'function') throw new Error('neutralization or recovery missing')
+          if (typeof notifications.buildOwnerNotification !== 'function') throw new Error('owner notification formatter missing')
           if (typeof shield.runSecurityMessageShield !== 'function') throw new Error('message shield missing')
           if (typeof protection.attachSecurityProtection !== 'function') throw new Error('security listeners missing')
           if (typeof bootstrap.initializeSecurityPhase3 !== 'function') throw new Error('security bootstrap missing')
