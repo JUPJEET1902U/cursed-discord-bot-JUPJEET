@@ -78,13 +78,13 @@ const fakeMember = {
     user: {
         createdTimestamp: Date.now() - 60 * 60 * 1000,
         avatar: null,
-        username: "test-support-account",
+        username: "test-support-team",
     },
 }
 const risk = listeners.assessJoinRisk(fakeMember, { antiRaid: { minAccountAgeHours: 72, requireAvatar: true, suspiciousNameCheck: true } }, { active: true })
 assert.ok(risk.score >= 6)
 assert.ok(risk.signals.length >= 4)
-assert.equal(listeners.suspiciousUsername("test-support-account"), true)
+assert.equal(listeners.suspiciousUsername("test-support-team"), true)
 assert.equal(listeners.suspiciousUsername("ordinary-member"), false)
 
 assert.equal(typeof api.createDashboardSecuritySuiteRouter, "function")
