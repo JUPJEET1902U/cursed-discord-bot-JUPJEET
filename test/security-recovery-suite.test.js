@@ -2,6 +2,7 @@ const assert = require("node:assert/strict")
 
 const configModule = require("../utils/securityPhase3Config")
 const suite = require("../utils/securityRecoverySuite")
+const listeners = require("../utils/securityRecoveryListeners")
 const suiteCommands = require("../commands/securitySuite")
 const protection = require("../utils/securityProtection")
 const shield = require("../utils/securityMessageShield")
@@ -34,9 +35,10 @@ for (const name of [
     "setIncidentMode",
     "runSecurityHealthAudit",
     "buildIncidentReport",
-    "attachSecurityRecoveryListeners",
     "startSecurityRecoveryScheduler",
 ]) assert.equal(typeof suite[name], "function", `${name} missing`)
+assert.equal(typeof listeners.attachSecurityRecoveryListeners, "function")
+assert.equal(typeof listeners.processAdvancedJoin, "function")
 
 assert.deepEqual(protection.staffLimitDefinition("bans", defaults), { key: "bans", threshold: 5 })
 assert.deepEqual(protection.staffLimitDefinition("channelDeletes", defaults), { key: "channelChanges", threshold: 8 })
@@ -54,9 +56,11 @@ const fakeMember = {
         username: "free-nitro-support-team",
     },
 }
-const risk = suite.joinRisk(fakeMember, { antiRaid: { minAccountAgeHours: 72, requireAvatar: true, suspiciousNameCheck: true } }, { active: true })
+const risk = listeners.assessJoinRisk(fakeMember, { antiRaid: { minAccountAgeHours: 72, requireAvatar: true, suspiciousNameCheck: true } }, { active: true })
 assert.ok(risk.score >= 6)
 assert.ok(risk.signals.length >= 4)
+assert.equal(listeners.suspiciousUsername("free-nitro-support-team"), true)
+assert.equal(listeners.suspiciousUsername("ordinary-member"), false)
 
 assert.equal(typeof api.createDashboardSecuritySuiteRouter, "function")
 assert.equal(typeof api.validateSuiteConfig, "function")
