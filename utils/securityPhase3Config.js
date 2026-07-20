@@ -203,18 +203,24 @@ function normalizeTrustedEntries(value) {
 function normalizeSecurityPhase3Config(config = {}) {
     const hasNestedConfig = isRecord(config.securityPhase3)
     const source = hasNestedConfig ? config.securityPhase3 : config
+    const suiteSource = hasNestedConfig && isRecord(config.securityRecoverySuite)
+        ? config.securityRecoverySuite
+        : source
     const antiRaid = isRecord(source.antiRaid) ? source.antiRaid : {}
+    const antiRaidAdvanced = isRecord(suiteSource.antiRaidAdvanced)
+        ? suiteSource.antiRaidAdvanced
+        : isRecord(suiteSource.antiRaid) ? suiteSource.antiRaid : antiRaid
     const antiNuke = isRecord(source.antiNuke) ? source.antiNuke : {}
     const quarantine = isRecord(source.quarantine) ? source.quarantine : {}
     const lockdown = isRecord(source.lockdown) ? source.lockdown : {}
     const trusted = isRecord(source.trusted) ? source.trusted : {}
-    const backup = isRecord(source.backup) ? source.backup : {}
-    const tamperProtection = isRecord(source.tamperProtection) ? source.tamperProtection : {}
-    const botApprovals = isRecord(source.botApprovals) ? source.botApprovals : {}
-    const incidentMode = isRecord(source.incidentMode) ? source.incidentMode : {}
-    const staffLimits = isRecord(source.staffLimits) ? source.staffLimits : {}
+    const backup = isRecord(suiteSource.backup) ? suiteSource.backup : {}
+    const tamperProtection = isRecord(suiteSource.tamperProtection) ? suiteSource.tamperProtection : {}
+    const botApprovals = isRecord(suiteSource.botApprovals) ? suiteSource.botApprovals : {}
+    const incidentMode = isRecord(suiteSource.incidentMode) ? suiteSource.incidentMode : {}
+    const staffLimits = isRecord(suiteSource.staffLimits) ? suiteSource.staffLimits : {}
     const staffThresholds = isRecord(staffLimits.thresholds) ? staffLimits.thresholds : {}
-    const reports = isRecord(source.reports) ? source.reports : {}
+    const reports = isRecord(suiteSource.reports) ? suiteSource.reports : {}
 
     return {
         enabled: source.enabled !== false,
@@ -226,9 +232,9 @@ function normalizeSecurityPhase3Config(config = {}) {
             minAccountAgeHours: clampInteger(antiRaid.minAccountAgeHours, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.minAccountAgeHours, 0, 24 * 365),
             action: normalizeAction(antiRaid.action, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.action),
             activeRaidSeconds: clampInteger(antiRaid.activeRaidSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.activeRaidSeconds, 30, 1800),
-            requireAvatar: antiRaid.requireAvatar === true,
-            suspiciousNameCheck: antiRaid.suspiciousNameCheck !== false,
-            riskScoreThreshold: clampInteger(antiRaid.riskScoreThreshold, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.riskScoreThreshold, 1, 10),
+            requireAvatar: antiRaidAdvanced.requireAvatar === true,
+            suspiciousNameCheck: antiRaidAdvanced.suspiciousNameCheck !== false,
+            riskScoreThreshold: clampInteger(antiRaidAdvanced.riskScoreThreshold, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.riskScoreThreshold, 1, 10),
         },
         antiNuke: {
             enabled: antiNuke.enabled !== false,
