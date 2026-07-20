@@ -12,6 +12,7 @@ const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
 const { handleLevelingMessage } = require("./leveling")
+const { runSecurityMessageShield } = require("./securityMessageShield")
 const premiumCmd = require("../commands/premium")
 
 const LINK_REGEX = /https?:\/\/\S+|www\.\S+\.\S+/gi
@@ -39,8 +40,14 @@ async function safeDelete(message) {
 }
 
 async function runAutoMod(message) {
-    if (message.author.bot) return false
     if (!message.guild) return false
+
+    const securityActioned = await runSecurityMessageShield(message).catch(err => {
+        console.error("Security message shield error:", err.message)
+        return false
+    })
+    if (securityActioned) return true
+    if (message.author.bot) return false
 
     const normalizedContent = message.content.toLowerCase().trim()
     if (CHANNEL_CONTROL_COMMANDS.has(normalizedContent)) {

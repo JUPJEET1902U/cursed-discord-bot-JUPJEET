@@ -12,32 +12,54 @@ const TRUSTED_SCOPES = Object.freeze([
 ])
 
 const TRUSTED_SUBJECT_TYPES = Object.freeze(["user", "role", "bot", "channel"])
-const SECURITY_ACTIONS = Object.freeze(["alert", "quarantine", "lockdown"])
+const SECURITY_ACTIONS = Object.freeze(["alert", "quarantine", "lockdown", "neutralize"])
 
 const DEFAULT_SECURITY_PHASE3_CONFIG = Object.freeze({
-    enabled: false,
+    enabled: true,
     securityLogChannelId: null,
     antiRaid: Object.freeze({
         enabled: false,
-        joinThreshold: 8,
-        windowSeconds: 20,
-        minAccountAgeHours: 24,
-        action: "alert",
-        activeRaidSeconds: 120,
+        joinThreshold: 6,
+        windowSeconds: 15,
+        minAccountAgeHours: 72,
+        action: "quarantine",
+        activeRaidSeconds: 300,
     }),
     antiNuke: Object.freeze({
-        enabled: false,
-        action: "alert",
-        windowSeconds: 15,
+        enabled: true,
+        action: "neutralize",
+        windowSeconds: 10,
+        restoreDeletedChannels: true,
+        restoreDeletedRoles: true,
+        removeDangerousRoles: true,
+        banMaliciousBots: true,
+        autoLockdown: true,
+        ownerAlerts: true,
+        neutralizeTimeoutMinutes: 10080,
         thresholds: Object.freeze({
-            bans: 5,
-            kicks: 5,
-            channelDeletes: 3,
-            roleDeletes: 3,
-            webhookChanges: 4,
-            dangerousRoleChanges: 2,
-            botAdds: 2,
+            bans: 3,
+            kicks: 3,
+            channelDeletes: 1,
+            channelCreates: 3,
+            channelUpdates: 3,
+            roleDeletes: 1,
+            roleCreates: 3,
+            roleUpdates: 2,
+            webhookChanges: 1,
+            dangerousRoleChanges: 1,
+            botAdds: 1,
+            guildUpdates: 2,
         }),
+    }),
+    messageShield: Object.freeze({
+        enabled: true,
+        windowSeconds: 8,
+        repeatedMessageThreshold: 3,
+        rapidMessageThreshold: 5,
+        botInviteThreshold: 2,
+        inviteThreshold: 3,
+        linkThreshold: 6,
+        maxMentions: 5,
     }),
     quarantine: Object.freeze({
         enabled: true,
@@ -82,10 +104,30 @@ function normalizeThresholds(value) {
         bans: clampInteger(input.bans, defaults.bans, 1, 50),
         kicks: clampInteger(input.kicks, defaults.kicks, 1, 50),
         channelDeletes: clampInteger(input.channelDeletes, defaults.channelDeletes, 1, 25),
+        channelCreates: clampInteger(input.channelCreates, defaults.channelCreates, 1, 50),
+        channelUpdates: clampInteger(input.channelUpdates, defaults.channelUpdates, 1, 50),
         roleDeletes: clampInteger(input.roleDeletes, defaults.roleDeletes, 1, 25),
+        roleCreates: clampInteger(input.roleCreates, defaults.roleCreates, 1, 50),
+        roleUpdates: clampInteger(input.roleUpdates, defaults.roleUpdates, 1, 50),
         webhookChanges: clampInteger(input.webhookChanges, defaults.webhookChanges, 1, 25),
         dangerousRoleChanges: clampInteger(input.dangerousRoleChanges, defaults.dangerousRoleChanges, 1, 25),
         botAdds: clampInteger(input.botAdds, defaults.botAdds, 1, 25),
+        guildUpdates: clampInteger(input.guildUpdates, defaults.guildUpdates, 1, 25),
+    }
+}
+
+function normalizeMessageShield(value) {
+    const input = isRecord(value) ? value : {}
+    const defaults = DEFAULT_SECURITY_PHASE3_CONFIG.messageShield
+    return {
+        enabled: input.enabled !== false,
+        windowSeconds: clampInteger(input.windowSeconds, defaults.windowSeconds, 3, 60),
+        repeatedMessageThreshold: clampInteger(input.repeatedMessageThreshold, defaults.repeatedMessageThreshold, 2, 15),
+        rapidMessageThreshold: clampInteger(input.rapidMessageThreshold, defaults.rapidMessageThreshold, 3, 30),
+        botInviteThreshold: clampInteger(input.botInviteThreshold, defaults.botInviteThreshold, 1, 10),
+        inviteThreshold: clampInteger(input.inviteThreshold, defaults.inviteThreshold, 1, 20),
+        linkThreshold: clampInteger(input.linkThreshold, defaults.linkThreshold, 1, 30),
+        maxMentions: clampInteger(input.maxMentions, defaults.maxMentions, 2, 50),
     }
 }
 
@@ -112,7 +154,8 @@ function normalizeTrustedEntries(value) {
 }
 
 function normalizeSecurityPhase3Config(config = {}) {
-    const source = isRecord(config.securityPhase3) ? config.securityPhase3 : config
+    const hasNestedConfig = isRecord(config.securityPhase3)
+    const source = hasNestedConfig ? config.securityPhase3 : config
     const antiRaid = isRecord(source.antiRaid) ? source.antiRaid : {}
     const antiNuke = isRecord(source.antiNuke) ? source.antiNuke : {}
     const quarantine = isRecord(source.quarantine) ? source.quarantine : {}
@@ -120,22 +163,30 @@ function normalizeSecurityPhase3Config(config = {}) {
     const trusted = isRecord(source.trusted) ? source.trusted : {}
 
     return {
-        enabled: source.enabled === true,
+        enabled: source.enabled !== false,
         securityLogChannelId: source.securityLogChannelId ? String(source.securityLogChannelId) : null,
         antiRaid: {
             enabled: antiRaid.enabled === true,
-            joinThreshold: clampInteger(antiRaid.joinThreshold, 8, 3, 100),
-            windowSeconds: clampInteger(antiRaid.windowSeconds, 20, 5, 300),
-            minAccountAgeHours: clampInteger(antiRaid.minAccountAgeHours, 24, 0, 24 * 365),
-            action: normalizeAction(antiRaid.action),
-            activeRaidSeconds: clampInteger(antiRaid.activeRaidSeconds, 120, 30, 1800),
+            joinThreshold: clampInteger(antiRaid.joinThreshold, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.joinThreshold, 3, 100),
+            windowSeconds: clampInteger(antiRaid.windowSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.windowSeconds, 5, 300),
+            minAccountAgeHours: clampInteger(antiRaid.minAccountAgeHours, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.minAccountAgeHours, 0, 24 * 365),
+            action: normalizeAction(antiRaid.action, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.action),
+            activeRaidSeconds: clampInteger(antiRaid.activeRaidSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.activeRaidSeconds, 30, 1800),
         },
         antiNuke: {
-            enabled: antiNuke.enabled === true,
-            action: normalizeAction(antiNuke.action),
-            windowSeconds: clampInteger(antiNuke.windowSeconds, 15, 5, 300),
+            enabled: antiNuke.enabled !== false,
+            action: normalizeAction(antiNuke.action, DEFAULT_SECURITY_PHASE3_CONFIG.antiNuke.action),
+            windowSeconds: clampInteger(antiNuke.windowSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.antiNuke.windowSeconds, 5, 300),
+            restoreDeletedChannels: antiNuke.restoreDeletedChannels !== false,
+            restoreDeletedRoles: antiNuke.restoreDeletedRoles !== false,
+            removeDangerousRoles: antiNuke.removeDangerousRoles !== false,
+            banMaliciousBots: antiNuke.banMaliciousBots !== false,
+            autoLockdown: antiNuke.autoLockdown !== false,
+            ownerAlerts: antiNuke.ownerAlerts !== false,
+            neutralizeTimeoutMinutes: clampInteger(antiNuke.neutralizeTimeoutMinutes, DEFAULT_SECURITY_PHASE3_CONFIG.antiNuke.neutralizeTimeoutMinutes, 1, 40320),
             thresholds: normalizeThresholds(antiNuke.thresholds),
         },
+        messageShield: normalizeMessageShield(source.messageShield),
         quarantine: {
             enabled: quarantine.enabled !== false,
             roleId: quarantine.roleId ? String(quarantine.roleId) : null,

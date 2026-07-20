@@ -6,16 +6,21 @@ on:
       - "commands/securityProtection.js"
       - "utils/securityPhase3*.js"
       - "utils/securityProtection.js"
+      - "utils/securityResponse.js"
+      - "utils/securityMessageShield.js"
       - "utils/securityIncidents.js"
       - "utils/quarantineState.js"
       - "utils/lockdownState.js"
+      - "utils/automod.js"
       - "utils/modlog.js"
       - "api/dashboardSecurity.js"
+      - "test/moderation-hardening.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-3.yml"
   push:
     branches:
       - feature/moderation-phase-3
+      - feature/wick-level-moderation
 
 jobs:
   syntax-and-contracts:
@@ -34,12 +39,18 @@ jobs:
           node --check utils/securityIncidents.js
           node --check utils/quarantineState.js
           node --check utils/lockdownState.js
+          node --check utils/securityResponse.js
+          node --check utils/securityMessageShield.js
           node --check utils/securityProtection.js
           node --check utils/securityPhase3Bootstrap.js
+          node --check utils/automod.js
           node --check utils/modlog.js
           node --check api/dashboardSecurity.js
+          node --check test/moderation-hardening.test.js
           node --check webhook.js
-      - name: Validate Phase 3 contracts
+      - name: Run focused moderation hardening test
+        run: node test/moderation-hardening.test.js
+      - name: Validate hardened security contracts
         run: |
           node - <<'NODE'
           const commands = require('./commands/securityProtection')
@@ -47,16 +58,22 @@ jobs:
           const incidents = require('./utils/securityIncidents')
           const quarantine = require('./utils/quarantineState')
           const lockdown = require('./utils/lockdownState')
+          const response = require('./utils/securityResponse')
+          const shield = require('./utils/securityMessageShield')
           const protection = require('./utils/securityProtection')
           const bootstrap = require('./utils/securityPhase3Bootstrap')
           const api = require('./api/dashboardSecurity')
           if (!Array.isArray(commands.commands) || commands.commands.length !== 4) throw new Error('security commands missing')
           for (const command of commands.commands) command.toJSON()
-          const normalized = config.normalizeSecurityPhase3Config({ enabled: true, antiRaid: { enabled: true } })
-          if (!normalized.enabled || !normalized.antiRaid.enabled) throw new Error('security config normalizer failed')
+          const normalized = config.normalizeSecurityPhase3Config({})
+          if (!normalized.enabled || !normalized.antiNuke.enabled || normalized.antiNuke.action !== 'neutralize') throw new Error('hardened defaults missing')
+          if (normalized.antiNuke.thresholds.channelDeletes !== 1 || normalized.antiNuke.thresholds.roleDeletes !== 1) throw new Error('immediate deletion thresholds missing')
+          if (!normalized.messageShield.enabled) throw new Error('message shield default missing')
           if (typeof incidents.createSecurityIncident !== 'function') throw new Error('incident model missing')
           if (typeof quarantine.quarantineMember !== 'function' || typeof quarantine.releaseQuarantine !== 'function') throw new Error('quarantine recovery missing')
           if (typeof lockdown.enableEmergencyLockdown !== 'function' || typeof lockdown.disableEmergencyLockdown !== 'function') throw new Error('lockdown recovery missing')
+          if (typeof response.neutralizeExecutor !== 'function' || typeof response.restoreDeletedChannel !== 'function' || typeof response.restoreDeletedRole !== 'function') throw new Error('neutralization or recovery missing')
+          if (typeof shield.runSecurityMessageShield !== 'function') throw new Error('message shield missing')
           if (typeof protection.attachSecurityProtection !== 'function') throw new Error('security listeners missing')
           if (typeof bootstrap.initializeSecurityPhase3 !== 'function') throw new Error('security bootstrap missing')
           if (typeof api.createDashboardSecurityRouter !== 'function') throw new Error('security dashboard router missing')
