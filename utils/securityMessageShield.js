@@ -2,6 +2,7 @@ const { PermissionFlagsBits } = require("discord.js")
 const { getSecurityPhase3Config, isTrustedForScope } = require("./securityPhase3Config")
 const { neutralizeExecutor, notifyOwner } = require("./securityResponse")
 const { createSecurityIncident } = require("./securityIncidents")
+const { getIncidentModeState } = require("./securityRecoverySuite")
 const { logAction } = require("./modlog")
 
 const windows = new Map()
@@ -27,8 +28,21 @@ function countMatches(regex, content) {
     return [...String(content || "").matchAll(regex)].length
 }
 
-function signalFor(message, config) {
+function effectiveShield(config, incidentMode) {
     const shield = config.messageShield
+    if (!incidentMode?.active || config.incidentMode?.strictMessageShield === false) return shield
+    return {
+        ...shield,
+        repeatedMessageThreshold: Math.max(2, shield.repeatedMessageThreshold - 1),
+        rapidMessageThreshold: Math.max(3, shield.rapidMessageThreshold - 2),
+        botInviteThreshold: 1,
+        inviteThreshold: Math.max(1, shield.inviteThreshold - 1),
+        linkThreshold: Math.max(2, Math.floor(shield.linkThreshold / 2)),
+        maxMentions: Math.max(2, shield.maxMentions - 2),
+    }
+}
+
+function signalFor(message, shield) {
     const key = keyFor(message)
     const windowMs = shield.windowSeconds * 1000
     const content = normalize(message.content)
@@ -75,12 +89,14 @@ async function runSecurityMessageShield(message) {
         scope: "automod",
     })) return false
 
-    const signal = signalFor(message, config)
+    const incidentMode = await getIncidentModeState(message.guild.id)
+    const shield = effectiveShield(config, incidentMode)
+    const signal = signalFor(message, shield)
     if (!signal) return false
 
     const cooldownKey = keyFor(message)
     const last = cooldowns.get(cooldownKey) || 0
-    if (Date.now() - last < config.messageShield.windowSeconds * 1000) {
+    if (Date.now() - last < shield.windowSeconds * 1000) {
         if (message.deletable) await message.delete().catch(() => {})
         return true
     }
@@ -90,7 +106,8 @@ async function runSecurityMessageShield(message) {
         await message.delete().catch(() => {})
     }
 
-    const summary = `Coordinated advert/spam shield triggered: ${signal.rapid} messages, ${signal.repeated} repeated, ${signal.invites} invites, ${signal.links} links and ${signal.mentions} mentions within ${signal.windowSeconds}s.`
+    const modeText = incidentMode.active ? " Incident mode sensitivity was active." : ""
+    const summary = `Coordinated advert/spam shield triggered: ${signal.rapid} messages, ${signal.repeated} repeated, ${signal.invites} invites, ${signal.links} links and ${signal.mentions} mentions within ${signal.windowSeconds}s.${modeText}`
     const response = member
         ? await neutralizeExecutor(message.guild, member, config, {
             reason: `Message Shield: ${summary}`,
@@ -100,14 +117,14 @@ async function runSecurityMessageShield(message) {
 
     await createSecurityIncident({
         guildId: message.guild.id,
-        type: "MESSAGE_SHIELD",
-        severity: message.author.bot ? "critical" : "high",
+        type: incidentMode.active ? "INCIDENT_MODE_MESSAGE_SHIELD" : "MESSAGE_SHIELD",
+        severity: message.author.bot || incidentMode.active ? "critical" : "high",
         executorId: message.author.id,
         executorTag: message.author.tag || message.author.username,
         targetId: message.channel.id,
         targetTag: message.channel.name || "channel",
         actionTaken: response.ok ? "neutralize" : "alert",
-        details: { summary, ...signal, response },
+        details: { summary, ...signal, incidentMode: incidentMode.active, response },
     }).catch(() => {})
 
     await logAction(message.guild, {
@@ -115,7 +132,7 @@ async function runSecurityMessageShield(message) {
         target: { id: message.author.id, tag: message.author.tag || message.author.username },
         reason: summary,
         source: "system",
-        metadata: { channelId: message.channel.id, messageId: message.id, response },
+        metadata: { channelId: message.channel.id, messageId: message.id, incidentMode: incidentMode.active, response },
     }).catch(() => {})
 
     if (config.antiNuke.ownerAlerts !== false) {
@@ -124,4 +141,4 @@ async function runSecurityMessageShield(message) {
     return true
 }
 
-module.exports = { runSecurityMessageShield }
+module.exports = { runSecurityMessageShield, effectiveShield }
