@@ -14,6 +14,10 @@ const {
     restoreDeletedRole,
     notifyOwner,
 } = require("./securityResponse")
+const {
+    consumeBotApproval,
+    setIncidentMode,
+} = require("./securityRecoverySuite")
 
 const joinWindows = new Map()
 const activeRaids = new Map()
@@ -132,6 +136,15 @@ async function recordAndAlert(guild, config, input) {
     return incident
 }
 
+async function maybeActivateIncidentMode(guild, config, reason, severity) {
+    if (severity !== "critical" || !config.incidentMode?.enabled) return null
+    return setIncidentMode(guild, true, config, {
+        reason,
+        actor: { id: guild.members.me?.id, tag: "CURSED Automatic Incident Mode" },
+        durationMinutes: config.incidentMode.durationMinutes,
+    }).catch(() => null)
+}
+
 async function processJoin(member) {
     const guild = member?.guild
     if (!guild || member.user?.bot) return false
@@ -171,6 +184,7 @@ async function processJoin(member) {
         actionTaken: response,
         details: { summary, joins: times.length, windowSeconds: raid.windowSeconds, accountAgeHours },
     })
+    if (thresholdReached) await maybeActivateIncidentMode(guild, config, summary, "critical")
     return true
 }
 
@@ -244,6 +258,24 @@ async function processUnauthorizedBotAdd(member) {
         if (!inviterId || inviterId === guild.members.me?.id) return false
         const inviterMember = guild.members.cache.get(inviterId) || await guild.members.fetch(inviterId).catch(() => null)
 
+        if (config.botApprovals?.enabled) {
+            const approval = await consumeBotApproval(guild.id, member.id, inviterId)
+            if (approval) {
+                await createSecurityIncident({
+                    guildId: guild.id,
+                    type: "TRUSTED_BOT_APPROVAL_USED",
+                    severity: "low",
+                    executorId: inviterId,
+                    executorTag: userTag(entry.executor),
+                    targetId: member.id,
+                    targetTag: userTag(member.user),
+                    actionTaken: "approved",
+                    details: { summary: `${userTag(member.user)} was allowed using a valid owner bot approval.`, approvalId: approval.id },
+                })
+                return true
+            }
+        }
+
         if (isTrustedForScope({
             guildId: guild.id,
             member: inviterMember,
@@ -289,7 +321,6 @@ async function processUnauthorizedBotAdd(member) {
             targetId: member.id,
             targetTag: userTag(member.user),
             actionTaken: inviterResponse,
-            auditLogEntryId: entry.id,
             details: {
                 summary: `${summary} Added bot response: ${botRemoval.action}. Inviter response: ${inviterResponse}.`,
                 count,
@@ -298,6 +329,7 @@ async function processUnauthorizedBotAdd(member) {
                 botRemoval,
             },
         })
+        await maybeActivateIncidentMode(guild, config, summary, "critical")
         return botRemoval.ok
     } finally {
         setTimeout(() => processingAddedBots.delete(processingKey), 30000).unref?.()
@@ -311,6 +343,17 @@ async function recoveryForEvent(guild, config, eventType, target, summary) {
     if (eventType === "roleDeletes" && config.antiNuke.restoreDeletedRoles && target) {
         return restoreDeletedRole(guild, target, `Anti-nuke recovery: ${summary}`)
     }
+    return null
+}
+
+function staffLimitDefinition(eventType, config) {
+    const staff = config.staffLimits
+    if (!staff?.enabled) return null
+    if (eventType === "bans") return { key: "bans", threshold: staff.thresholds.bans }
+    if (eventType === "kicks") return { key: "kicks", threshold: staff.thresholds.kicks }
+    if (["channelDeletes", "channelCreates", "channelUpdates"].includes(eventType)) return { key: "channelChanges", threshold: staff.thresholds.channelChanges }
+    if (["roleDeletes", "roleCreates", "roleUpdates", "dangerousRoleChanges"].includes(eventType)) return { key: "roleChanges", threshold: staff.thresholds.roleChanges }
+    if (eventType === "webhookChanges") return { key: "webhookChanges", threshold: staff.thresholds.webhookChanges }
     return null
 }
 
@@ -337,27 +380,52 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     const threshold = antiNuke.thresholds[definition.thresholdKey]
     const windowMs = antiNuke.windowSeconds * 1000
     const count = addActionCount(guild.id, executorId, eventType, windowMs)
-    const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds} seconds (threshold ${threshold}).`
-    const recovery = await recoveryForEvent(guild, config, eventType, target, summary)
 
-    if (count < threshold || !shouldTrigger(guild.id, executorId, eventType, windowMs)) return Boolean(recovery?.ok)
-
-    const response = await executeSecurityResponse(guild, config, antiNuke.action, {
+    let staff = null
+    if (!entry.executor?.bot && !isTrustedForScope({
+        guildId: guild.id,
         member: executorMember,
-        reason: `Anti-nuke: ${summary}`,
-        actor: { id: guild.members.me?.id, tag: "CURSED Anti-Nuke" },
+        userId: executorId,
+        isBot: false,
+        scope: "staffLimits",
+    })) {
+        const definitionForStaff = staffLimitDefinition(eventType, config)
+        if (definitionForStaff) {
+            const staffWindowMs = config.staffLimits.windowSeconds * 1000
+            const staffCount = addActionCount(guild.id, executorId, `staff:${definitionForStaff.key}`, staffWindowMs)
+            staff = { ...definitionForStaff, count: staffCount, windowSeconds: config.staffLimits.windowSeconds }
+        }
+    }
+
+    const staffTriggered = Boolean(staff && staff.count >= staff.threshold)
+    const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds} seconds (threshold ${threshold}).${staff ? ` Staff limit: ${staff.count}/${staff.threshold} ${staff.key} in ${staff.windowSeconds}s.` : ""}`
+    const recovery = await recoveryForEvent(guild, config, eventType, target, summary)
+    const antiNukeTriggered = count >= threshold
+
+    if ((!antiNukeTriggered && !staffTriggered) || !shouldTrigger(guild.id, executorId, staffTriggered ? `staff:${eventType}` : eventType, staffTriggered ? config.staffLimits.windowSeconds * 1000 : windowMs)) {
+        return Boolean(recovery?.ok)
+    }
+
+    const responseAction = staffTriggered ? config.staffLimits.action : antiNuke.action
+    const response = await executeSecurityResponse(guild, config, responseAction, {
+        member: executorMember,
+        reason: `${staffTriggered ? "Staff safety limit" : "Anti-nuke"}: ${summary}`,
+        actor: { id: guild.members.me?.id, tag: staffTriggered ? "CURSED Staff Safety" : "CURSED Anti-Nuke" },
     })
+    const incidentType = staffTriggered ? `STAFF_LIMIT_${eventType.toUpperCase()}` : `ANTI_NUKE_${eventType.toUpperCase()}`
+    const severity = staffTriggered ? "critical" : definition.severity
     await recordAndAlert(guild, config, {
-        type: `ANTI_NUKE_${eventType.toUpperCase()}`,
-        severity: definition.severity,
+        type: incidentType,
+        severity,
         executorId,
         executorTag: userTag(entry.executor),
         targetId: target?.id || String(entry.targetId || entry.target?.id || "") || null,
         targetTag: target?.name || target?.tag || entry.target?.name || userTag(entry.target) || null,
         actionTaken: response,
         auditLogEntryId: entry.id,
-        details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, recovery, ...extra },
+        details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, staff, recovery, ...extra },
     })
+    await maybeActivateIncidentMode(guild, config, summary, severity)
     return true
 }
 
@@ -428,4 +496,5 @@ module.exports = {
     processUnauthorizedBotAdd,
     removeUnauthorizedAddedBot,
     dangerousPermissionsAdded,
+    staffLimitDefinition,
 }

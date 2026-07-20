@@ -1,10 +1,17 @@
 const { Events, REST, Routes } = require("discord.js")
 const logger = require("./logger")
 const securityCommands = require("../commands/securityProtection")
+const suiteCommands = require("../commands/securitySuite")
 const { attachSecurityProtection } = require("./securityProtection")
+const { attachSecurityRecoveryListeners } = require("./securityRecoveryListeners")
+const { startSecurityRecoveryScheduler } = require("./securityRecoverySuite")
 
 const log = logger.child("SecurityPhase3")
 let initialized = false
+
+function allCommandBuilders() {
+    return [...securityCommands.commands, ...suiteCommands.commands]
+}
 
 async function registerSecurityCommands(client) {
     const token = process.env.BOT_TOKEN
@@ -28,18 +35,16 @@ async function registerSecurityCommands(client) {
         if (contexts !== undefined) definition.contexts = contexts
         return [`${definition.type || 1}:${definition.name}`, definition]
     }))
-    for (const builder of securityCommands.commands) {
+    for (const builder of allCommandBuilders()) {
         const data = builder.toJSON()
         byKey.set(`${data.type || 1}:${data.name}`, data)
     }
     await rest.put(Routes.applicationCommands(client.user.id), { body: [...byKey.values()] })
-    log.info(`Registered ${securityCommands.commands.length} server-protection slash commands`)
+    log.info(`Registered ${allCommandBuilders().length} server-protection slash commands`)
     return true
 }
 
 function scheduleRegistration(client, attempt = 0) {
-    // Phase 2 registers at 8 seconds. Phase 3 waits longer and merges the latest
-    // command set, preventing either additive command pack from replacing the other.
     const delay = attempt === 0 ? 30000 : Math.min(90000, 20000 * (attempt + 1))
     const timer = setTimeout(async () => {
         try {
@@ -52,14 +57,24 @@ function scheduleRegistration(client, attempt = 0) {
     timer.unref?.()
 }
 
+async function dispatchSecurityInteraction(interaction) {
+    const handled = await securityCommands.handleInteraction(interaction)
+    if (handled) return true
+    return suiteCommands.handleInteraction(interaction)
+}
+
+function isSecurityCommand(name) {
+    return securityCommands.COMMAND_NAMES.has(name) || suiteCommands.COMMAND_NAMES.has(name)
+}
+
 function initializeSecurityPhase3(client) {
     if (initialized || !client) return
     initialized = true
 
     client.on(Events.InteractionCreate, interaction => {
-        securityCommands.handleInteraction(interaction).catch(async err => {
+        dispatchSecurityInteraction(interaction).catch(async err => {
             log.error(`Security command failed safely: ${err.message}`)
-            if (!securityCommands.COMMAND_NAMES.has(interaction.commandName)) return
+            if (!isSecurityCommand(interaction.commandName)) return
             const payload = {
                 content: "❌ Server Protection failed safely. Existing CURSED features were not changed.",
                 ephemeral: true,
@@ -70,9 +85,11 @@ function initializeSecurityPhase3(client) {
         })
     })
 
+    attachSecurityRecoveryListeners(client)
     attachSecurityProtection(client)
+    startSecurityRecoveryScheduler(client)
     scheduleRegistration(client)
-    log.info("Moderation Phase 3 Server Protection initialized")
+    log.info("Moderation Phase 3 Server Protection and Recovery Suite initialized")
 }
 
 module.exports = {

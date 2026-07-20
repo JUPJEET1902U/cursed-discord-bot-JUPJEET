@@ -4,19 +4,23 @@ on:
   pull_request:
     paths:
       - "commands/securityProtection.js"
+      - "commands/securitySuite.js"
       - "utils/securityPhase3*.js"
       - "utils/securityProtection.js"
       - "utils/securityResponse.js"
       - "utils/securityOwnerNotification.js"
       - "utils/securityMessageShield.js"
+      - "utils/securityRecoverySuite.js"
       - "utils/securityIncidents.js"
       - "utils/quarantineState.js"
       - "utils/lockdownState.js"
       - "utils/automod.js"
       - "utils/modlog.js"
       - "api/dashboardSecurity.js"
+      - "api/dashboardSecuritySuite.js"
       - "test/moderation-hardening.test.js"
       - "test/security-owner-notification.test.js"
+      - "test/security-recovery-suite.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-3.yml"
   push:
@@ -24,6 +28,7 @@ on:
       - feature/moderation-phase-3
       - feature/wick-level-moderation
       - fix/professional-security-owner-dms
+      - feature/security-recovery-suite
 
 jobs:
   syntax-and-contracts:
@@ -38,6 +43,7 @@ jobs:
       - name: Validate JavaScript syntax
         run: |
           node --check commands/securityProtection.js
+          node --check commands/securitySuite.js
           node --check utils/securityPhase3Config.js
           node --check utils/securityIncidents.js
           node --check utils/quarantineState.js
@@ -45,22 +51,28 @@ jobs:
           node --check utils/securityResponse.js
           node --check utils/securityOwnerNotification.js
           node --check utils/securityMessageShield.js
+          node --check utils/securityRecoverySuite.js
           node --check utils/securityProtection.js
           node --check utils/securityPhase3Bootstrap.js
           node --check utils/automod.js
           node --check utils/modlog.js
           node --check api/dashboardSecurity.js
+          node --check api/dashboardSecuritySuite.js
           node --check test/moderation-hardening.test.js
           node --check test/security-owner-notification.test.js
+          node --check test/security-recovery-suite.test.js
           node --check webhook.js
-      - name: Run focused moderation hardening test
+      - name: Run moderation hardening test
         run: node test/moderation-hardening.test.js
-      - name: Run security owner notification test
+      - name: Run owner notification test
         run: node test/security-owner-notification.test.js
+      - name: Run recovery suite test
+        run: node test/security-recovery-suite.test.js
       - name: Validate hardened security contracts
         run: |
           node - <<'NODE'
           const commands = require('./commands/securityProtection')
+          const suiteCommands = require('./commands/securitySuite')
           const config = require('./utils/securityPhase3Config')
           const incidents = require('./utils/securityIncidents')
           const quarantine = require('./utils/quarantineState')
@@ -68,13 +80,17 @@ jobs:
           const response = require('./utils/securityResponse')
           const notifications = require('./utils/securityOwnerNotification')
           const shield = require('./utils/securityMessageShield')
+          const recovery = require('./utils/securityRecoverySuite')
           const protection = require('./utils/securityProtection')
           const bootstrap = require('./utils/securityPhase3Bootstrap')
           const api = require('./api/dashboardSecurity')
+          const suiteApi = require('./api/dashboardSecuritySuite')
           if (!Array.isArray(commands.commands) || commands.commands.length !== 4) throw new Error('security commands missing')
-          for (const command of commands.commands) command.toJSON()
+          if (!Array.isArray(suiteCommands.commands) || suiteCommands.commands.length !== 1) throw new Error('security suite command missing')
+          for (const command of [...commands.commands, ...suiteCommands.commands]) command.toJSON()
           const normalized = config.normalizeSecurityPhase3Config({})
           if (!normalized.enabled || !normalized.antiNuke.enabled || normalized.antiNuke.action !== 'neutralize') throw new Error('hardened defaults missing')
+          if (!normalized.backup.enabled || !normalized.tamperProtection.enabled || !normalized.incidentMode.enabled) throw new Error('recovery suite defaults missing')
           if (normalized.antiNuke.thresholds.channelDeletes !== 1 || normalized.antiNuke.thresholds.roleDeletes !== 1) throw new Error('immediate deletion thresholds missing')
           if (!normalized.messageShield.enabled) throw new Error('message shield default missing')
           if (typeof incidents.createSecurityIncident !== 'function') throw new Error('incident model missing')
@@ -83,7 +99,9 @@ jobs:
           if (typeof response.neutralizeExecutor !== 'function' || typeof response.restoreDeletedChannel !== 'function' || typeof response.restoreDeletedRole !== 'function') throw new Error('neutralization or recovery missing')
           if (typeof notifications.buildOwnerNotification !== 'function') throw new Error('owner notification formatter missing')
           if (typeof shield.runSecurityMessageShield !== 'function') throw new Error('message shield missing')
+          if (typeof recovery.createSecuritySnapshot !== 'function' || typeof recovery.setIncidentMode !== 'function') throw new Error('recovery suite missing')
           if (typeof protection.attachSecurityProtection !== 'function') throw new Error('security listeners missing')
           if (typeof bootstrap.initializeSecurityPhase3 !== 'function') throw new Error('security bootstrap missing')
           if (typeof api.createDashboardSecurityRouter !== 'function') throw new Error('security dashboard router missing')
+          if (typeof suiteApi.createDashboardSecuritySuiteRouter !== 'function') throw new Error('security suite dashboard router missing')
           NODE

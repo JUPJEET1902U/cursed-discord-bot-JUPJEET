@@ -71,6 +71,12 @@ function buildGenericEmbed(guild, message) {
 }
 
 function buildOwnerNotification(guild, message) {
+    if (message && typeof message === "object" && !Array.isArray(message)) {
+        return {
+            ...message,
+            allowedMentions: { parse: [], ...(message.allowedMentions || {}) },
+        }
+    }
     const parsed = parseBotAddAlert(message)
     if (parsed?.suppress) return null
     const embed = parsed ? buildBotAddEmbed(parsed) : buildGenericEmbed(guild, message)
