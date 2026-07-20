@@ -201,18 +201,7 @@ function createDashboardSecuritySuiteRouter(getClient) {
         const errors = validateSuiteConfig(req.body)
         if (Object.keys(errors).length) return res.status(400).json({ error: "Validation failed.", code: "VALIDATION_ERROR", fields: errors })
         try {
-            const current = normalizeSecurityPhase3Config(getServerConfig(guild.id).config)
-            const merged = normalizeSecurityPhase3Config({
-                ...current,
-                antiRaid: { ...current.antiRaid, ...req.body.antiRaidAdvanced },
-                backup: req.body.backup,
-                tamperProtection: req.body.tamperProtection,
-                botApprovals: req.body.botApprovals,
-                incidentMode: req.body.incidentMode,
-                staffLimits: req.body.staffLimits,
-                reports: req.body.reports,
-            })
-            await updateGuildConfigAndWait(guild.id, { securityPhase3: merged })
+            await updateGuildConfigAndWait(guild.id, { securityRecoverySuite: req.body })
             res.json({ data: await payloadForGuild(guild) })
         } catch (err) {
             console.error("Dashboard security suite PUT error:", err.message)
