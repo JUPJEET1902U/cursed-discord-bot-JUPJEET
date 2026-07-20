@@ -20,6 +20,7 @@ const activeRaids = new Map()
 const actionWindows = new Map()
 const triggerCooldowns = new Map()
 const processedAuditIds = new Set()
+const processingAddedBots = new Set()
 let attached = false
 
 const EVENT_DEFINITIONS = Object.freeze({
@@ -39,6 +40,10 @@ const EVENT_DEFINITIONS = Object.freeze({
 
 function now() {
     return Date.now()
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function rememberAuditId(id) {
@@ -184,6 +189,121 @@ async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null) {
         .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0] || null
 }
 
+async function removeUnauthorizedAddedBot(member, reason) {
+    if (!member?.user?.bot) return { ok: false, action: "none", error: "Added member is not a bot." }
+    const guild = member.guild
+    const errors = []
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const current = guild.members.cache.get(member.id) || await guild.members.fetch(member.id).catch(() => null)
+        if (!current) return { ok: true, action: "already removed", attempts: attempt - 1, errors }
+
+        if (current.bannable && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
+            try {
+                await guild.members.ban(current.id, {
+                    reason: String(reason).slice(0, 512),
+                    deleteMessageSeconds: 86400,
+                })
+                return { ok: true, action: "bot banned", attempts: attempt, errors }
+            } catch (err) {
+                errors.push(`ban attempt ${attempt}: ${err.message}`)
+            }
+        }
+
+        if (current.kickable && guild.members.me?.permissions.has(PermissionFlagsBits.KickMembers)) {
+            try {
+                await current.kick(String(reason).slice(0, 512))
+                return { ok: true, action: "bot kicked", attempts: attempt, errors }
+            } catch (err) {
+                errors.push(`kick attempt ${attempt}: ${err.message}`)
+            }
+        }
+
+        if (attempt < 3) await sleep(attempt * 400)
+    }
+
+    return { ok: false, action: "bot removal failed", attempts: 3, errors }
+}
+
+async function processUnauthorizedBotAdd(member) {
+    const guild = member?.guild
+    if (!guild || !member.user?.bot || member.id === guild.members.me?.id) return false
+
+    const processingKey = `${guild.id}:${member.id}`
+    if (processingAddedBots.has(processingKey)) return false
+    processingAddedBots.add(processingKey)
+
+    try {
+        const config = getSecurityPhase3Config(guild.id)
+        if (!config.enabled || !config.antiNuke.enabled) return false
+
+        const entry = await fetchMatchingAuditEntry(guild, AuditLogEvent.BotAdd, member.id)
+        if (!entry || !rememberAuditId(entry.id)) return false
+
+        const inviterId = String(entry.executorId || entry.executor?.id || "")
+        if (!inviterId || inviterId === guild.members.me?.id) return false
+        const inviterMember = guild.members.cache.get(inviterId) || await guild.members.fetch(inviterId).catch(() => null)
+
+        if (isTrustedForScope({
+            guildId: guild.id,
+            member: inviterMember,
+            userId: inviterId,
+            isBot: entry.executor?.bot,
+            scope: "addBots",
+        })) return false
+
+        const antiNuke = config.antiNuke
+        const windowMs = antiNuke.windowSeconds * 1000
+        const count = addActionCount(guild.id, inviterId, "botAdds", windowMs)
+        const summary = `Unauthorized bot addition: ${userTag(entry.executor)} added ${userTag(member.user)} (${member.id}).`
+
+        const botRemoval = await removeUnauthorizedAddedBot(member, `CURSED anti-nuke: ${summary}`)
+        await recordAndAlert(guild, config, {
+            type: "ANTI_NUKE_ADDED_BOT_REMOVAL",
+            severity: "critical",
+            executorId: inviterId,
+            executorTag: userTag(entry.executor),
+            targetId: member.id,
+            targetTag: userTag(member.user),
+            actionTaken: botRemoval.action,
+            auditLogEntryId: entry.id,
+            details: { summary, botRemoval },
+        })
+
+        const threshold = antiNuke.thresholds.botAdds
+        if (count < threshold || !shouldTrigger(guild.id, inviterId, "botAdds", windowMs)) return botRemoval.ok
+
+        const inviterResponse = inviterMember
+            ? await executeSecurityResponse(guild, config, antiNuke.action, {
+                member: inviterMember,
+                reason: `Anti-nuke inviter response: ${summary}`,
+                actor: { id: guild.members.me?.id, tag: "CURSED Anti-Nuke" },
+            })
+            : "alert (inviter no longer in server)"
+
+        await recordAndAlert(guild, config, {
+            type: "ANTI_NUKE_BOTADDS",
+            severity: "critical",
+            executorId: inviterId,
+            executorTag: userTag(entry.executor),
+            targetId: member.id,
+            targetTag: userTag(member.user),
+            actionTaken: inviterResponse,
+            auditLogEntryId: entry.id,
+            details: {
+                summary: `${summary} Added bot response: ${botRemoval.action}. Inviter response: ${inviterResponse}.`,
+                count,
+                threshold,
+                windowSeconds: antiNuke.windowSeconds,
+                botRemoval,
+            },
+        })
+        return botRemoval.ok
+    } finally {
+        setTimeout(() => processingAddedBots.delete(processingKey), 30000).unref?.()
+    }
+}
+
 async function recoveryForEvent(guild, config, eventType, target, summary) {
     if (eventType === "channelDeletes" && config.antiNuke.restoreDeletedChannels && target) {
         return restoreDeletedChannel(guild, target, `Anti-nuke recovery: ${summary}`)
@@ -196,7 +316,7 @@ async function recoveryForEvent(guild, config, eventType, target, summary) {
 
 async function processAuditEvent(guild, eventType, auditTypes, target = null, extra = {}) {
     const definition = EVENT_DEFINITIONS[eventType]
-    if (!guild || !definition) return false
+    if (!guild || !definition || eventType === "botAdds") return false
     const config = getSecurityPhase3Config(guild.id)
     if (!config.enabled || !config.antiNuke.enabled) return false
     const entry = await fetchMatchingAuditEntry(guild, auditTypes, target?.id || null)
@@ -267,7 +387,7 @@ function attachSecurityProtection(client) {
 
     client.on(Events.GuildMemberAdd, safeListener("member-add", async member => {
         await processJoin(member)
-        if (member.user?.bot) await processAuditEvent(member.guild, "botAdds", AuditLogEvent.BotAdd, member.user)
+        if (member.user?.bot) await processUnauthorizedBotAdd(member)
     }))
     client.on(Events.GuildBanAdd, safeListener("ban-add", ban => processAuditEvent(ban.guild, "bans", AuditLogEvent.MemberBanAdd, ban.user)))
     client.on(Events.GuildMemberRemove, safeListener("member-remove", member => processAuditEvent(member.guild, "kicks", AuditLogEvent.MemberKick, member.user)))
@@ -305,5 +425,7 @@ module.exports = {
     attachSecurityProtection,
     processJoin,
     processAuditEvent,
+    processUnauthorizedBotAdd,
+    removeUnauthorizedAddedBot,
     dangerousPermissionsAdded,
 }
