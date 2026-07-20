@@ -14,6 +14,7 @@ on:
       - "utils/automod.js"
       - "utils/modlog.js"
       - "api/dashboardSecurity.js"
+      - "test/moderation-hardening.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-3.yml"
   push:
@@ -45,7 +46,10 @@ jobs:
           node --check utils/automod.js
           node --check utils/modlog.js
           node --check api/dashboardSecurity.js
+          node --check test/moderation-hardening.test.js
           node --check webhook.js
+      - name: Run focused moderation hardening test
+        run: node test/moderation-hardening.test.js
       - name: Validate hardened security contracts
         run: |
           node - <<'NODE'
