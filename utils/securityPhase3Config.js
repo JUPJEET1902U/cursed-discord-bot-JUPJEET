@@ -9,6 +9,8 @@ const TRUSTED_SCOPES = Object.freeze([
     "addBots",
     "manageWebhooks",
     "manualModeration",
+    "tamperProtection",
+    "staffLimits",
 ])
 
 const TRUSTED_SUBJECT_TYPES = Object.freeze(["user", "role", "bot", "channel"])
@@ -24,6 +26,9 @@ const DEFAULT_SECURITY_PHASE3_CONFIG = Object.freeze({
         minAccountAgeHours: 72,
         action: "quarantine",
         activeRaidSeconds: 300,
+        requireAvatar: false,
+        suspiciousNameCheck: true,
+        riskScoreThreshold: 2,
     }),
     antiNuke: Object.freeze({
         enabled: true,
@@ -75,6 +80,48 @@ const DEFAULT_SECURITY_PHASE3_CONFIG = Object.freeze({
     trusted: Object.freeze({
         enabled: true,
         entries: [],
+    }),
+    backup: Object.freeze({
+        enabled: true,
+        intervalHours: 24,
+        retentionCount: 7,
+        restoreServerSettings: true,
+    }),
+    tamperProtection: Object.freeze({
+        enabled: true,
+        ownerOnlyDisable: true,
+        protectBotRole: true,
+        protectQuarantineRole: true,
+        autoIncidentMode: true,
+    }),
+    botApprovals: Object.freeze({
+        enabled: true,
+        defaultExpiryMinutes: 15,
+        oneTime: true,
+    }),
+    incidentMode: Object.freeze({
+        enabled: true,
+        durationMinutes: 30,
+        autoLockdown: true,
+        strictMessageShield: true,
+        blockUnapprovedBots: true,
+    }),
+    staffLimits: Object.freeze({
+        enabled: true,
+        windowSeconds: 60,
+        action: "neutralize",
+        thresholds: Object.freeze({
+            bans: 5,
+            kicks: 5,
+            channelChanges: 8,
+            roleChanges: 8,
+            webhookChanges: 3,
+        }),
+    }),
+    reports: Object.freeze({
+        enabled: true,
+        maxTimelineEvents: 100,
+        includeAuditDetails: true,
     }),
 })
 
@@ -161,6 +208,13 @@ function normalizeSecurityPhase3Config(config = {}) {
     const quarantine = isRecord(source.quarantine) ? source.quarantine : {}
     const lockdown = isRecord(source.lockdown) ? source.lockdown : {}
     const trusted = isRecord(source.trusted) ? source.trusted : {}
+    const backup = isRecord(source.backup) ? source.backup : {}
+    const tamperProtection = isRecord(source.tamperProtection) ? source.tamperProtection : {}
+    const botApprovals = isRecord(source.botApprovals) ? source.botApprovals : {}
+    const incidentMode = isRecord(source.incidentMode) ? source.incidentMode : {}
+    const staffLimits = isRecord(source.staffLimits) ? source.staffLimits : {}
+    const staffThresholds = isRecord(staffLimits.thresholds) ? staffLimits.thresholds : {}
+    const reports = isRecord(source.reports) ? source.reports : {}
 
     return {
         enabled: source.enabled !== false,
@@ -172,6 +226,9 @@ function normalizeSecurityPhase3Config(config = {}) {
             minAccountAgeHours: clampInteger(antiRaid.minAccountAgeHours, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.minAccountAgeHours, 0, 24 * 365),
             action: normalizeAction(antiRaid.action, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.action),
             activeRaidSeconds: clampInteger(antiRaid.activeRaidSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.activeRaidSeconds, 30, 1800),
+            requireAvatar: antiRaid.requireAvatar === true,
+            suspiciousNameCheck: antiRaid.suspiciousNameCheck !== false,
+            riskScoreThreshold: clampInteger(antiRaid.riskScoreThreshold, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.riskScoreThreshold, 1, 10),
         },
         antiNuke: {
             enabled: antiNuke.enabled !== false,
@@ -201,6 +258,48 @@ function normalizeSecurityPhase3Config(config = {}) {
         trusted: {
             enabled: trusted.enabled !== false,
             entries: normalizeTrustedEntries(trusted.entries),
+        },
+        backup: {
+            enabled: backup.enabled !== false,
+            intervalHours: clampInteger(backup.intervalHours, DEFAULT_SECURITY_PHASE3_CONFIG.backup.intervalHours, 1, 168),
+            retentionCount: clampInteger(backup.retentionCount, DEFAULT_SECURITY_PHASE3_CONFIG.backup.retentionCount, 1, 30),
+            restoreServerSettings: backup.restoreServerSettings !== false,
+        },
+        tamperProtection: {
+            enabled: tamperProtection.enabled !== false,
+            ownerOnlyDisable: tamperProtection.ownerOnlyDisable !== false,
+            protectBotRole: tamperProtection.protectBotRole !== false,
+            protectQuarantineRole: tamperProtection.protectQuarantineRole !== false,
+            autoIncidentMode: tamperProtection.autoIncidentMode !== false,
+        },
+        botApprovals: {
+            enabled: botApprovals.enabled !== false,
+            defaultExpiryMinutes: clampInteger(botApprovals.defaultExpiryMinutes, DEFAULT_SECURITY_PHASE3_CONFIG.botApprovals.defaultExpiryMinutes, 1, 1440),
+            oneTime: botApprovals.oneTime !== false,
+        },
+        incidentMode: {
+            enabled: incidentMode.enabled !== false,
+            durationMinutes: clampInteger(incidentMode.durationMinutes, DEFAULT_SECURITY_PHASE3_CONFIG.incidentMode.durationMinutes, 5, 1440),
+            autoLockdown: incidentMode.autoLockdown !== false,
+            strictMessageShield: incidentMode.strictMessageShield !== false,
+            blockUnapprovedBots: incidentMode.blockUnapprovedBots !== false,
+        },
+        staffLimits: {
+            enabled: staffLimits.enabled !== false,
+            windowSeconds: clampInteger(staffLimits.windowSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.windowSeconds, 10, 300),
+            action: normalizeAction(staffLimits.action, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.action),
+            thresholds: {
+                bans: clampInteger(staffThresholds.bans, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.thresholds.bans, 1, 50),
+                kicks: clampInteger(staffThresholds.kicks, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.thresholds.kicks, 1, 50),
+                channelChanges: clampInteger(staffThresholds.channelChanges, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.thresholds.channelChanges, 1, 100),
+                roleChanges: clampInteger(staffThresholds.roleChanges, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.thresholds.roleChanges, 1, 100),
+                webhookChanges: clampInteger(staffThresholds.webhookChanges, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.thresholds.webhookChanges, 1, 50),
+            },
+        },
+        reports: {
+            enabled: reports.enabled !== false,
+            maxTimelineEvents: clampInteger(reports.maxTimelineEvents, DEFAULT_SECURITY_PHASE3_CONFIG.reports.maxTimelineEvents, 10, 200),
+            includeAuditDetails: reports.includeAuditDetails !== false,
         },
     }
 }
