@@ -1,5 +1,6 @@
 const { ChannelType, PermissionFlagsBits } = require("discord.js")
 const { enableEmergencyLockdown } = require("./lockdownState")
+const { buildOwnerNotification } = require("./securityOwnerNotification")
 
 const DANGEROUS_PERMISSIONS = Object.freeze([
     PermissionFlagsBits.Administrator,
@@ -189,9 +190,11 @@ async function restoreDeletedRole(guild, role, reason) {
 
 async function notifyOwner(guild, message) {
     if (!guild?.ownerId) return false
+    const payload = buildOwnerNotification(guild, message)
+    if (!payload) return true
     const owner = await guild.client.users.fetch(guild.ownerId).catch(() => null)
     if (!owner) return false
-    return owner.send({ content: String(message).slice(0, 1900), allowedMentions: { parse: [] } })
+    return owner.send(payload)
         .then(() => true)
         .catch(() => false)
 }
