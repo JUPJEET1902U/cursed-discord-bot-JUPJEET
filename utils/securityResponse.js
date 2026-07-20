@@ -1,4 +1,4 @@
-const { PermissionFlagsBits } = require("discord.js")
+const { ChannelType, PermissionFlagsBits } = require("discord.js")
 const { enableEmergencyLockdown } = require("./lockdownState")
 
 const DANGEROUS_PERMISSIONS = Object.freeze([
@@ -82,8 +82,13 @@ async function neutralizeExecutor(guild, member, config, { reason, actor } = {})
             const webhooks = await guild.fetchWebhooks()
             const owned = webhooks.filter(webhook => String(webhook.owner?.id || "") === member.id)
             for (const webhook of owned.values()) {
-                await webhook.delete(safeReason).catch(err => result.errors.push(`webhook ${webhook.id}: ${err.message}`))
-                result.deletedWebhookIds.push(webhook.id)
+                try {
+                    await webhook.delete(safeReason)
+                    result.deletedWebhookIds.push(webhook.id)
+                    result.ok = true
+                } catch (err) {
+                    result.errors.push(`webhook ${webhook.id}: ${err.message}`)
+                }
             }
         } catch (err) {
             result.errors.push(`webhook cleanup failed: ${err.message}`)
@@ -100,31 +105,57 @@ async function neutralizeExecutor(guild, member, config, { reason, actor } = {})
     return result
 }
 
-async function restoreDeletedChannel(guild, channel, reason) {
-    if (!guild || !channel || !guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-        return { ok: false, error: "Manage Channels permission is unavailable." }
-    }
-    try {
-        const overwrites = channel.permissionOverwrites?.cache
-            ? [...channel.permissionOverwrites.cache.values()].map(overwrite => ({
+function validOverwrite(guild, overwrite) {
+    if (overwrite.id === guild.id) return true
+    if (overwrite.type === 0) return guild.roles.cache.has(overwrite.id)
+    return guild.members.cache.has(overwrite.id)
+}
+
+function channelCreateOptions(guild, channel, reason) {
+    const overwrites = channel.permissionOverwrites?.cache
+        ? [...channel.permissionOverwrites.cache.values()]
+            .filter(overwrite => validOverwrite(guild, overwrite))
+            .map(overwrite => ({
                 id: overwrite.id,
                 type: overwrite.type,
                 allow: overwrite.allow.bitfield,
                 deny: overwrite.deny.bitfield,
             }))
-            : []
-        const created = await guild.channels.create({
-            name: channel.name,
-            type: channel.type,
-            topic: channel.topic || undefined,
-            nsfw: channel.nsfw || false,
-            rateLimitPerUser: channel.rateLimitPerUser || 0,
-            bitrate: channel.bitrate || undefined,
-            userLimit: channel.userLimit || undefined,
-            parent: channel.parentId && guild.channels.cache.has(channel.parentId) ? channel.parentId : undefined,
-            permissionOverwrites: overwrites,
-            reason: sanitizeReason(reason, "CURSED anti-nuke channel recovery"),
-        })
+        : []
+    const options = {
+        name: channel.name,
+        type: channel.type,
+        permissionOverwrites: overwrites,
+        reason: sanitizeReason(reason, "CURSED anti-nuke channel recovery"),
+    }
+    if (channel.parentId && guild.channels.cache.has(channel.parentId)) options.parent = channel.parentId
+
+    const textLike = [
+        ChannelType.GuildText,
+        ChannelType.GuildAnnouncement,
+        ChannelType.GuildForum,
+        ChannelType.GuildMedia,
+    ].includes(channel.type)
+    if (textLike) {
+        options.topic = channel.topic || undefined
+        options.nsfw = channel.nsfw || false
+    }
+    if ([ChannelType.GuildText, ChannelType.GuildForum, ChannelType.GuildMedia].includes(channel.type)) {
+        options.rateLimitPerUser = channel.rateLimitPerUser || 0
+    }
+    if ([ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(channel.type)) {
+        options.bitrate = channel.bitrate || undefined
+        options.userLimit = channel.userLimit || undefined
+    }
+    return options
+}
+
+async function restoreDeletedChannel(guild, channel, reason) {
+    if (!guild || !channel || !guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
+        return { ok: false, error: "Manage Channels permission is unavailable." }
+    }
+    try {
+        const created = await guild.channels.create(channelCreateOptions(guild, channel, reason))
         if (Number.isInteger(channel.rawPosition)) await created.setPosition(channel.rawPosition).catch(() => {})
         return { ok: true, restoredId: created.id, originalId: channel.id }
     } catch (err) {
@@ -146,7 +177,10 @@ async function restoreDeletedRole(guild, role, reason) {
             unicodeEmoji: role.unicodeEmoji || undefined,
             reason: sanitizeReason(reason, "CURSED anti-nuke role recovery"),
         })
-        if (Number.isInteger(role.position)) await created.setPosition(Math.min(role.position, guild.members.me.roles.highest.position - 1)).catch(() => {})
+        if (Number.isInteger(role.position)) {
+            const highestSafePosition = Math.max(1, guild.members.me.roles.highest.position - 1)
+            await created.setPosition(Math.min(role.position, highestSafePosition)).catch(() => {})
+        }
         return { ok: true, restoredId: created.id, originalId: role.id }
     } catch (err) {
         return { ok: false, error: err.message }
