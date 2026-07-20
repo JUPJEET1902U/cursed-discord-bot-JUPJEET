@@ -62,11 +62,12 @@ jobs:
           node --check test/security-owner-notification.test.js
           node --check test/security-recovery-suite.test.js
           node --check webhook.js
-      - name: Run focused moderation tests
-        run: |
-          node test/moderation-hardening.test.js
-          node test/security-owner-notification.test.js
-          node test/security-recovery-suite.test.js
+      - name: Run moderation hardening test
+        run: node test/moderation-hardening.test.js
+      - name: Run owner notification test
+        run: node test/security-owner-notification.test.js
+      - name: Run recovery suite test
+        run: node test/security-recovery-suite.test.js
       - name: Validate hardened security contracts
         run: |
           node - <<'NODE'
