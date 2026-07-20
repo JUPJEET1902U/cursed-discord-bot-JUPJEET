@@ -3,10 +3,8 @@ const logger = require("./logger")
 const securityCommands = require("../commands/securityProtection")
 const suiteCommands = require("../commands/securitySuite")
 const { attachSecurityProtection } = require("./securityProtection")
-const {
-    attachSecurityRecoveryListeners,
-    startSecurityRecoveryScheduler,
-} = require("./securityRecoverySuite")
+const { attachSecurityRecoveryListeners } = require("./securityRecoveryListeners")
+const { startSecurityRecoveryScheduler } = require("./securityRecoverySuite")
 
 const log = logger.child("SecurityPhase3")
 let initialized = false
