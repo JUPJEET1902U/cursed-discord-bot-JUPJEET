@@ -13,6 +13,7 @@ const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
 const { handleLevelingMessage } = require("./leveling")
 const { runSecurityMessageShield } = require("./securityMessageShield")
+const { handlePriorityModerationCommand } = require("./priorityModerationCommands")
 const premiumCmd = require("../commands/premium")
 
 const LINK_REGEX = /https?:\/\/\S+|www\.\S+\.\S+/gi
@@ -41,6 +42,15 @@ async function safeDelete(message) {
 
 async function runAutoMod(message) {
     if (!message.guild) return false
+
+    // Staff moderation must remain available in ticket and other restricted
+    // channels. Only the small, permission-checked moderation prefix set is
+    // routed here; normal commands and AI still obey the channel allow-list.
+    const priorityModerationHandled = await handlePriorityModerationCommand(message).catch(err => {
+        console.error("Priority moderation command error:", err.message)
+        return false
+    })
+    if (priorityModerationHandled) return true
 
     const securityActioned = await runSecurityMessageShield(message).catch(err => {
         console.error("Security message shield error:", err.message)
