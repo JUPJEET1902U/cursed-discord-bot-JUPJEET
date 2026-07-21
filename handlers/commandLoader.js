@@ -17,9 +17,11 @@ const {
     resolveCommandPrefix,
 } = require("../utils/prefix")
 
-// Keep Help aligned with the command implementations that are actually
-// deployed before the interactive Help module reads the shared registry.
+// Keep Help and dashboard command controls aligned with the command
+// implementations that are actually deployed before consumers read the
+// shared registry.
 require("../commands/helpCatalog")
+require("../commands/prefixCommandCatalog")
 
 const log = logger.child("CommandLoader")
 
