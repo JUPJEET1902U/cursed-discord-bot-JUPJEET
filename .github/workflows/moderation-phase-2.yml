@@ -5,7 +5,10 @@ on:
     paths:
       - "commands/moderationAdvanced.js"
       - "commands/moderationPrefix.js"
+      - "commands/moderationPrefixBridge.js"
       - "commands/helpCatalog.js"
+      - "commands/prefixCommandCatalog.js"
+      - "commands/publicStatsStatus.js"
       - "handlers/commandLoader.js"
       - "utils/moderationPhase2*.js"
       - "utils/moderationTasks.js"
@@ -17,6 +20,7 @@ on:
       - "utils/modlog.js"
       - "api/dashboardModerationPhase2.js"
       - "test/purge-help-contracts.test.js"
+      - "test/all-prefix-commands.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-2.yml"
   push:
@@ -37,7 +41,10 @@ jobs:
         run: |
           node --check commands/moderationAdvanced.js
           node --check commands/moderationPrefix.js
+          node --check commands/moderationPrefixBridge.js
           node --check commands/helpCatalog.js
+          node --check commands/prefixCommandCatalog.js
+          node --check commands/publicStatsStatus.js
           node --check handlers/commandLoader.js
           node --check utils/moderationPhase2Config.js
           node --check utils/moderationPhase2Bootstrap.js
@@ -50,6 +57,7 @@ jobs:
           node --check utils/modlog.js
           node --check api/dashboardModerationPhase2.js
           node --check test/purge-help-contracts.test.js
+          node --check test/all-prefix-commands.test.js
           node --check webhook.js
       - name: Validate exported Phase 2 contracts
         run: |
@@ -68,3 +76,5 @@ jobs:
           NODE
       - name: Validate purge routing and Help accuracy
         run: node test/purge-help-contracts.test.js
+      - name: Validate complete moderation prefix catalog
+        run: node test/all-prefix-commands.test.js

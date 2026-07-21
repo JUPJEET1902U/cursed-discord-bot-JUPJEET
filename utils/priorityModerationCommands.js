@@ -16,10 +16,14 @@ const {
     isCommandEnabled: isPhase2CommandEnabled,
 } = require("./moderationPhase2Config")
 const { logAction } = require("./modlog")
-const moderationPrefix = require("../commands/moderationPrefix")
+const { handleModerationPrefix } = require("../commands/moderationPrefixBridge")
 
 const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
-const PRIORITY_COMMANDS = new Set(["!warn", "!timeout", "!kick", "!ban", "!purge"])
+const PRIORITY_COMMANDS = new Set([
+    "!warn", "!warnings", "!clearwarns", "!timeout", "!mute", "!untimeout", "!unmute",
+    "!kick", "!ban", "!unban", "!case", "!cases", "!purge", "!lock", "!unlock",
+    "!slowmode", "!nickname", "!tempban", "!softban", "!note", "!history",
+])
 
 async function reply(message, content) {
     return message.reply({ content, allowedMentions: SAFE_MENTIONS }).catch(() =>
@@ -171,7 +175,11 @@ async function handlePriorityModerationCommand(message) {
         return handlePurge(commandMessage, args, config, getGuildPrefix(message.guild.id))
     }
 
-    return moderationPrefix.handle(commandMessage)
+    return handleModerationPrefix(
+        commandMessage,
+        resolved.canonicalContent,
+        getGuildPrefix(message.guild.id)
+    )
 }
 
 module.exports = {
