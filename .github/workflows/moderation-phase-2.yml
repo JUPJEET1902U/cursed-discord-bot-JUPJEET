@@ -21,6 +21,7 @@ on:
       - "api/dashboardModerationPhase2.js"
       - "test/purge-help-contracts.test.js"
       - "test/all-prefix-commands.test.js"
+      - "test/moderation-all-channels-routing.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-2.yml"
   push:
@@ -58,6 +59,7 @@ jobs:
           node --check api/dashboardModerationPhase2.js
           node --check test/purge-help-contracts.test.js
           node --check test/all-prefix-commands.test.js
+          node --check test/moderation-all-channels-routing.test.js
           node --check webhook.js
       - name: Validate exported Phase 2 contracts
         run: |
@@ -78,3 +80,5 @@ jobs:
         run: node test/purge-help-contracts.test.js
       - name: Validate complete moderation prefix catalog
         run: node test/all-prefix-commands.test.js
+      - name: Validate moderation-only all-channel routing
+        run: node test/moderation-all-channels-routing.test.js
