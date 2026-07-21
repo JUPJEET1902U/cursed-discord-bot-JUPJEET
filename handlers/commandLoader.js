@@ -16,6 +16,11 @@ const {
     createCommandMessage,
     resolveCommandPrefix,
 } = require("../utils/prefix")
+
+// Keep Help aligned with the command implementations that are actually
+// deployed before the interactive Help module reads the shared registry.
+require("../commands/helpCatalog")
+
 const log = logger.child("CommandLoader")
 
 /**
