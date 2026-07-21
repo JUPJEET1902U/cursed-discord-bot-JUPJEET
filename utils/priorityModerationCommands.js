@@ -8,7 +8,6 @@ const { getServerConfig } = require("./serverConfig")
 const { extractCommandName, isCommandEnabled } = require("./dashboardControl")
 const {
     getModerationConfig,
-    isModerator,
     hasConfiguredModeratorRole,
 } = require("./moderationConfig")
 const {
@@ -19,11 +18,19 @@ const { logAction } = require("./modlog")
 const { handleModerationPrefix } = require("../commands/moderationPrefixBridge")
 
 const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
-const PRIORITY_COMMANDS = new Set([
+
+// These are the only normal prefix commands allowed to bypass the configured
+// channel allow-list. Economy, shop, images, games, profiles, AI chat, public
+// stats, tickets, and every other feature continue through the normal channel
+// restriction in index.js.
+const GLOBAL_MODERATION_COMMANDS = new Set([
     "!warn", "!warnings", "!clearwarns", "!timeout", "!mute", "!untimeout", "!unmute",
     "!kick", "!ban", "!unban", "!case", "!cases", "!purge", "!lock", "!unlock",
     "!slowmode", "!nickname", "!tempban", "!softban", "!note", "!history",
 ])
+
+// Kept as an exported alias for existing tests and integrations.
+const PRIORITY_COMMANDS = GLOBAL_MODERATION_COMMANDS
 
 async function reply(message, content) {
     return message.reply({ content, allowedMentions: SAFE_MENTIONS }).catch(() =>
@@ -33,7 +40,20 @@ async function reply(message, content) {
 
 function commandNameFromCanonical(content) {
     const commandName = extractCommandName(content)
-    return PRIORITY_COMMANDS.has(commandName) ? commandName : null
+    return GLOBAL_MODERATION_COMMANDS.has(commandName) ? commandName : null
+}
+
+function resolveGlobalModerationCommand(message) {
+    if (!message?.guild || !message?.member || message.author?.bot) return null
+
+    const guildConfig = getServerConfig(message.guild.id).config
+    const resolved = resolveCommandPrefix(message.content, guildConfig)
+    if (!resolved) return null
+
+    const commandName = commandNameFromCanonical(resolved.canonicalContent)
+    if (!commandName) return null
+
+    return { guildConfig, resolved, commandName }
 }
 
 function parsePurgeAmount(value, max) {
@@ -145,46 +165,58 @@ async function handlePurge(message, args, config, prefix) {
 }
 
 async function handlePriorityModerationCommand(message) {
-    if (!message.guild || !message.member || message.author?.bot) return false
+    const match = resolveGlobalModerationCommand(message)
+    if (!match) return false
 
-    const guildConfig = getServerConfig(message.guild.id).config
-    const resolved = resolveCommandPrefix(message.content, guildConfig)
-    if (!resolved) return false
+    const { guildConfig, resolved, commandName } = match
 
-    const commandName = commandNameFromCanonical(resolved.canonicalContent)
-    if (!commandName) return false
+    // A recognized moderation command must never fall through to the normal
+    // command dispatcher. That dispatcher is intentionally behind the channel
+    // allow-list, so falling through would make moderation appear restricted to
+    // !addchannel channels.
+    try {
+        if (!isCommandEnabled(guildConfig, commandName)) {
+            await reply(message, "⛔ That command is disabled in this server.")
+            return true
+        }
 
-    if (!isCommandEnabled(guildConfig, commandName)) {
-        await reply(message, "⛔ That command is disabled in this server.")
+        const config = getModerationConfig(message.guild.id)
+        if (!config.moderationCommandsEnabled) {
+            await reply(message, "⛔ Moderation commands are disabled in this server.")
+            return true
+        }
+
+        const commandMessage = createCommandMessage(message, resolved.canonicalContent)
+        if (commandName === "!purge") {
+            const args = resolved.canonicalContent.trim().split(/\s+/).slice(1)
+            return handlePurge(commandMessage, args, config, getGuildPrefix(message.guild.id))
+        }
+
+        // The bridge invokes the existing slash-command handlers, which remain
+        // authoritative for moderator permissions, hierarchy, whitelists,
+        // dangerous-command restrictions, cases, logging, and feature toggles.
+        const handled = await handleModerationPrefix(
+            commandMessage,
+            resolved.canonicalContent,
+            getGuildPrefix(message.guild.id)
+        )
+
+        if (!handled) {
+            await reply(message, "❌ That moderation command could not be processed. Check its usage with the Help command.")
+        }
+        return true
+    } catch (error) {
+        console.error(`Global moderation command failed: ${error.message}`)
+        await reply(message, "❌ That moderation command failed safely. Check my permissions and try again.")
         return true
     }
-
-    const config = getModerationConfig(message.guild.id)
-    if (!config.moderationCommandsEnabled) {
-        await reply(message, "⛔ Moderation commands are disabled in this server.")
-        return true
-    }
-    if (!isModerator(message.member, config)) {
-        await reply(message, "❌ You need a configured moderator role or Discord moderation permission.")
-        return true
-    }
-
-    const commandMessage = createCommandMessage(message, resolved.canonicalContent)
-    if (commandName === "!purge") {
-        const args = resolved.canonicalContent.trim().split(/\s+/).slice(1)
-        return handlePurge(commandMessage, args, config, getGuildPrefix(message.guild.id))
-    }
-
-    return handleModerationPrefix(
-        commandMessage,
-        resolved.canonicalContent,
-        getGuildPrefix(message.guild.id)
-    )
 }
 
 module.exports = {
+    GLOBAL_MODERATION_COMMANDS,
     PRIORITY_COMMANDS,
     commandNameFromCanonical,
+    resolveGlobalModerationCommand,
     parsePurgeAmount,
     channelPermissionState,
     purgeFailureMessage,
