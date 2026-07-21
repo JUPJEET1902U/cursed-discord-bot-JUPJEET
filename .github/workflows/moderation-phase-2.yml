@@ -4,14 +4,19 @@ on:
   pull_request:
     paths:
       - "commands/moderationAdvanced.js"
+      - "commands/moderationPrefix.js"
+      - "commands/helpCatalog.js"
+      - "handlers/commandLoader.js"
       - "utils/moderationPhase2*.js"
       - "utils/moderationTasks.js"
       - "utils/moderationAuditLogger.js"
       - "utils/channelLockState.js"
       - "utils/moderationSafety.js"
+      - "utils/priorityModerationCommands.js"
       - "utils/automod.js"
       - "utils/modlog.js"
       - "api/dashboardModerationPhase2.js"
+      - "test/purge-help-contracts.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-2.yml"
   push:
@@ -31,15 +36,20 @@ jobs:
       - name: Validate JavaScript syntax
         run: |
           node --check commands/moderationAdvanced.js
+          node --check commands/moderationPrefix.js
+          node --check commands/helpCatalog.js
+          node --check handlers/commandLoader.js
           node --check utils/moderationPhase2Config.js
           node --check utils/moderationPhase2Bootstrap.js
           node --check utils/moderationTasks.js
           node --check utils/moderationAuditLogger.js
           node --check utils/channelLockState.js
           node --check utils/moderationSafety.js
+          node --check utils/priorityModerationCommands.js
           node --check utils/automod.js
           node --check utils/modlog.js
           node --check api/dashboardModerationPhase2.js
+          node --check test/purge-help-contracts.test.js
           node --check webhook.js
       - name: Validate exported Phase 2 contracts
         run: |
@@ -56,3 +66,5 @@ jobs:
           if (typeof locks.lockChannel !== 'function' || typeof locks.unlockChannel !== 'function') throw new Error('lock state helpers missing')
           if (typeof api.createDashboardModerationPhase2Router !== 'function') throw new Error('advanced dashboard router missing')
           NODE
+      - name: Validate purge routing and Help accuracy
+        run: node test/purge-help-contracts.test.js
