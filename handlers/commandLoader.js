@@ -22,6 +22,7 @@ const {
 // shared registry.
 require("../commands/helpCatalog")
 require("../commands/prefixCommandCatalog")
+require("../commands/imageGenerationCatalog")
 
 const log = logger.child("CommandLoader")
 
