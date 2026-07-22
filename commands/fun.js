@@ -35,8 +35,12 @@ async function handle(message) {
     if (msgLower.startsWith("!imagine")) {
         return handleImagineCommand(message, {
             onSuccess: async () => {
-                incrementStat(userId, senderName, "imagine")
-                updateQuestProgress(userId, senderName, "imagine")
+                try {
+                    incrementStat(userId, senderName, "imagine")
+                    updateQuestProgress(userId, senderName, "imagine")
+                } catch (err) {
+                    console.error("Image generation stat update error:", err.message)
+                }
             },
         })
     }
