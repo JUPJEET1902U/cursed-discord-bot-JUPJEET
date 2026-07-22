@@ -84,7 +84,8 @@ const referenceUrl = imageGeneration.buildGenerationUrl({
 assert.match(referenceUrl, /model=kontext/)
 assert.match(referenceUrl, /image=https%3A%2F%2Fcdn\.discordapp\.com/)
 assert.match(referenceUrl, /seed=333/)
-assert.doesNotMatch(referenceUrl, /%3C%40|146844647535078319/)
+assert.doesNotMatch(referenceUrl, /%3C%40/)
+assert.match(referenceUrl, /146844647535078319/, "the actual avatar URL must remain attached as the reference")
 
 const funSource = fs.readFileSync(require.resolve("../commands/fun"), "utf8")
 const imagineStart = funSource.indexOf('if (msgLower.startsWith("!imagine"))')
