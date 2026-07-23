@@ -4,6 +4,7 @@ const { checkCooldown } = require("../utils/cooldowns")
 const { incrementStat, updateQuestProgress, MEDALS } = require("../utils/economy")
 const { clearUserMemory } = require("../utils/memory")
 const { activeTriviaAnswers } = require("../utils/state")
+const { handleImagineCommand } = require("../utils/imageGeneration")
 
 
 async function handle(message) {
@@ -31,85 +32,55 @@ async function handle(message) {
         return true
     }
 
-if (msgLower.startsWith("!imagine")) {
-    const prompt = message.content.slice(8).trim()
+    if (msgLower.startsWith("!imagine")) {
+        return handleImagineCommand(message, {
+            onSuccess: async () => {
+                try {
+                    incrementStat(userId, senderName, "imagine")
+                    updateQuestProgress(userId, senderName, "imagine")
+                } catch (err) {
+                    console.error("Image generation stat update error:", err.message)
+                }
+            },
+        })
+    }
 
-    if (!prompt) {
-        await message.channel.send(
-            "Give me something to imagine! e.g. `!imagine a cursed cat on a skateboard`"
-        )
+    if (msgLower.startsWith("!meme")) {
+        const topic =
+            message.content.slice(5).trim() || "something cursed and funny"
+
+        const cd = checkCooldown(userId, "meme", 30 * 1000)
+
+        if (!cd.ok) {
+            await message.channel.send(
+                `⏳ Wait **${cd.remaining}s** before another meme.`
+            )
+            return true
+        }
+
+        try {
+            await message.channel.send(
+                `😂 Generating a meme about **${topic}**... hang on`
+            )
+
+            const imageUrl =
+                `https://image.pollinations.ai/prompt/${encodeURIComponent(
+                    `funny internet meme style image about ${topic}`
+                )}`
+
+            await message.channel.send(
+                `😂 **${topic}**\n${imageUrl}`
+            )
+
+        } catch (err) {
+            console.error("Meme generation error:", err)
+            await message.channel.send(
+                "😤 Couldn't generate that meme. Try a different topic!"
+            )
+        }
+
         return true
     }
-
-    const cd = checkCooldown(userId, "imagine", 30 * 1000)
-
-    if (!cd.ok) {
-        await message.channel.send(
-            `⏳ Wait **${cd.remaining}s** before generating another image.`
-        )
-        return true
-    }
-
-    try {
-        await message.channel.send(
-            `🎨 Generating **${prompt}**... give me a sec`
-        )
-
-        const imageUrl =
-            `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`
-
-        await message.channel.send(
-            `🎨 **${prompt}**\n${imageUrl}`
-        )
-
-        incrementStat(userId, senderName, "imagine")
-        updateQuestProgress(userId, senderName, "imagine")
-
-    } catch (err) {
-        console.error("Image generation error:", err)
-        await message.channel.send(
-            "😤 Couldn't generate that. Try a different prompt!"
-        )
-    }
-
-    return true
-}
-if (msgLower.startsWith("!meme")) {
-    const topic =
-        message.content.slice(5).trim() || "something cursed and funny"
-
-    const cd = checkCooldown(userId, "meme", 30 * 1000)
-
-    if (!cd.ok) {
-        await message.channel.send(
-            `⏳ Wait **${cd.remaining}s** before another meme.`
-        )
-        return true
-    }
-
-    try {
-        await message.channel.send(
-            `😂 Generating a meme about **${topic}**... hang on`
-        )
-
-        const imageUrl =
-            `https://image.pollinations.ai/prompt/${encodeURIComponent(
-                `funny internet meme style image about ${topic}`
-            )}`
-
-        await message.channel.send(
-            `😂 **${topic}**\n${imageUrl}`
-        )
-
-    } catch (err) {
-        console.error("Meme generation error:", err)
-        await message.channel.send(
-            "😤 Couldn't generate that meme. Try a different topic!"
-        )
-    }
-
-    return true
-}
 
 
     if (msgLower === "!leaderboard") {

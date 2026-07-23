@@ -1,0 +1,33 @@
+name: Image Generation CI
+
+on:
+  pull_request:
+    paths:
+      - "commands/fun.js"
+      - "commands/imageGenerationCatalog.js"
+      - "handlers/commandLoader.js"
+      - "utils/imageGeneration.js"
+      - "utils/helpGenerator.js"
+      - "test/image-generation-contracts.test.js"
+      - ".env.example"
+      - ".github/workflows/image-generation.yml"
+
+jobs:
+  syntax-and-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate JavaScript syntax
+        run: |
+          node --check commands/fun.js
+          node --check commands/imageGenerationCatalog.js
+          node --check handlers/commandLoader.js
+          node --check utils/imageGeneration.js
+          node --check test/image-generation-contracts.test.js
+      - name: Validate image generation behavior
+        run: node test/image-generation-contracts.test.js
