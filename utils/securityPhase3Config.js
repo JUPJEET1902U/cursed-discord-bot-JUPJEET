@@ -16,29 +16,31 @@ const TRUSTED_SCOPES = Object.freeze([
 const TRUSTED_SUBJECT_TYPES = Object.freeze(["user", "role", "bot", "channel"])
 const SECURITY_ACTIONS = Object.freeze(["alert", "quarantine", "lockdown", "neutralize"])
 
+// Server protection is intentionally opt-in. Missing configuration must never
+// grant CURSED permission to modify channels, roles, members, or server state.
 const DEFAULT_SECURITY_PHASE3_CONFIG = Object.freeze({
-    enabled: true,
+    enabled: false,
     securityLogChannelId: null,
     antiRaid: Object.freeze({
         enabled: false,
         joinThreshold: 6,
         windowSeconds: 15,
         minAccountAgeHours: 72,
-        action: "quarantine",
+        action: "alert",
         activeRaidSeconds: 300,
         requireAvatar: false,
-        suspiciousNameCheck: true,
+        suspiciousNameCheck: false,
         riskScoreThreshold: 2,
     }),
     antiNuke: Object.freeze({
-        enabled: true,
-        action: "neutralize",
+        enabled: false,
+        action: "alert",
         windowSeconds: 10,
-        restoreDeletedChannels: true,
-        restoreDeletedRoles: true,
-        removeDangerousRoles: true,
-        banMaliciousBots: true,
-        autoLockdown: true,
+        restoreDeletedChannels: false,
+        restoreDeletedRoles: false,
+        removeDangerousRoles: false,
+        banMaliciousBots: false,
+        autoLockdown: false,
         ownerAlerts: true,
         neutralizeTimeoutMinutes: 10080,
         thresholds: Object.freeze({
@@ -57,7 +59,7 @@ const DEFAULT_SECURITY_PHASE3_CONFIG = Object.freeze({
         }),
     }),
     messageShield: Object.freeze({
-        enabled: true,
+        enabled: false,
         windowSeconds: 8,
         repeatedMessageThreshold: 3,
         rapidMessageThreshold: 5,
@@ -67,49 +69,49 @@ const DEFAULT_SECURITY_PHASE3_CONFIG = Object.freeze({
         maxMentions: 5,
     }),
     quarantine: Object.freeze({
-        enabled: true,
+        enabled: false,
         roleId: null,
         channelId: null,
-        removeManageableRoles: true,
+        removeManageableRoles: false,
     }),
     lockdown: Object.freeze({
-        enabled: true,
+        enabled: false,
         channelIds: [],
-        raiseVerificationLevel: true,
+        raiseVerificationLevel: false,
     }),
     trusted: Object.freeze({
-        enabled: true,
+        enabled: false,
         entries: [],
     }),
     backup: Object.freeze({
-        enabled: true,
+        enabled: false,
         intervalHours: 24,
         retentionCount: 7,
-        restoreServerSettings: true,
+        restoreServerSettings: false,
     }),
     tamperProtection: Object.freeze({
-        enabled: true,
+        enabled: false,
         ownerOnlyDisable: true,
-        protectBotRole: true,
-        protectQuarantineRole: true,
-        autoIncidentMode: true,
+        protectBotRole: false,
+        protectQuarantineRole: false,
+        autoIncidentMode: false,
     }),
     botApprovals: Object.freeze({
-        enabled: true,
+        enabled: false,
         defaultExpiryMinutes: 15,
         oneTime: true,
     }),
     incidentMode: Object.freeze({
-        enabled: true,
+        enabled: false,
         durationMinutes: 30,
-        autoLockdown: true,
-        strictMessageShield: true,
-        blockUnapprovedBots: true,
+        autoLockdown: false,
+        strictMessageShield: false,
+        blockUnapprovedBots: false,
     }),
     staffLimits: Object.freeze({
-        enabled: true,
+        enabled: false,
         windowSeconds: 60,
-        action: "neutralize",
+        action: "alert",
         thresholds: Object.freeze({
             bans: 5,
             kicks: 5,
@@ -119,9 +121,9 @@ const DEFAULT_SECURITY_PHASE3_CONFIG = Object.freeze({
         }),
     }),
     reports: Object.freeze({
-        enabled: true,
+        enabled: false,
         maxTimelineEvents: 100,
-        includeAuditDetails: true,
+        includeAuditDetails: false,
     }),
 })
 
@@ -167,7 +169,7 @@ function normalizeMessageShield(value) {
     const input = isRecord(value) ? value : {}
     const defaults = DEFAULT_SECURITY_PHASE3_CONFIG.messageShield
     return {
-        enabled: input.enabled !== false,
+        enabled: input.enabled === true,
         windowSeconds: clampInteger(input.windowSeconds, defaults.windowSeconds, 3, 60),
         repeatedMessageThreshold: clampInteger(input.repeatedMessageThreshold, defaults.repeatedMessageThreshold, 2, 15),
         rapidMessageThreshold: clampInteger(input.rapidMessageThreshold, defaults.rapidMessageThreshold, 3, 30),
@@ -206,6 +208,8 @@ function normalizeSecurityPhase3Config(config = {}) {
     const suiteSource = hasNestedConfig && isRecord(config.securityRecoverySuite)
         ? config.securityRecoverySuite
         : source
+    const moderationPhase2 = isRecord(config.moderationPhase2) ? config.moderationPhase2 : null
+    const moderationAllowsProtection = !moderationPhase2 || moderationPhase2.advancedModerationEnabled !== false
     const antiRaid = isRecord(source.antiRaid) ? source.antiRaid : {}
     const antiRaidAdvanced = isRecord(suiteSource.antiRaidAdvanced)
         ? suiteSource.antiRaidAdvanced
@@ -223,7 +227,7 @@ function normalizeSecurityPhase3Config(config = {}) {
     const reports = isRecord(suiteSource.reports) ? suiteSource.reports : {}
 
     return {
-        enabled: source.enabled !== false,
+        enabled: source.enabled === true && moderationAllowsProtection,
         securityLogChannelId: source.securityLogChannelId ? String(source.securityLogChannelId) : null,
         antiRaid: {
             enabled: antiRaid.enabled === true,
@@ -233,65 +237,65 @@ function normalizeSecurityPhase3Config(config = {}) {
             action: normalizeAction(antiRaid.action, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.action),
             activeRaidSeconds: clampInteger(antiRaid.activeRaidSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.activeRaidSeconds, 30, 1800),
             requireAvatar: antiRaidAdvanced.requireAvatar === true,
-            suspiciousNameCheck: antiRaidAdvanced.suspiciousNameCheck !== false,
+            suspiciousNameCheck: antiRaidAdvanced.suspiciousNameCheck === true,
             riskScoreThreshold: clampInteger(antiRaidAdvanced.riskScoreThreshold, DEFAULT_SECURITY_PHASE3_CONFIG.antiRaid.riskScoreThreshold, 1, 10),
         },
         antiNuke: {
-            enabled: antiNuke.enabled !== false,
+            enabled: antiNuke.enabled === true,
             action: normalizeAction(antiNuke.action, DEFAULT_SECURITY_PHASE3_CONFIG.antiNuke.action),
             windowSeconds: clampInteger(antiNuke.windowSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.antiNuke.windowSeconds, 5, 300),
-            restoreDeletedChannels: antiNuke.restoreDeletedChannels !== false,
-            restoreDeletedRoles: antiNuke.restoreDeletedRoles !== false,
-            removeDangerousRoles: antiNuke.removeDangerousRoles !== false,
-            banMaliciousBots: antiNuke.banMaliciousBots !== false,
-            autoLockdown: antiNuke.autoLockdown !== false,
+            restoreDeletedChannels: antiNuke.restoreDeletedChannels === true,
+            restoreDeletedRoles: antiNuke.restoreDeletedRoles === true,
+            removeDangerousRoles: antiNuke.removeDangerousRoles === true,
+            banMaliciousBots: antiNuke.banMaliciousBots === true,
+            autoLockdown: antiNuke.autoLockdown === true,
             ownerAlerts: antiNuke.ownerAlerts !== false,
             neutralizeTimeoutMinutes: clampInteger(antiNuke.neutralizeTimeoutMinutes, DEFAULT_SECURITY_PHASE3_CONFIG.antiNuke.neutralizeTimeoutMinutes, 1, 40320),
             thresholds: normalizeThresholds(antiNuke.thresholds),
         },
         messageShield: normalizeMessageShield(source.messageShield),
         quarantine: {
-            enabled: quarantine.enabled !== false,
+            enabled: quarantine.enabled === true,
             roleId: quarantine.roleId ? String(quarantine.roleId) : null,
             channelId: quarantine.channelId ? String(quarantine.channelId) : null,
-            removeManageableRoles: quarantine.removeManageableRoles !== false,
+            removeManageableRoles: quarantine.removeManageableRoles === true,
         },
         lockdown: {
-            enabled: lockdown.enabled !== false,
+            enabled: lockdown.enabled === true,
             channelIds: uniqueStrings(lockdown.channelIds, 200),
-            raiseVerificationLevel: lockdown.raiseVerificationLevel !== false,
+            raiseVerificationLevel: lockdown.raiseVerificationLevel === true,
         },
         trusted: {
-            enabled: trusted.enabled !== false,
+            enabled: trusted.enabled === true,
             entries: normalizeTrustedEntries(trusted.entries),
         },
         backup: {
-            enabled: backup.enabled !== false,
+            enabled: backup.enabled === true,
             intervalHours: clampInteger(backup.intervalHours, DEFAULT_SECURITY_PHASE3_CONFIG.backup.intervalHours, 1, 168),
             retentionCount: clampInteger(backup.retentionCount, DEFAULT_SECURITY_PHASE3_CONFIG.backup.retentionCount, 1, 30),
-            restoreServerSettings: backup.restoreServerSettings !== false,
+            restoreServerSettings: backup.restoreServerSettings === true,
         },
         tamperProtection: {
-            enabled: tamperProtection.enabled !== false,
+            enabled: tamperProtection.enabled === true,
             ownerOnlyDisable: tamperProtection.ownerOnlyDisable !== false,
-            protectBotRole: tamperProtection.protectBotRole !== false,
-            protectQuarantineRole: tamperProtection.protectQuarantineRole !== false,
-            autoIncidentMode: tamperProtection.autoIncidentMode !== false,
+            protectBotRole: tamperProtection.protectBotRole === true,
+            protectQuarantineRole: tamperProtection.protectQuarantineRole === true,
+            autoIncidentMode: tamperProtection.autoIncidentMode === true,
         },
         botApprovals: {
-            enabled: botApprovals.enabled !== false,
+            enabled: botApprovals.enabled === true,
             defaultExpiryMinutes: clampInteger(botApprovals.defaultExpiryMinutes, DEFAULT_SECURITY_PHASE3_CONFIG.botApprovals.defaultExpiryMinutes, 1, 1440),
             oneTime: botApprovals.oneTime !== false,
         },
         incidentMode: {
-            enabled: incidentMode.enabled !== false,
+            enabled: incidentMode.enabled === true,
             durationMinutes: clampInteger(incidentMode.durationMinutes, DEFAULT_SECURITY_PHASE3_CONFIG.incidentMode.durationMinutes, 5, 1440),
-            autoLockdown: incidentMode.autoLockdown !== false,
-            strictMessageShield: incidentMode.strictMessageShield !== false,
-            blockUnapprovedBots: incidentMode.blockUnapprovedBots !== false,
+            autoLockdown: incidentMode.autoLockdown === true,
+            strictMessageShield: incidentMode.strictMessageShield === true,
+            blockUnapprovedBots: incidentMode.blockUnapprovedBots === true,
         },
         staffLimits: {
-            enabled: staffLimits.enabled !== false,
+            enabled: staffLimits.enabled === true,
             windowSeconds: clampInteger(staffLimits.windowSeconds, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.windowSeconds, 10, 300),
             action: normalizeAction(staffLimits.action, DEFAULT_SECURITY_PHASE3_CONFIG.staffLimits.action),
             thresholds: {
@@ -303,9 +307,9 @@ function normalizeSecurityPhase3Config(config = {}) {
             },
         },
         reports: {
-            enabled: reports.enabled !== false,
+            enabled: reports.enabled === true,
             maxTimelineEvents: clampInteger(reports.maxTimelineEvents, DEFAULT_SECURITY_PHASE3_CONFIG.reports.maxTimelineEvents, 10, 200),
-            includeAuditDetails: reports.includeAuditDetails !== false,
+            includeAuditDetails: reports.includeAuditDetails === true,
         },
     }
 }
