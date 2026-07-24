@@ -1,58 +1,12 @@
 const { createCanvas, loadImage } = require("@napi-rs/canvas")
+const { getLevelProgress, totalXpForLevel } = require("./levelingMath")
 
-const WIDTH = 760
-const HEIGHT = 240
+const WIDTH = 1000
+const HEIGHT = 360
+const FONT = '"DejaVu Sans", "Noto Sans", sans-serif'
 
-// Built-in vector glyphs keep text reliable on Railway without shipping fonts.
-const GLYPHS = {
-    " ": ["00000","00000","00000","00000","00000","00000","00000"],
-    "A": ["01110","10001","10001","11111","10001","10001","10001"],
-    "B": ["11110","10001","10001","11110","10001","10001","11110"],
-    "C": ["01111","10000","10000","10000","10000","10000","01111"],
-    "D": ["11110","10001","10001","10001","10001","10001","11110"],
-    "E": ["11111","10000","10000","11110","10000","10000","11111"],
-    "F": ["11111","10000","10000","11110","10000","10000","10000"],
-    "G": ["01111","10000","10000","10111","10001","10001","01111"],
-    "H": ["10001","10001","10001","11111","10001","10001","10001"],
-    "I": ["11111","00100","00100","00100","00100","00100","11111"],
-    "J": ["00111","00010","00010","00010","10010","10010","01100"],
-    "K": ["10001","10010","10100","11000","10100","10010","10001"],
-    "L": ["10000","10000","10000","10000","10000","10000","11111"],
-    "M": ["10001","11011","10101","10101","10001","10001","10001"],
-    "N": ["10001","11001","10101","10011","10001","10001","10001"],
-    "O": ["01110","10001","10001","10001","10001","10001","01110"],
-    "P": ["11110","10001","10001","11110","10000","10000","10000"],
-    "Q": ["01110","10001","10001","10001","10101","10010","01101"],
-    "R": ["11110","10001","10001","11110","10100","10010","10001"],
-    "S": ["01111","10000","10000","01110","00001","00001","11110"],
-    "T": ["11111","00100","00100","00100","00100","00100","00100"],
-    "U": ["10001","10001","10001","10001","10001","10001","01110"],
-    "V": ["10001","10001","10001","10001","10001","01010","00100"],
-    "W": ["10001","10001","10001","10101","10101","10101","01010"],
-    "X": ["10001","10001","01010","00100","01010","10001","10001"],
-    "Y": ["10001","10001","01010","00100","00100","00100","00100"],
-    "Z": ["11111","00001","00010","00100","01000","10000","11111"],
-    "0": ["01110","10001","10011","10101","11001","10001","01110"],
-    "1": ["00100","01100","00100","00100","00100","00100","01110"],
-    "2": ["01110","10001","00001","00010","00100","01000","11111"],
-    "3": ["11110","00001","00001","01110","00001","00001","11110"],
-    "4": ["00010","00110","01010","10010","11111","00010","00010"],
-    "5": ["11111","10000","10000","11110","00001","00001","11110"],
-    "6": ["01110","10000","10000","11110","10001","10001","01110"],
-    "7": ["11111","00001","00010","00100","01000","01000","01000"],
-    "8": ["01110","10001","10001","01110","10001","10001","01110"],
-    "9": ["01110","10001","10001","01111","00001","00001","01110"],
-    "-": ["00000","00000","00000","11111","00000","00000","00000"],
-    "_": ["00000","00000","00000","00000","00000","00000","11111"],
-    ".": ["00000","00000","00000","00000","00000","00100","00100"],
-    ",": ["00000","00000","00000","00000","00100","00100","01000"],
-    "!": ["00100","00100","00100","00100","00100","00000","00100"],
-    "?": ["01110","10001","00001","00010","00100","00000","00100"],
-    ":": ["00000","00100","00100","00000","00100","00100","00000"],
-    "/": ["00001","00010","00010","00100","01000","01000","10000"],
-    "+": ["00000","00100","00100","11111","00100","00100","00000"],
-    "&": ["01100","10010","10100","01000","10101","10010","01101"],
-    "'": ["00100","00100","00000","00000","00000","00000","00000"],
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, Number(value) || 0))
 }
 
 function roundRect(ctx, x, y, width, height, radius) {
@@ -70,230 +24,7 @@ function roundRect(ctx, x, y, width, height, radius) {
     ctx.closePath()
 }
 
-function normalizeText(value, fallback = "MEMBER") {
-    const source = String(value || fallback)
-        .normalize("NFKD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toUpperCase()
-
-    let result = ""
-    for (const char of source) {
-        if (GLYPHS[char]) result += char
-        else if (/\s/u.test(char) || char.codePointAt(0) > 127) result += " "
-        else result += "?"
-    }
-    return result.replace(/\s+/g, " ").trim() || fallback
-}
-
-function metrics(height, spacingRatio = 0.16) {
-    const stepY = height / 6
-    const stepX = stepY * 0.82
-    const stroke = Math.max(1.2, stepY * 0.82)
-    return {
-        stepX,
-        stepY,
-        stroke,
-        glyphWidth: stepX * 4 + stroke,
-        spacing: height * spacingRatio,
-    }
-}
-
-function measure(text, height, spacingRatio = 0.16) {
-    const value = normalizeText(text, "")
-    if (!value) return 0
-    const { glyphWidth, spacing } = metrics(height, spacingRatio)
-    return value.length * glyphWidth + Math.max(0, value.length - 1) * spacing
-}
-
-function fitHeight(text, preferred, maxWidth, minHeight, spacingRatio) {
-    const width = measure(text, preferred, spacingRatio)
-    if (!maxWidth || width <= maxWidth) return preferred
-    return Math.max(minHeight, preferred * (maxWidth / width))
-}
-
-function hasCell(glyph, row, column) {
-    return glyph[row]?.[column] === "1"
-}
-
-function drawGlyph(ctx, glyph, x, y, height, color, options = {}) {
-    const { stepX, stepY, stroke } = metrics(height, options.spacingRatio)
-    const point = (row, column) => [
-        x + column * stepX + stroke / 2,
-        y + row * stepY + stroke / 2,
-    ]
-
-    ctx.save()
-    ctx.strokeStyle = color
-    ctx.fillStyle = color
-    ctx.lineWidth = stroke
-    ctx.lineCap = "round"
-    ctx.lineJoin = "round"
-    if (options.glowColor && options.glowBlur) {
-        ctx.shadowColor = options.glowColor
-        ctx.shadowBlur = options.glowBlur
-    }
-
-    const connected = new Set()
-    const connect = (rowA, colA, rowB, colB) => {
-        const [ax, ay] = point(rowA, colA)
-        const [bx, by] = point(rowB, colB)
-        ctx.beginPath()
-        ctx.moveTo(ax, ay)
-        ctx.lineTo(bx, by)
-        ctx.stroke()
-        connected.add(`${rowA}:${colA}`)
-        connected.add(`${rowB}:${colB}`)
-    }
-
-    for (let row = 0; row < 7; row++) {
-        for (let column = 0; column < 5; column++) {
-            if (!hasCell(glyph, row, column)) continue
-            if (hasCell(glyph, row, column + 1)) connect(row, column, row, column + 1)
-            if (hasCell(glyph, row + 1, column)) connect(row, column, row + 1, column)
-            if (hasCell(glyph, row + 1, column + 1) && !hasCell(glyph, row, column + 1) && !hasCell(glyph, row + 1, column)) {
-                connect(row, column, row + 1, column + 1)
-            }
-            if (hasCell(glyph, row + 1, column - 1) && !hasCell(glyph, row, column - 1) && !hasCell(glyph, row + 1, column)) {
-                connect(row, column, row + 1, column - 1)
-            }
-        }
-    }
-
-    for (let row = 0; row < 7; row++) {
-        for (let column = 0; column < 5; column++) {
-            if (!hasCell(glyph, row, column) || connected.has(`${row}:${column}`)) continue
-            const [px, py] = point(row, column)
-            ctx.beginPath()
-            ctx.arc(px, py, stroke / 2, 0, Math.PI * 2)
-            ctx.fill()
-        }
-    }
-    ctx.restore()
-}
-
-function drawText(ctx, text, x, y, preferredHeight, options = {}) {
-    const spacingRatio = options.spacingRatio ?? 0.16
-    const value = normalizeText(text, options.fallback || "MEMBER")
-    const height = fitHeight(value, preferredHeight, options.maxWidth, options.minHeight || 7, spacingRatio)
-    const { glyphWidth, spacing } = metrics(height, spacingRatio)
-    const width = measure(value, height, spacingRatio)
-
-    let cursorX = x
-    if (options.align === "center") cursorX -= width / 2
-    if (options.align === "right") cursorX -= width
-
-    for (const char of value) {
-        drawGlyph(ctx, GLYPHS[char] || GLYPHS["?"], cursorX, y, height, options.color || "#FFFFFF", {
-            spacingRatio,
-            glowColor: options.glowColor,
-            glowBlur: options.glowBlur,
-        })
-        cursorX += glyphWidth + spacing
-    }
-    return { value, width, height }
-}
-
-function drawLevelTransition(ctx, oldLevel, newLevel) {
-    const centerX = 622
-    const y = 101
-    const preferredHeight = 31
-    const maxSideWidth = 55
-    const oldText = String(oldLevel)
-    const newText = String(newLevel)
-    const sideHeight = Math.min(
-        fitHeight(oldText, preferredHeight, maxSideWidth, 17, 0.12),
-        fitHeight(newText, preferredHeight, maxSideWidth, 17, 0.12),
-    )
-
-    drawText(ctx, oldText, 576, y, sideHeight, {
-        color: "#FFFFFF",
-        align: "center",
-        maxWidth: maxSideWidth,
-        minHeight: 17,
-        spacingRatio: 0.12,
-        glowColor: "rgba(168,85,247,0.55)",
-        glowBlur: 6,
-    })
-
-    ctx.save()
-    ctx.fillStyle = "#D8B4FE"
-    ctx.shadowColor = "rgba(168,85,247,0.75)"
-    ctx.shadowBlur = 7
-    ctx.beginPath()
-    ctx.arc(centerX, y + sideHeight * 0.56, Math.max(3.5, sideHeight * 0.12), 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
-
-    drawText(ctx, newText, 668, y, sideHeight, {
-        color: "#FFFFFF",
-        align: "center",
-        maxWidth: maxSideWidth,
-        minHeight: 17,
-        spacingRatio: 0.12,
-        glowColor: "rgba(168,85,247,0.55)",
-        glowBlur: 6,
-    })
-}
-
-function splitServerName(value) {
-    const text = normalizeText(value, "DISCORD SERVER")
-    if (text.length <= 44) return [text]
-
-    const words = text.split(" ").filter(Boolean)
-    if (words.length === 1) {
-        const midpoint = Math.ceil(text.length / 2)
-        return [text.slice(0, midpoint), text.slice(midpoint)]
-    }
-
-    let first = ""
-    let second = ""
-    for (const word of words) {
-        if (!first || (first.length <= second.length && `${first} ${word}`.length <= 52)) {
-            first = first ? `${first} ${word}` : word
-        } else {
-            second = second ? `${second} ${word}` : word
-        }
-    }
-    return second ? [first, second] : [first]
-}
-
-function drawServerFooter(ctx, guildName) {
-    const footerX = 225
-    const footerY = 174
-    const footerWidth = 484
-    const footerHeight = 38
-
-    ctx.fillStyle = "rgba(7, 3, 16, 0.46)"
-    roundRect(ctx, footerX, footerY, footerWidth, footerHeight, 13)
-    ctx.fill()
-
-    ctx.fillStyle = "rgba(168, 85, 247, 0.55)"
-    roundRect(ctx, footerX, footerY, 5, footerHeight, 3)
-    ctx.fill()
-
-    const lines = splitServerName(guildName)
-    const preferredHeight = lines.length === 1 ? 14 : 10
-    const minHeight = lines.length === 1 ? 9 : 7
-    const gap = lines.length === 1 ? 0 : 3
-    const heights = lines.map(line => fitHeight(line, preferredHeight, 452, minHeight, 0.12))
-    const totalHeight = heights.reduce((sum, height) => sum + height, 0) + gap * Math.max(0, lines.length - 1)
-    let y = footerY + (footerHeight - totalHeight) / 2
-
-    lines.forEach((line, index) => {
-        drawText(ctx, line, footerX + footerWidth / 2 + 2, y, heights[index], {
-            color: "#DDD6FE",
-            align: "center",
-            maxWidth: 452,
-            minHeight,
-            spacingRatio: 0.12,
-            glowColor: "rgba(168,85,247,0.32)",
-            glowBlur: 3,
-        })
-        y += heights[index] + gap
-    })
-}
-
-function drawCoverImage(ctx, image, x, y, width, height) {
+function cover(ctx, image, x, y, width, height) {
     const sourceRatio = image.width / image.height
     const targetRatio = width / height
     let sx = 0
@@ -311,121 +42,402 @@ function drawCoverImage(ctx, image, x, y, width, height) {
     ctx.drawImage(image, sx, sy, sw, sh, x, y, width, height)
 }
 
-async function loadRemoteImage(url) {
+async function remoteImage(url) {
     if (!url || typeof fetch !== "function") return null
     try {
         const parsed = new URL(url)
-        if (!["https:", "http:"].includes(parsed.protocol)) return null
+        if (!["http:", "https:"].includes(parsed.protocol)) return null
         const response = await fetch(parsed)
         if (!response.ok) return null
-        return await loadImage(Buffer.from(await response.arrayBuffer()))
+        const buffer = Buffer.from(await response.arrayBuffer())
+        if (buffer.length > 8 * 1024 * 1024) return null
+        return await loadImage(buffer)
     } catch {
         return null
     }
 }
 
-async function generateLevelUpCard({ user, displayName, guildName, oldLevel, newLevel }) {
-    const canvas = createCanvas(WIDTH, HEIGHT)
-    const ctx = canvas.getContext("2d")
+function setFont(ctx, size, weight = 700) {
+    ctx.font = `${weight} ${Math.max(1, Math.floor(size))}px ${FONT}`
+}
 
-    const background = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
-    background.addColorStop(0, "#08030F")
-    background.addColorStop(0.48, "#160822")
-    background.addColorStop(1, "#2D0A48")
-    ctx.fillStyle = background
+function fittedFont(ctx, value, maxWidth, preferred, minimum = 12, weight = 700) {
+    const text = String(value || "")
+    let size = preferred
+    setFont(ctx, size, weight)
+    while (size > minimum && ctx.measureText(text).width > maxWidth) {
+        size -= 1
+        setFont(ctx, size, weight)
+    }
+    return size
+}
+
+function shorten(ctx, value, maxWidth) {
+    const text = String(value || "")
+    if (ctx.measureText(text).width <= maxWidth) return text
+    let result = text
+    while (result.length > 1 && ctx.measureText(`${result}…`).width > maxWidth) result = result.slice(0, -1)
+    return `${result.trim()}…`
+}
+
+function text(ctx, value, x, y, options = {}) {
+    const {
+        size = 20,
+        minSize = 11,
+        weight = 700,
+        color = "#FFFFFF",
+        maxWidth,
+        align = "left",
+        baseline = "alphabetic",
+        glowColor,
+        glowBlur = 0,
+        tracking = 0,
+    } = options
+    const raw = String(value || "")
+    const actualSize = maxWidth ? fittedFont(ctx, raw, maxWidth, size, minSize, weight) : size
+    setFont(ctx, actualSize, weight)
+    const output = maxWidth ? shorten(ctx, raw, maxWidth) : raw
+
+    ctx.save()
+    ctx.fillStyle = color
+    ctx.textAlign = align
+    ctx.textBaseline = baseline
+    if (glowColor && glowBlur) {
+        ctx.shadowColor = glowColor
+        ctx.shadowBlur = glowBlur
+    }
+
+    if (!tracking) {
+        ctx.fillText(output, x, y)
+        ctx.restore()
+        return
+    }
+
+    const characters = [...output]
+    const widths = characters.map(character => ctx.measureText(character).width)
+    const total = widths.reduce((sum, width) => sum + width, 0) + tracking * Math.max(0, characters.length - 1)
+    let cursor = x
+    if (align === "center") cursor -= total / 2
+    if (align === "right") cursor -= total
+    ctx.textAlign = "left"
+    characters.forEach((character, index) => {
+        ctx.fillText(character, cursor, y)
+        cursor += widths[index] + tracking
+    })
+    ctx.restore()
+}
+
+function pill(ctx, x, y, width, label, options = {}) {
+    const height = 38
+    ctx.fillStyle = options.background || "rgba(255,255,255,0.065)"
+    roundRect(ctx, x, y, width, height, height / 2)
+    ctx.fill()
+    ctx.strokeStyle = options.border || "rgba(255,255,255,0.10)"
+    ctx.lineWidth = 1
+    ctx.stroke()
+
+    if (options.dot) {
+        ctx.fillStyle = options.dot
+        ctx.beginPath()
+        ctx.arc(x + 17, y + height / 2, 4, 0, Math.PI * 2)
+        ctx.fill()
+    }
+
+    text(ctx, label, options.dot ? x + 30 : x + width / 2, y + height / 2 + 1, {
+        size: 14,
+        minSize: 10,
+        weight: 800,
+        color: options.color || "#E9D5FF",
+        maxWidth: width - (options.dot ? 42 : 20),
+        align: options.dot ? "left" : "center",
+        baseline: "middle",
+    })
+}
+
+function progressBar(ctx, x, y, width, ratio) {
+    const height = 16
+    ctx.fillStyle = "rgba(255,255,255,0.075)"
+    roundRect(ctx, x, y, width, height, height / 2)
+    ctx.fill()
+
+    const safeRatio = clamp(ratio, 0, 1)
+    if (safeRatio > 0) {
+        const gradient = ctx.createLinearGradient(x, y, x + width, y)
+        gradient.addColorStop(0, "#7C3AED")
+        gradient.addColorStop(0.52, "#A855F7")
+        gradient.addColorStop(1, "#EC4899")
+        ctx.save()
+        ctx.fillStyle = gradient
+        ctx.shadowColor = "rgba(168,85,247,0.8)"
+        ctx.shadowBlur = 14
+        roundRect(ctx, x, y, Math.min(width, Math.max(height, width * safeRatio)), height, height / 2)
+        ctx.fill()
+        ctx.restore()
+    }
+
+    ctx.strokeStyle = "rgba(255,255,255,0.10)"
+    roundRect(ctx, x, y, width, height, height / 2)
+    ctx.stroke()
+}
+
+function background(ctx) {
+    const base = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
+    base.addColorStop(0, "#05030A")
+    base.addColorStop(0.48, "#10051B")
+    base.addColorStop(1, "#27063F")
+    ctx.fillStyle = base
     ctx.fillRect(0, 0, WIDTH, HEIGHT)
 
+    const violet = ctx.createRadialGradient(90, 40, 5, 90, 40, 330)
+    violet.addColorStop(0, "rgba(124,58,237,0.48)")
+    violet.addColorStop(1, "rgba(124,58,237,0)")
+    ctx.fillStyle = violet
+    ctx.fillRect(0, 0, 450, HEIGHT)
+
+    const pink = ctx.createRadialGradient(900, 265, 5, 900, 265, 320)
+    pink.addColorStop(0, "rgba(236,72,153,0.28)")
+    pink.addColorStop(1, "rgba(236,72,153,0)")
+    ctx.fillStyle = pink
+    ctx.fillRect(580, 0, 420, HEIGHT)
+
     ctx.save()
-    ctx.globalAlpha = 0.24
-    const glow = ctx.createRadialGradient(610, 10, 10, 610, 10, 260)
-    glow.addColorStop(0, "#D946EF")
-    glow.addColorStop(1, "rgba(217, 70, 239, 0)")
-    ctx.fillStyle = glow
-    ctx.fillRect(350, 0, 410, HEIGHT)
+    ctx.globalAlpha = 0.11
+    ctx.strokeStyle = "#C084FC"
+    for (let x = -100; x < WIDTH + 120; x += 74) {
+        ctx.beginPath()
+        ctx.moveTo(x, HEIGHT)
+        ctx.lineTo(x + 190, 0)
+        ctx.stroke()
+    }
+    ctx.restore()
+}
+
+async function avatar(ctx, user, x, y, size) {
+    const image = await remoteImage(user?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 512 }))
+    const ring = ctx.createLinearGradient(x, y, x + size, y + size)
+    ring.addColorStop(0, "#8B5CF6")
+    ring.addColorStop(0.55, "#D946EF")
+    ring.addColorStop(1, "#FB7185")
+
+    ctx.save()
+    ctx.fillStyle = ring
+    ctx.shadowColor = "rgba(168,85,247,0.9)"
+    ctx.shadowBlur = 28
+    ctx.beginPath()
+    ctx.arc(x + size / 2, y + size / 2, size / 2 + 7, 0, Math.PI * 2)
+    ctx.fill()
     ctx.restore()
 
-    ctx.fillStyle = "rgba(255,255,255,0.075)"
-    roundRect(ctx, 18, 18, WIDTH - 36, HEIGHT - 36, 26)
-    ctx.fill()
-
-    ctx.fillStyle = "#A855F7"
-    roundRect(ctx, 18, 18, 8, HEIGHT - 36, 5)
-    ctx.fill()
-
-    const avatarSize = 154
-    const avatarX = 50
-    const avatarY = 43
-    const avatarUrl = user?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 256 })
-    const avatar = await loadRemoteImage(avatarUrl)
-
-    ctx.save()
-    ctx.shadowColor = "rgba(168, 85, 247, 0.8)"
-    ctx.shadowBlur = 20
-    ctx.fillStyle = "#A855F7"
-    ctx.beginPath()
-    ctx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2 + 6, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.restore()
-
     ctx.save()
     ctx.beginPath()
-    ctx.arc(avatarX + avatarSize / 2, avatarY + avatarSize / 2, avatarSize / 2, 0, Math.PI * 2)
+    ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2)
     ctx.clip()
-    if (avatar) {
-        drawCoverImage(ctx, avatar, avatarX, avatarY, avatarSize, avatarSize)
+    if (image) {
+        cover(ctx, image, x, y, size, size)
     } else {
-        ctx.fillStyle = "#252033"
-        ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize)
-        drawText(ctx, "?", avatarX + avatarSize / 2, avatarY + 50, 58, {
-            color: "#D8B4FE",
+        const fallback = ctx.createLinearGradient(x, y, x + size, y + size)
+        fallback.addColorStop(0, "#21152F")
+        fallback.addColorStop(1, "#48145F")
+        ctx.fillStyle = fallback
+        ctx.fillRect(x, y, size, size)
+        text(ctx, "?", x + size / 2, y + size / 2, {
+            size: 78,
+            weight: 900,
+            color: "#E9D5FF",
             align: "center",
-            glowColor: "rgba(168,85,247,0.65)",
-            glowBlur: 8,
+            baseline: "middle",
         })
     }
     ctx.restore()
 
-    drawText(ctx, "CURSED LEVELING", 235, 29, 17, {
-        color: "#F5D0FE",
-        maxWidth: 285,
-        minHeight: 11,
-        spacingRatio: 0.14,
-        glowColor: "rgba(168,85,247,0.42)",
+    ctx.fillStyle = "#09050F"
+    ctx.beginPath()
+    ctx.arc(x + size - 5, y + size - 5, 28, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = ring
+    ctx.beginPath()
+    ctx.arc(x + size - 5, y + size - 5, 22, 0, Math.PI * 2)
+    ctx.fill()
+    text(ctx, "↑", x + size - 5, y + size - 5, {
+        size: 27,
+        weight: 900,
+        align: "center",
+        baseline: "middle",
+        glowColor: "rgba(255,255,255,0.8)",
         glowBlur: 5,
     })
+}
 
-    drawText(ctx, "LEVEL-UP!", 235, 63, 36, {
-        color: "#FFFFFF",
-        maxWidth: 285,
-        minHeight: 24,
-        spacingRatio: 0.14,
-        glowColor: "rgba(168,85,247,0.80)",
-        glowBlur: 10,
+function guildBadge(ctx, guildName) {
+    ctx.fillStyle = "rgba(7,3,16,0.48)"
+    roundRect(ctx, 715, 48, 226, 42, 16)
+    ctx.fill()
+    ctx.strokeStyle = "rgba(255,255,255,0.09)"
+    ctx.stroke()
+    ctx.fillStyle = "#A855F7"
+    ctx.beginPath()
+    ctx.arc(738, 69, 5, 0, Math.PI * 2)
+    ctx.fill()
+    text(ctx, guildName || "Discord Server", 752, 70, {
+        size: 14,
+        minSize: 10,
+        weight: 700,
+        color: "#DDD6FE",
+        maxWidth: 170,
+        baseline: "middle",
     })
+}
 
-    // Use the account username here. The server name appears only in the footer.
-    drawText(ctx, user?.username || displayName || "Member", 235, 121, 23, {
-        color: "#E9D5FF",
-        maxWidth: 285,
-        minHeight: 11,
-        spacingRatio: 0.13,
-    })
+function medallion(ctx, x, y, radius, level) {
+    const outer = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius)
+    outer.addColorStop(0, "#7C3AED")
+    outer.addColorStop(0.5, "#D946EF")
+    outer.addColorStop(1, "#FB7185")
+    ctx.save()
+    ctx.fillStyle = outer
+    ctx.shadowColor = "rgba(168,85,247,0.65)"
+    ctx.shadowBlur = 34
+    ctx.beginPath()
+    ctx.arc(x, y, radius, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
 
-    ctx.fillStyle = "rgba(255,255,255,0.10)"
-    roundRect(ctx, 535, 52, 174, 112, 22)
+    const inner = ctx.createRadialGradient(x - 28, y - 34, 8, x, y, radius - 8)
+    inner.addColorStop(0, "#451B67")
+    inner.addColorStop(1, "#09050F")
+    ctx.fillStyle = inner
+    ctx.beginPath()
+    ctx.arc(x, y, radius - 8, 0, Math.PI * 2)
     ctx.fill()
 
-    drawText(ctx, "LEVEL", 622, 65, 14, {
+    text(ctx, "LEVEL", x, y - 42, {
+        size: 15,
+        weight: 800,
         color: "#D8B4FE",
         align: "center",
-        maxWidth: 142,
-        minHeight: 10,
-        spacingRatio: 0.13,
+        tracking: 2,
+    })
+    text(ctx, String(level), x, y + 20, {
+        size: 80,
+        minSize: 42,
+        weight: 900,
+        maxWidth: radius * 1.45,
+        align: "center",
+        baseline: "middle",
+        glowColor: "rgba(216,180,254,0.65)",
+        glowBlur: 12,
+    })
+    text(ctx, "UNLOCKED", x, y + 67, {
+        size: 12,
+        weight: 800,
+        color: "#F0ABFC",
+        align: "center",
+        tracking: 1.5,
+    })
+}
+
+async function generateLevelUpCard({
+    user,
+    displayName,
+    guildName,
+    oldLevel,
+    newLevel,
+    xp = 0,
+    xpGain = 0,
+}) {
+    const canvas = createCanvas(WIDTH, HEIGHT)
+    const ctx = canvas.getContext("2d")
+    const announcedLevel = Math.max(0, Math.floor(Number(newLevel) || 0))
+    const suppliedXp = Math.max(0, Math.floor(Number(xp) || 0))
+    const totalXp = suppliedXp || totalXpForLevel(announcedLevel)
+    const progress = getLevelProgress(totalXp)
+    const currentLevel = Math.max(announcedLevel, progress.level)
+    const gained = Math.max(0, Math.floor(Number(xpGain) || 0))
+
+    background(ctx)
+
+    ctx.save()
+    ctx.fillStyle = "rgba(9,5,16,0.84)"
+    ctx.shadowColor = "rgba(0,0,0,0.7)"
+    ctx.shadowBlur = 38
+    roundRect(ctx, 28, 28, WIDTH - 56, HEIGHT - 56, 30)
+    ctx.fill()
+    ctx.restore()
+    ctx.strokeStyle = "rgba(216,180,254,0.16)"
+    ctx.lineWidth = 1.5
+    roundRect(ctx, 28, 28, WIDTH - 56, HEIGHT - 56, 30)
+    ctx.stroke()
+
+    const edge = ctx.createLinearGradient(28, 28, 28, HEIGHT - 28)
+    edge.addColorStop(0, "#A855F7")
+    edge.addColorStop(1, "#EC4899")
+    ctx.fillStyle = edge
+    roundRect(ctx, 28, 28, 7, HEIGHT - 56, 4)
+    ctx.fill()
+
+    await avatar(ctx, user, 66, 96, 160)
+    guildBadge(ctx, guildName)
+
+    text(ctx, "CURSED  //  LEVELING", 270, 71, {
+        size: 16,
+        weight: 800,
+        color: "#C4B5FD",
+        tracking: 1.4,
+    })
+    text(ctx, `LEVEL ${currentLevel} UNLOCKED`, 270, 127, {
+        size: 40,
+        minSize: 28,
+        weight: 900,
+        maxWidth: 430,
+        glowColor: "rgba(168,85,247,0.5)",
+        glowBlur: 12,
+    })
+    text(ctx, displayName || user?.globalName || user?.username || "Member", 270, 169, {
+        size: 25,
+        minSize: 16,
+        weight: 700,
+        color: "#E9D5FF",
+        maxWidth: 425,
     })
 
-    drawLevelTransition(ctx, oldLevel, newLevel)
-    drawServerFooter(ctx, guildName || "Discord Server")
+    pill(ctx, 270, 194, 158, `${oldLevel}  →  ${currentLevel}`, {
+        background: "rgba(168,85,247,0.12)",
+        border: "rgba(192,132,252,0.24)",
+        color: "#F5D0FE",
+    })
+    pill(ctx, 440, 194, 130, gained ? `+${gained.toLocaleString()} XP` : "MILESTONE", {
+        background: "rgba(236,72,153,0.09)",
+        border: "rgba(244,114,182,0.20)",
+        color: "#FBCFE8",
+        dot: "#EC4899",
+    })
+    pill(ctx, 582, 194, 128, `${totalXp.toLocaleString()} XP`, {
+        background: "rgba(124,58,237,0.10)",
+        border: "rgba(167,139,250,0.20)",
+        color: "#DDD6FE",
+        dot: "#8B5CF6",
+    })
 
+    text(ctx, `PROGRESS TO LEVEL ${currentLevel + 1}`, 270, 263, {
+        size: 13,
+        weight: 800,
+        color: "#C4B5FD",
+        tracking: 1,
+    })
+    text(ctx, `${progress.current.toLocaleString()} / ${progress.needed.toLocaleString()} XP`, 710, 263, {
+        size: 13,
+        weight: 700,
+        color: "#E9D5FF",
+        align: "right",
+    })
+    progressBar(ctx, 270, 278, 440, progress.ratio)
+    text(ctx, `${Math.max(0, progress.needed - progress.current).toLocaleString()} XP until the next level`, 270, 318, {
+        size: 13,
+        weight: 600,
+        color: "rgba(233,213,255,0.72)",
+    })
+
+    medallion(ctx, 835, 208, 99, currentLevel)
     return canvas.toBuffer("image/png")
 }
 
