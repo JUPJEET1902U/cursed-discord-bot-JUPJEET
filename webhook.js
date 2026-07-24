@@ -11,12 +11,15 @@ const { createDashboardSecuritySuiteRouter } = require("./api/dashboardSecurityS
 const { createDashboardPrefixRouter } = require("./api/dashboardPrefix")
 const { createDashboardTicketsRouter } = require("./api/dashboardTickets")
 const { createDashboardPremiumRouter } = require("./api/dashboardPremium")
+const { createDashboardBirthdaysRouter } = require("./api/dashboardBirthdays")
+const { startBirthdayScheduler } = require("./utils/birthdays")
 const { grantPremiumUser } = require("./utils/premium")
 
 let discordClient = null
 
 function setClient(client) {
     discordClient = client
+    startBirthdayScheduler(client)
 }
 
 const DISCORD_EPOCH_MS = 1420070400000
@@ -149,6 +152,7 @@ function startWebhookServer() {
     app.use("/api/dashboard", createDashboardSecuritySuiteRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardPrefixRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardTicketsRouter(() => discordClient))
+    app.use("/api/dashboard", createDashboardBirthdaysRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardRouter(() => discordClient))
 
     app.post("/webhook/kofi", async (req, res) => {

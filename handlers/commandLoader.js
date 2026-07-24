@@ -21,6 +21,7 @@ const {
 require("../commands/helpCatalog")
 require("../commands/prefixCommandCatalog")
 require("../commands/imageGenerationCatalog")
+require("../commands/birthdayCatalog")
 
 const log = logger.child("CommandLoader")
 
@@ -28,6 +29,7 @@ function loadCommands() {
     const commandModules = [
         { name: "moderation-prefix", module: require("../commands/moderationPrefix") },
         { name: "tickets",           module: require("../commands/ticketsPrefix")   },
+        { name: "birthdays",         module: require("../commands/birthdays")       },
         { name: "help",              module: require("../commands/help")             },
         { name: "premium",           module: require("../commands/premium")          },
         { name: "fun",               module: require("../commands/fun")              },
