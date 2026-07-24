@@ -20,29 +20,12 @@ function setClient(client) {
 
 const DISCORD_EPOCH_MS = 1420070400000
 
-function safeEqual(left, right) {
-    const a = Buffer.from(String(left || ""))
-    const b = Buffer.from(String(right || ""))
-    return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b)
-}
-
-function isAuthenticatedDashboardRequest(req) {
-    const secret = process.env.DASHBOARD_API_SECRET
-    const authorization = req.get("authorization") || ""
-    const provided = authorization.startsWith("Bearer ")
-        ? authorization.slice("Bearer ".length)
-        : ""
-    return Boolean(secret) && safeEqual(provided, secret)
-}
-
-function trustAuthenticatedDashboardRequest(req, _res, next) {
-    // These calls come from Vercel server functions, not a browser. Their
-    // deployment hostname can change after every deploy, so Origin is not a
-    // reliable security boundary. Every dashboard router still performs its
-    // own timing-safe DASHBOARD_API_SECRET check before serving data.
-    if (isAuthenticatedDashboardRequest(req)) {
-        delete req.headers.origin
-    }
+function prepareDashboardApiRequest(req, _res, next) {
+    // /api/dashboard is a private server-to-server API. Vercel deployment
+    // origins are not stable and CORS is not an authentication mechanism.
+    // Remove Origin before the individual routers run; every router still
+    // requires the timing-safe DASHBOARD_API_SECRET bearer token.
+    delete req.headers.origin
     next()
 }
 
@@ -155,7 +138,7 @@ function startWebhookServer() {
         timestamp: new Date().toISOString(),
     }))
 
-    app.use("/api/dashboard", trustAuthenticatedDashboardRequest)
+    app.use("/api/dashboard", prepareDashboardApiRequest)
     app.use("/api/dashboard", createDashboardPremiumRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardWelcomeRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardControlRouter(() => discordClient))
@@ -261,6 +244,5 @@ module.exports = {
     startWebhookServer,
     setClient,
     grantPremiumByDiscordId,
-    isAuthenticatedDashboardRequest,
-    trustAuthenticatedDashboardRequest,
+    prepareDashboardApiRequest,
 }
