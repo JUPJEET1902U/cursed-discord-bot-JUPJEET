@@ -1,6 +1,5 @@
 const express = require("express")
 const crypto = require("crypto")
-const { getServerConfig } = require("./utils/serverConfig")
 const { createDashboardRouter } = require("./api/dashboard")
 const { createDashboardControlRouter } = require("./api/dashboardControl")
 const { createDashboardWelcomeRouter } = require("./api/dashboardWelcome")
@@ -10,6 +9,8 @@ const { createDashboardSecurityRouter } = require("./api/dashboardSecurity")
 const { createDashboardSecuritySuiteRouter } = require("./api/dashboardSecuritySuite")
 const { createDashboardPrefixRouter } = require("./api/dashboardPrefix")
 const { createDashboardTicketsRouter } = require("./api/dashboardTickets")
+const { createDashboardPremiumRouter } = require("./api/dashboardPremium")
+const { grantPremiumUser } = require("./utils/premium")
 
 let discordClient = null
 
@@ -81,33 +82,28 @@ function verifyBmcSignature(rawBody, signature) {
 
 async function grantPremiumByDiscordId(discordId, platform) {
     if (!discordClient) return false
-
     if (!isValidDiscordId(discordId)) {
         console.warn(`⚠️  Rejected invalid Discord ID "${discordId}" from ${platform}`)
         return false
     }
 
-    let granted = false
-    for (const [guildId, guild] of discordClient.guilds.cache) {
-        const { config } = getServerConfig(guildId)
-        if (!config.premiumRoleId) continue
-
-        try {
-            const member = await guild.members.fetch(discordId).catch(() => null)
-            if (!member) continue
-            await member.roles.add(config.premiumRoleId)
-            granted = true
-            console.log(`✅ Premium granted to ${discordId} via ${platform} in guild: ${guild.name}`)
-
-            const user = await discordClient.users.fetch(discordId).catch(() => null)
-            if (user) {
-                await user.send(`💎 Thanks for supporting on **${platform}**! Your **Premium** role has been automatically granted in **${guild.name}**. 🎉`).catch(() => {})
-            }
-        } catch (err) {
-            console.error(`Failed to grant premium to ${discordId} in ${guild.name}:`, err.message)
+    try {
+        const result = await grantPremiumUser(discordId, {
+            client: discordClient,
+            source: `payment-webhook:${String(platform).toLowerCase().replace(/\s+/g, "-")}`,
+            note: `Verified ${platform} payment webhook`,
+        })
+        const user = await discordClient.users.fetch(discordId).catch(() => null)
+        if (user) {
+            await user.send(`💎 Thanks for supporting CURSED on **${platform}**! Premium is now active on your Discord account. 🎉`).catch(() => {})
         }
+        const roleFailures = result.roleResults.filter(item => !item.ok).length
+        console.log(`✅ Premium account activated for ${discordId} via ${platform}${roleFailures ? ` (${roleFailures} role sync warning(s))` : ""}`)
+        return true
+    } catch (err) {
+        console.error(`Failed to activate Premium for ${discordId} via ${platform}:`, err.message)
+        return false
     }
-    return granted
 }
 
 function startWebhookServer() {
@@ -133,6 +129,7 @@ function startWebhookServer() {
         timestamp: new Date().toISOString(),
     }))
 
+    app.use("/api/dashboard", createDashboardPremiumRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardWelcomeRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardControlRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardModerationRouter(() => discordClient))
@@ -160,8 +157,7 @@ function startWebhookServer() {
 
             if (discordId) {
                 const granted = await grantPremiumByDiscordId(discordId, "Ko-fi")
-                if (granted) console.log(`✅ Auto-granted premium for Discord ID ${discordId}`)
-                else console.log(`⚠️ Could not find Discord user ${discordId} in any guild`)
+                if (!granted) console.log(`⚠️ Could not activate Premium for Discord ID ${discordId}`)
             } else {
                 console.log("⚠️ Ko-fi donation received but no valid Discord ID found in message. Manual grant needed.")
             }
