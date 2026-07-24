@@ -1,11 +1,18 @@
-const { createCanvas, loadImage } = require("@napi-rs/canvas")
+const { createCanvas, loadImage, GlobalFonts } = require("@napi-rs/canvas")
 const { getLevelProgress, totalXpForLevel } = require("./levelingMath")
 
 const WIDTH = 1000
 const HEIGHT = 360
+const FONT_FAMILY = "Russo One"
+const FONT_URLS = [
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/russoone/RussoOne-Regular.ttf",
+    "https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/russoone/RussoOne-Regular.ttf",
+]
 
-// Railway containers do not guarantee any system fonts. These embedded 5x7
-// glyphs keep every critical label visible without shipping or loading fonts.
+let displayFontPromise = null
+
+// The compact vector alphabet remains as an offline fallback. Railway will use
+// Russo One whenever the bundled-at-runtime font download succeeds.
 const GLYPHS = {
     " ": ["00000","00000","00000","00000","00000","00000","00000"],
     "A": ["01110","10001","10001","11111","10001","10001","10001"],
@@ -82,6 +89,42 @@ function roundRect(ctx, x, y, width, height, radius) {
     ctx.closePath()
 }
 
+async function fetchFontBuffer(url) {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 5000)
+    try {
+        const response = await fetch(url, { signal: controller.signal })
+        if (!response.ok) return null
+        const buffer = Buffer.from(await response.arrayBuffer())
+        if (buffer.length < 10_000 || buffer.length > 1_000_000) return null
+        return buffer
+    } catch {
+        return null
+    } finally {
+        clearTimeout(timeout)
+    }
+}
+
+async function ensureDisplayFont() {
+    if (GlobalFonts.has(FONT_FAMILY)) return true
+    if (!displayFontPromise) {
+        displayFontPromise = (async () => {
+            for (const url of FONT_URLS) {
+                const buffer = await fetchFontBuffer(url)
+                if (!buffer) continue
+                try {
+                    GlobalFonts.register(buffer)
+                    if (GlobalFonts.has(FONT_FAMILY)) return true
+                } catch {
+                    // Try the next mirror, then use the vector fallback.
+                }
+            }
+            return false
+        })()
+    }
+    return displayFontPromise
+}
+
 function normalizeText(value, fallback = "MEMBER") {
     const source = String(value || fallback)
         .normalize("NFKD")
@@ -103,40 +146,20 @@ function normalizeText(value, fallback = "MEMBER") {
 
 function vectorMetrics(height, spacingRatio = 0.18, tracking = 0) {
     const cell = height / 7
-    return {
-        cell,
-        glyphWidth: cell * 5,
-        spacing: height * spacingRatio + tracking,
-    }
+    return { cell, glyphWidth: cell * 5, spacing: height * spacingRatio + tracking }
 }
 
 function measureVectorText(value, height, spacingRatio = 0.18, tracking = 0) {
-    const text = normalizeText(value, "")
-    if (!text) return 0
+    const output = normalizeText(value, "")
+    if (!output) return 0
     const metrics = vectorMetrics(height, spacingRatio, tracking)
-    return text.length * metrics.glyphWidth + Math.max(0, text.length - 1) * metrics.spacing
-}
-
-function fittedVectorHeight(value, maxWidth, preferred, minimum, spacingRatio, tracking) {
-    const measured = measureVectorText(value, preferred, spacingRatio, tracking)
-    if (!maxWidth || measured <= maxWidth) return preferred
-    return Math.max(minimum, preferred * (maxWidth / measured))
-}
-
-function shortenVectorText(value, height, maxWidth, spacingRatio, tracking) {
-    let output = normalizeText(value, "")
-    if (!maxWidth || measureVectorText(output, height, spacingRatio, tracking) <= maxWidth) return output
-    const suffix = "..."
-    while (output.length > 1 && measureVectorText(`${output}${suffix}`, height, spacingRatio, tracking) > maxWidth) {
-        output = output.slice(0, -1).trimEnd()
-    }
-    return `${output}${suffix}`
+    return output.length * metrics.glyphWidth + Math.max(0, output.length - 1) * metrics.spacing
 }
 
 function drawVectorText(ctx, value, x, y, options = {}) {
     const {
-        height: preferredHeight = 20,
-        minHeight = 8,
+        size = options.height || 20,
+        minSize = options.minHeight || 8,
         color = "#FFFFFF",
         maxWidth,
         align = "left",
@@ -147,50 +170,118 @@ function drawVectorText(ctx, value, x, y, options = {}) {
         tracking = 0,
         weight = 700,
     } = options
-
     const normalized = normalizeText(value, options.fallback || "MEMBER")
-    const height = fittedVectorHeight(normalized, maxWidth, preferredHeight, minHeight, spacingRatio, tracking)
-    const output = shortenVectorText(normalized, height, maxWidth, spacingRatio, tracking)
+    let height = size
+    const measured = measureVectorText(normalized, height, spacingRatio, tracking)
+    if (maxWidth && measured > maxWidth) height = Math.max(minSize, height * (maxWidth / measured))
+    let output = normalized
+    while (maxWidth && output.length > 1 && measureVectorText(output, height, spacingRatio, tracking) > maxWidth) {
+        output = `${output.slice(0, -4).trimEnd()}...`
+    }
     const metrics = vectorMetrics(height, spacingRatio, tracking)
     const width = measureVectorText(output, height, spacingRatio, tracking)
-
     let cursorX = x
     if (align === "center") cursorX -= width / 2
     if (align === "right") cursorX -= width
-
     let topY = y
     if (baseline === "middle") topY = y - height / 2
-    else if (baseline === "alphabetic" || baseline === "bottom") topY = y - height * 0.84
-
+    else if (["alphabetic", "bottom"].includes(baseline)) topY = y - height * 0.84
     const insetRatio = weight >= 850 ? 0.03 : weight >= 700 ? 0.075 : 0.13
     const inset = Math.max(0.35, metrics.cell * insetRatio)
     const block = Math.max(0.8, metrics.cell - inset * 2)
     const radius = Math.max(0.5, Math.min(2.4, block * 0.18))
 
     ctx.save()
-    ctx.globalAlpha = 1
     ctx.fillStyle = color
     if (glowColor && glowBlur) {
         ctx.shadowColor = glowColor
         ctx.shadowBlur = glowBlur
     }
-
     for (const character of output) {
         const glyph = GLYPHS[character] || GLYPHS["?"]
         for (let row = 0; row < 7; row += 1) {
             for (let column = 0; column < 5; column += 1) {
                 if (glyph[row][column] !== "1") continue
-                const px = cursorX + column * metrics.cell + inset
-                const py = topY + row * metrics.cell + inset
-                roundRect(ctx, px, py, block, block, radius)
+                roundRect(
+                    ctx,
+                    cursorX + column * metrics.cell + inset,
+                    topY + row * metrics.cell + inset,
+                    block,
+                    block,
+                    radius,
+                )
                 ctx.fill()
             }
         }
         cursorX += metrics.glyphWidth + metrics.spacing
     }
     ctx.restore()
+    return { text: output, width, size: height, renderer: "vector" }
+}
 
-    return { text: output, width, height }
+function setDisplayFont(ctx, size) {
+    ctx.font = `${Math.max(1, Math.floor(size))}px "${FONT_FAMILY}"`
+}
+
+function measureTrackedText(ctx, value, tracking) {
+    const characters = [...String(value || "")]
+    return characters.reduce((sum, character) => sum + ctx.measureText(character).width, 0)
+        + tracking * Math.max(0, characters.length - 1)
+}
+
+function drawFontText(ctx, value, x, y, options = {}) {
+    const {
+        size: preferredSize = options.height || 20,
+        minSize = options.minHeight || 8,
+        color = "#FFFFFF",
+        maxWidth,
+        align = "left",
+        baseline = "alphabetic",
+        glowColor,
+        glowBlur = 0,
+        tracking = 0,
+    } = options
+    const raw = String(value || options.fallback || "MEMBER")
+    let size = preferredSize
+    setDisplayFont(ctx, size)
+    const widthFor = text => tracking ? measureTrackedText(ctx, text, tracking) : ctx.measureText(text).width
+    while (maxWidth && size > minSize && widthFor(raw) > maxWidth) {
+        size -= 1
+        setDisplayFont(ctx, size)
+    }
+    let output = raw
+    while (maxWidth && output.length > 1 && widthFor(output) > maxWidth) {
+        output = `${output.slice(0, -2).trimEnd()}…`
+    }
+    const width = widthFor(output)
+    let cursor = x
+    if (align === "center") cursor -= width / 2
+    if (align === "right") cursor -= width
+
+    ctx.save()
+    ctx.fillStyle = color
+    ctx.textBaseline = baseline
+    ctx.textAlign = tracking ? "left" : align
+    if (glowColor && glowBlur) {
+        ctx.shadowColor = glowColor
+        ctx.shadowBlur = glowBlur
+    }
+    if (!tracking) {
+        ctx.fillText(output, x, y)
+    } else {
+        for (const character of output) {
+            ctx.fillText(character, cursor, y)
+            cursor += ctx.measureText(character).width + tracking
+        }
+    }
+    ctx.restore()
+    return { text: output, width, size, renderer: "font" }
+}
+
+function drawText(ctx, value, x, y, options = {}) {
+    return GlobalFonts.has(FONT_FAMILY)
+        ? drawFontText(ctx, value, x, y, options)
+        : drawVectorText(ctx, value, x, y, options)
 }
 
 function cover(ctx, image, x, y, width, height) {
@@ -200,7 +291,6 @@ function cover(ctx, image, x, y, width, height) {
     let sy = 0
     let sw = image.width
     let sh = image.height
-
     if (sourceRatio > targetRatio) {
         sw = image.height * targetRatio
         sx = (image.width - sw) / 2
@@ -214,9 +304,7 @@ function cover(ctx, image, x, y, width, height) {
 async function remoteImage(url) {
     if (!url || typeof fetch !== "function") return null
     try {
-        const parsed = new URL(url)
-        if (!["http:", "https:"].includes(parsed.protocol)) return null
-        const response = await fetch(parsed)
+        const response = await fetch(new URL(url))
         if (!response.ok) return null
         const buffer = Buffer.from(await response.arrayBuffer())
         if (buffer.length > 8 * 1024 * 1024) return null
@@ -234,23 +322,19 @@ function pill(ctx, x, y, width, label, options = {}) {
     ctx.strokeStyle = options.border || "rgba(255,255,255,0.10)"
     ctx.lineWidth = 1
     ctx.stroke()
-
     if (options.dot) {
         ctx.fillStyle = options.dot
         ctx.beginPath()
         ctx.arc(x + 17, y + height / 2, 4, 0, Math.PI * 2)
         ctx.fill()
     }
-
-    drawVectorText(ctx, label, options.dot ? x + 30 : x + width / 2, y + height / 2, {
-        height: 13,
-        minHeight: 8,
-        weight: 800,
+    drawText(ctx, label, options.dot ? x + 30 : x + width / 2, y + height / 2 + 1, {
+        size: 13,
+        minSize: 9,
         color: options.color || "#E9D5FF",
         maxWidth: width - (options.dot ? 42 : 20),
         align: options.dot ? "left" : "center",
         baseline: "middle",
-        spacingRatio: 0.11,
     })
 }
 
@@ -259,7 +343,6 @@ function progressBar(ctx, x, y, width, ratio) {
     ctx.fillStyle = "rgba(255,255,255,0.075)"
     roundRect(ctx, x, y, width, height, height / 2)
     ctx.fill()
-
     const safeRatio = clamp(ratio, 0, 1)
     if (safeRatio > 0) {
         const gradient = ctx.createLinearGradient(x, y, x + width, y)
@@ -274,7 +357,6 @@ function progressBar(ctx, x, y, width, ratio) {
         ctx.fill()
         ctx.restore()
     }
-
     ctx.strokeStyle = "rgba(255,255,255,0.10)"
     roundRect(ctx, x, y, width, height, height / 2)
     ctx.stroke()
@@ -287,19 +369,16 @@ function background(ctx) {
     base.addColorStop(1, "#27063F")
     ctx.fillStyle = base
     ctx.fillRect(0, 0, WIDTH, HEIGHT)
-
     const violet = ctx.createRadialGradient(90, 40, 5, 90, 40, 330)
     violet.addColorStop(0, "rgba(124,58,237,0.48)")
     violet.addColorStop(1, "rgba(124,58,237,0)")
     ctx.fillStyle = violet
     ctx.fillRect(0, 0, 450, HEIGHT)
-
     const pink = ctx.createRadialGradient(900, 265, 5, 900, 265, 320)
     pink.addColorStop(0, "rgba(236,72,153,0.28)")
     pink.addColorStop(1, "rgba(236,72,153,0)")
     ctx.fillStyle = pink
     ctx.fillRect(580, 0, 420, HEIGHT)
-
     ctx.save()
     ctx.globalAlpha = 0.11
     ctx.strokeStyle = "#C084FC"
@@ -339,7 +418,6 @@ async function avatar(ctx, user, x, y, size) {
     ring.addColorStop(0, "#8B5CF6")
     ring.addColorStop(0.55, "#D946EF")
     ring.addColorStop(1, "#FB7185")
-
     ctx.save()
     ctx.fillStyle = ring
     ctx.shadowColor = "rgba(168,85,247,0.9)"
@@ -348,30 +426,26 @@ async function avatar(ctx, user, x, y, size) {
     ctx.arc(x + size / 2, y + size / 2, size / 2 + 7, 0, Math.PI * 2)
     ctx.fill()
     ctx.restore()
-
     ctx.save()
     ctx.beginPath()
     ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2)
     ctx.clip()
-    if (image) {
-        cover(ctx, image, x, y, size, size)
-    } else {
+    if (image) cover(ctx, image, x, y, size, size)
+    else {
         const fallback = ctx.createLinearGradient(x, y, x + size, y + size)
         fallback.addColorStop(0, "#21152F")
         fallback.addColorStop(1, "#48145F")
         ctx.fillStyle = fallback
         ctx.fillRect(x, y, size, size)
-        drawVectorText(ctx, "?", x + size / 2, y + size / 2, {
-            height: 72,
-            minHeight: 42,
-            weight: 900,
+        drawText(ctx, "?", x + size / 2, y + size / 2, {
+            size: 72,
+            minSize: 42,
             color: "#E9D5FF",
             align: "center",
             baseline: "middle",
         })
     }
     ctx.restore()
-
     ctx.fillStyle = "#09050F"
     ctx.beginPath()
     ctx.arc(x + size - 5, y + size - 5, 28, 0, Math.PI * 2)
@@ -393,14 +467,12 @@ function guildBadge(ctx, guildName) {
     ctx.beginPath()
     ctx.arc(738, 69, 5, 0, Math.PI * 2)
     ctx.fill()
-    drawVectorText(ctx, guildName || "Discord Server", 752, 69, {
-        height: 12,
-        minHeight: 7,
-        weight: 700,
+    drawText(ctx, normalizeText(guildName || "Discord Server", "DISCORD SERVER"), 752, 69, {
+        size: 12,
+        minSize: 8,
         color: "#DDD6FE",
         maxWidth: 170,
         baseline: "middle",
-        spacingRatio: 0.11,
     })
 }
 
@@ -417,7 +489,6 @@ function medallion(ctx, x, y, radius, level) {
     ctx.arc(x, y, radius, 0, Math.PI * 2)
     ctx.fill()
     ctx.restore()
-
     const inner = ctx.createRadialGradient(x - 28, y - 34, 8, x, y, radius - 8)
     inner.addColorStop(0, "#451B67")
     inner.addColorStop(1, "#09050F")
@@ -425,37 +496,30 @@ function medallion(ctx, x, y, radius, level) {
     ctx.beginPath()
     ctx.arc(x, y, radius - 8, 0, Math.PI * 2)
     ctx.fill()
-
-    drawVectorText(ctx, "LEVEL", x, y - 43, {
-        height: 15,
-        minHeight: 10,
-        weight: 800,
+    drawText(ctx, "LEVEL", x, y - 43, {
+        size: 15,
+        minSize: 10,
         color: "#D8B4FE",
         align: "center",
         baseline: "middle",
         tracking: 1,
-        spacingRatio: 0.11,
     })
-    drawVectorText(ctx, String(level), x, y + 13, {
-        height: 76,
-        minHeight: 40,
-        weight: 900,
+    drawText(ctx, String(level), x, y + 13, {
+        size: 76,
+        minSize: 40,
         maxWidth: radius * 1.35,
         align: "center",
         baseline: "middle",
         glowColor: "rgba(216,180,254,0.75)",
         glowBlur: 12,
-        spacingRatio: 0.08,
     })
-    drawVectorText(ctx, "UNLOCKED", x, y + 68, {
-        height: 11,
-        minHeight: 7,
-        weight: 800,
+    drawText(ctx, "UNLOCKED", x, y + 68, {
+        size: 11,
+        minSize: 8,
         color: "#F0ABFC",
         align: "center",
         baseline: "middle",
         tracking: 0.5,
-        spacingRatio: 0.09,
     })
 }
 
@@ -465,15 +529,8 @@ function safeMemberName(displayName, user) {
     return normalizeText(user?.username || "MEMBER", "MEMBER")
 }
 
-async function generateLevelUpCard({
-    user,
-    displayName,
-    guildName,
-    oldLevel,
-    newLevel,
-    xp = 0,
-    xpGain = 0,
-}) {
+async function generateLevelUpCard({ user, displayName, guildName, oldLevel, newLevel, xp = 0, xpGain = 0 }) {
+    await ensureDisplayFont()
     const canvas = createCanvas(WIDTH, HEIGHT)
     const ctx = canvas.getContext("2d")
     const announcedLevel = Math.max(0, Math.floor(Number(newLevel) || 0))
@@ -484,7 +541,6 @@ async function generateLevelUpCard({
     const gained = Math.max(0, Math.floor(Number(xpGain) || 0))
 
     background(ctx)
-
     ctx.save()
     ctx.fillStyle = "rgba(9,5,16,0.84)"
     ctx.shadowColor = "rgba(0,0,0,0.7)"
@@ -496,7 +552,6 @@ async function generateLevelUpCard({
     ctx.lineWidth = 1.5
     roundRect(ctx, 28, 28, WIDTH - 56, HEIGHT - 56, 30)
     ctx.stroke()
-
     const edge = ctx.createLinearGradient(28, 28, 28, HEIGHT - 28)
     edge.addColorStop(0, "#A855F7")
     edge.addColorStop(1, "#EC4899")
@@ -506,34 +561,26 @@ async function generateLevelUpCard({
 
     await avatar(ctx, user, 66, 96, 160)
     guildBadge(ctx, guildName)
-
-    drawVectorText(ctx, "CURSED // LEVELING", 270, 71, {
-        height: 15,
-        minHeight: 10,
-        weight: 800,
+    drawText(ctx, "CURSED  //  LEVELING", 270, 71, {
+        size: 16,
+        minSize: 11,
         color: "#C4B5FD",
-        tracking: 0.8,
-        spacingRatio: 0.11,
+        tracking: 1.2,
     })
-    drawVectorText(ctx, `LEVEL ${currentLevel} UNLOCKED`, 270, 128, {
-        height: 38,
-        minHeight: 24,
-        weight: 900,
+    drawText(ctx, `LEVEL ${currentLevel} UNLOCKED`, 270, 128, {
+        size: 39,
+        minSize: 27,
         maxWidth: 430,
         glowColor: "rgba(168,85,247,0.5)",
         glowBlur: 12,
-        spacingRatio: 0.11,
     })
-    drawVectorText(ctx, safeMemberName(displayName, user), 270, 171, {
-        height: 22,
-        minHeight: 13,
-        weight: 750,
+    drawText(ctx, safeMemberName(displayName, user), 270, 171, {
+        size: 23,
+        minSize: 15,
         color: "#E9D5FF",
         maxWidth: 425,
-        spacingRatio: 0.12,
     })
-
-    pill(ctx, 270, 194, 158, `${oldLevel} > ${currentLevel}`, {
+    pill(ctx, 270, 194, 158, `${oldLevel}  >  ${currentLevel}`, {
         background: "rgba(168,85,247,0.12)",
         border: "rgba(192,132,252,0.24)",
         color: "#F5D0FE",
@@ -550,32 +597,24 @@ async function generateLevelUpCard({
         color: "#DDD6FE",
         dot: "#8B5CF6",
     })
-
-    drawVectorText(ctx, `PROGRESS TO LEVEL ${currentLevel + 1}`, 270, 263, {
-        height: 12,
-        minHeight: 8,
-        weight: 800,
+    drawText(ctx, `PROGRESS TO LEVEL ${currentLevel + 1}`, 270, 263, {
+        size: 12,
+        minSize: 9,
         color: "#C4B5FD",
-        tracking: 0.45,
-        spacingRatio: 0.10,
+        tracking: 0.6,
     })
-    drawVectorText(ctx, `${progress.current.toLocaleString()} / ${progress.needed.toLocaleString()} XP`, 710, 263, {
-        height: 12,
-        minHeight: 8,
-        weight: 700,
+    drawText(ctx, `${progress.current.toLocaleString()} / ${progress.needed.toLocaleString()} XP`, 710, 263, {
+        size: 12,
+        minSize: 9,
         color: "#E9D5FF",
         align: "right",
-        spacingRatio: 0.10,
     })
     progressBar(ctx, 270, 278, 440, progress.ratio)
-    drawVectorText(ctx, `${Math.max(0, progress.needed - progress.current).toLocaleString()} XP UNTIL NEXT LEVEL`, 270, 318, {
-        height: 11,
-        minHeight: 7,
-        weight: 650,
+    drawText(ctx, `${Math.max(0, progress.needed - progress.current).toLocaleString()} XP UNTIL NEXT LEVEL`, 270, 318, {
+        size: 11,
+        minSize: 8,
         color: "rgba(233,213,255,0.72)",
-        spacingRatio: 0.10,
     })
-
     medallion(ctx, 835, 208, 99, currentLevel)
     return canvas.toBuffer("image/png")
 }
@@ -584,6 +623,9 @@ module.exports = {
     generateLevelUpCard,
     WIDTH,
     HEIGHT,
+    FONT_FAMILY,
+    ensureDisplayFont,
+    drawText,
     drawVectorText,
     normalizeText,
 }
