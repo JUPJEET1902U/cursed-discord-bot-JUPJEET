@@ -1,6 +1,10 @@
 const { getServerConfig, saveConfig } = require("../utils/serverConfig")
 const {
     isBotOwnerId,
+    isPremiumUser,
+    isGuildPremium,
+    isServerPremium,
+    getServerPremiumAccount,
     getUserPlan,
     getPlanLimits,
     getPaymentSettings,
@@ -8,6 +12,9 @@ const {
     grantPremiumUser,
     revokePremiumUser,
     listPremiumUsers,
+    grantServerPremium,
+    revokeServerPremium,
+    listServerPremiumAccounts,
 } = require("../utils/premium")
 
 const PLATFORMS = {
@@ -41,6 +48,17 @@ function premiumSummary(userId) {
     }
 }
 
+function serverPremiumSummary(guild) {
+    const direct = isServerPremium(guild.id) ? getServerPremiumAccount(guild.id) : null
+    if (direct) {
+        return `💎 **Server plan: CURSED Server Premium**\nSource: direct owner grant${direct.expiresAt ? `\nExpires: **${direct.expiresAt.slice(0, 10)}**` : "\nExpiry: **None**"}`
+    }
+    if (isPremiumUser(guild.ownerId)) {
+        return "💎 **Server plan: CURSED Server Premium**\nSource: the Discord server owner has CURSED Premium."
+    }
+    return "🆓 **Server plan: CURSED Free**\nThis server has no direct server grant and its Discord owner does not have CURSED Premium."
+}
+
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
     const userId = message.author.id
@@ -63,6 +81,61 @@ async function handle(message) {
             content += "Premium payments are not open yet."
         }
         await reply(message, content)
+        return true
+    }
+
+    if (msgLower === "!serverpremium" || msgLower === "!serverpremiumstatus") {
+        await reply(message, serverPremiumSummary(message.guild))
+        return true
+    }
+
+    if (msgLower.startsWith("!giveserverpremium")) {
+        if (!ownerOnly(message)) {
+            await reply(message, "🔒 Only the **CURSED bot owner** can grant Server Premium.")
+            return true
+        }
+        const pieces = message.content.trim().split(/\s+/)
+        const days = pieces[1] ? Number(pieces[1]) : null
+        if (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+            await reply(message, "❌ Days must be a whole number from 1 to 3650, or omit it for no expiry.")
+            return true
+        }
+        await grantServerPremium(guildId, {
+            grantedBy: userId,
+            source: "bot-owner-command",
+            note: `Granted in ${message.guild.name}`,
+            expiresAt: days ? new Date(Date.now() + days * 86_400_000) : null,
+        })
+        await reply(message, `💎 **${message.guild.name}** now has CURSED Server Premium${days ? ` for **${days} days**` : " with no expiry"}.`)
+        return true
+    }
+
+    if (msgLower === "!revokeserverpremium") {
+        if (!ownerOnly(message)) {
+            await reply(message, "🔒 Only the **CURSED bot owner** can revoke Server Premium.")
+            return true
+        }
+        await revokeServerPremium(guildId)
+        const stillPremium = isGuildPremium(message.guild)
+        await reply(message, stillPremium
+            ? "✅ Direct Server Premium was revoked, but this server remains Premium because its Discord owner has CURSED Premium."
+            : "✅ CURSED Server Premium was revoked from this server.")
+        return true
+    }
+
+    if (msgLower === "!premiumservers") {
+        if (!ownerOnly(message)) {
+            await reply(message, "🔒 Only the **CURSED bot owner** can view direct Server Premium grants.")
+            return true
+        }
+        const accounts = listServerPremiumAccounts()
+        const lines = accounts.slice(0, 100).map((entry, index) => {
+            const guild = message.client.guilds.cache.get(entry.guildId)
+            return `${index + 1}. **${guild?.name || "Unknown server"}** \`${entry.guildId}\`${entry.expiresAt ? ` — expires ${entry.expiresAt.slice(0, 10)}` : " — no expiry"}`
+        })
+        const content = `💎 **Direct CURSED Server Premium grants: ${accounts.length}**\n\n${lines.join("\n") || "No direct server grants yet."}`
+        const sent = await message.author.send({ content: content.slice(0, 1900), allowedMentions: SAFE_MENTIONS }).then(() => true).catch(() => false)
+        await reply(message, sent ? "✅ I sent the Server Premium list to your DMs." : "❌ I couldn't DM you. Enable direct messages and try again.")
         return true
     }
 
