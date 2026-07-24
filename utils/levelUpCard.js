@@ -1,9 +1,9 @@
 const { createCanvas, loadImage } = require("@napi-rs/canvas")
-const { getLevelProgress } = require("./levelingMath")
+const { getLevelProgress, totalXpForLevel } = require("./levelingMath")
 
 const WIDTH = 1000
 const HEIGHT = 360
-const FONT_STACK = '"DejaVu Sans", "Noto Sans", sans-serif'
+const FONT = '"DejaVu Sans", "Noto Sans", sans-serif'
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, Number(value) || 0))
@@ -24,7 +24,7 @@ function roundRect(ctx, x, y, width, height, radius) {
     ctx.closePath()
 }
 
-function drawCoverImage(ctx, image, x, y, width, height) {
+function cover(ctx, image, x, y, width, height) {
     const sourceRatio = image.width / image.height
     const targetRatio = width / height
     let sx = 0
@@ -42,50 +42,48 @@ function drawCoverImage(ctx, image, x, y, width, height) {
     ctx.drawImage(image, sx, sy, sw, sh, x, y, width, height)
 }
 
-async function loadRemoteImage(url) {
+async function remoteImage(url) {
     if (!url || typeof fetch !== "function") return null
     try {
         const parsed = new URL(url)
-        if (!["https:", "http:"].includes(parsed.protocol)) return null
-        const response = await fetch(parsed, { signal: AbortSignal.timeout?.(5000) })
+        if (!["http:", "https:"].includes(parsed.protocol)) return null
+        const response = await fetch(parsed)
         if (!response.ok) return null
-        const bytes = Buffer.from(await response.arrayBuffer())
-        if (bytes.length > 8 * 1024 * 1024) return null
-        return await loadImage(bytes)
+        const buffer = Buffer.from(await response.arrayBuffer())
+        if (buffer.length > 8 * 1024 * 1024) return null
+        return await loadImage(buffer)
     } catch {
         return null
     }
 }
 
-function setFont(ctx, weight, size) {
-    ctx.font = `${weight} ${Math.max(1, Math.floor(size))}px ${FONT_STACK}`
+function setFont(ctx, size, weight = 700) {
+    ctx.font = `${weight} ${Math.max(1, Math.floor(size))}px ${FONT}`
 }
 
-function fitText(ctx, value, maxWidth, preferredSize, minSize = 12, weight = 700) {
+function fittedFont(ctx, value, maxWidth, preferred, minimum = 12, weight = 700) {
     const text = String(value || "")
-    let size = preferredSize
-    setFont(ctx, weight, size)
-    while (size > minSize && ctx.measureText(text).width > maxWidth) {
+    let size = preferred
+    setFont(ctx, size, weight)
+    while (size > minimum && ctx.measureText(text).width > maxWidth) {
         size -= 1
-        setFont(ctx, weight, size)
+        setFont(ctx, size, weight)
     }
     return size
 }
 
-function ellipsize(ctx, value, maxWidth) {
+function shorten(ctx, value, maxWidth) {
     const text = String(value || "")
     if (ctx.measureText(text).width <= maxWidth) return text
-    let output = text
-    while (output.length > 1 && ctx.measureText(`${output}…`).width > maxWidth) {
-        output = output.slice(0, -1)
-    }
-    return `${output.trim()}…`
+    let result = text
+    while (result.length > 1 && ctx.measureText(`${result}…`).width > maxWidth) result = result.slice(0, -1)
+    return `${result.trim()}…`
 }
 
-function drawText(ctx, value, x, y, options = {}) {
+function text(ctx, value, x, y, options = {}) {
     const {
-        size = 24,
-        minSize = 12,
+        size = 20,
+        minSize = 11,
         weight = 700,
         color = "#FFFFFF",
         maxWidth,
@@ -93,143 +91,138 @@ function drawText(ctx, value, x, y, options = {}) {
         baseline = "alphabetic",
         glowColor,
         glowBlur = 0,
-        letterSpacing = 0,
+        tracking = 0,
     } = options
-    const text = String(value || "")
-    const actualSize = maxWidth ? fitText(ctx, text, maxWidth, size, minSize, weight) : size
-    setFont(ctx, weight, actualSize)
+    const raw = String(value || "")
+    const actualSize = maxWidth ? fittedFont(ctx, raw, maxWidth, size, minSize, weight) : size
+    setFont(ctx, actualSize, weight)
+    const output = maxWidth ? shorten(ctx, raw, maxWidth) : raw
+
+    ctx.save()
+    ctx.fillStyle = color
     ctx.textAlign = align
     ctx.textBaseline = baseline
-    ctx.fillStyle = color
-    ctx.save()
-    if (glowColor && glowBlur > 0) {
+    if (glowColor && glowBlur) {
         ctx.shadowColor = glowColor
         ctx.shadowBlur = glowBlur
     }
 
-    if (!letterSpacing) {
-        ctx.fillText(maxWidth ? ellipsize(ctx, text, maxWidth) : text, x, y)
+    if (!tracking) {
+        ctx.fillText(output, x, y)
         ctx.restore()
-        return actualSize
+        return
     }
 
-    const chars = [...text]
-    const widths = chars.map(char => ctx.measureText(char).width)
-    const totalWidth = widths.reduce((sum, width) => sum + width, 0) + letterSpacing * Math.max(0, chars.length - 1)
+    const characters = [...output]
+    const widths = characters.map(character => ctx.measureText(character).width)
+    const total = widths.reduce((sum, width) => sum + width, 0) + tracking * Math.max(0, characters.length - 1)
     let cursor = x
-    if (align === "center") cursor -= totalWidth / 2
-    if (align === "right") cursor -= totalWidth
+    if (align === "center") cursor -= total / 2
+    if (align === "right") cursor -= total
     ctx.textAlign = "left"
-    chars.forEach((char, index) => {
-        ctx.fillText(char, cursor, y)
-        cursor += widths[index] + letterSpacing
+    characters.forEach((character, index) => {
+        ctx.fillText(character, cursor, y)
+        cursor += widths[index] + tracking
     })
     ctx.restore()
-    return actualSize
 }
 
-function drawPill(ctx, x, y, width, height, label, options = {}) {
-    const {
-        background = "rgba(255,255,255,0.07)",
-        border = "rgba(255,255,255,0.10)",
-        color = "#E9D5FF",
-        accent = null,
-    } = options
-    ctx.fillStyle = background
+function pill(ctx, x, y, width, label, options = {}) {
+    const height = 38
+    ctx.fillStyle = options.background || "rgba(255,255,255,0.065)"
     roundRect(ctx, x, y, width, height, height / 2)
     ctx.fill()
-    ctx.strokeStyle = border
+    ctx.strokeStyle = options.border || "rgba(255,255,255,0.10)"
     ctx.lineWidth = 1
     ctx.stroke()
-    if (accent) {
-        ctx.fillStyle = accent
+
+    if (options.dot) {
+        ctx.fillStyle = options.dot
         ctx.beginPath()
         ctx.arc(x + 17, y + height / 2, 4, 0, Math.PI * 2)
         ctx.fill()
     }
-    drawText(ctx, label, x + (accent ? 30 : width / 2), y + height / 2 + 1, {
+
+    text(ctx, label, options.dot ? x + 30 : x + width / 2, y + height / 2 + 1, {
         size: 14,
         minSize: 10,
-        weight: 700,
-        color,
-        maxWidth: width - (accent ? 42 : 20),
-        align: accent ? "left" : "center",
+        weight: 800,
+        color: options.color || "#E9D5FF",
+        maxWidth: width - (options.dot ? 42 : 20),
+        align: options.dot ? "left" : "center",
         baseline: "middle",
     })
 }
 
-function drawProgressBar(ctx, x, y, width, height, ratio) {
-    const safeRatio = clamp(ratio, 0, 1)
-    ctx.fillStyle = "rgba(255,255,255,0.08)"
+function progressBar(ctx, x, y, width, ratio) {
+    const height = 16
+    ctx.fillStyle = "rgba(255,255,255,0.075)"
     roundRect(ctx, x, y, width, height, height / 2)
     ctx.fill()
 
+    const safeRatio = clamp(ratio, 0, 1)
     if (safeRatio > 0) {
-        const fillWidth = Math.max(height, width * safeRatio)
         const gradient = ctx.createLinearGradient(x, y, x + width, y)
         gradient.addColorStop(0, "#7C3AED")
-        gradient.addColorStop(0.5, "#A855F7")
+        gradient.addColorStop(0.52, "#A855F7")
         gradient.addColorStop(1, "#EC4899")
         ctx.save()
-        ctx.shadowColor = "rgba(168,85,247,0.85)"
-        ctx.shadowBlur = 14
         ctx.fillStyle = gradient
-        roundRect(ctx, x, y, Math.min(width, fillWidth), height, height / 2)
+        ctx.shadowColor = "rgba(168,85,247,0.8)"
+        ctx.shadowBlur = 14
+        roundRect(ctx, x, y, Math.min(width, Math.max(height, width * safeRatio)), height, height / 2)
         ctx.fill()
         ctx.restore()
     }
 
     ctx.strokeStyle = "rgba(255,255,255,0.10)"
-    ctx.lineWidth = 1
     roundRect(ctx, x, y, width, height, height / 2)
     ctx.stroke()
 }
 
-function drawBackground(ctx) {
-    const background = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
-    background.addColorStop(0, "#05030B")
-    background.addColorStop(0.48, "#10051C")
-    background.addColorStop(1, "#26063D")
-    ctx.fillStyle = background
+function background(ctx) {
+    const base = ctx.createLinearGradient(0, 0, WIDTH, HEIGHT)
+    base.addColorStop(0, "#05030A")
+    base.addColorStop(0.48, "#10051B")
+    base.addColorStop(1, "#27063F")
+    ctx.fillStyle = base
     ctx.fillRect(0, 0, WIDTH, HEIGHT)
 
-    const leftGlow = ctx.createRadialGradient(85, 55, 10, 85, 55, 310)
-    leftGlow.addColorStop(0, "rgba(124,58,237,0.46)")
-    leftGlow.addColorStop(1, "rgba(124,58,237,0)")
-    ctx.fillStyle = leftGlow
-    ctx.fillRect(0, 0, 430, HEIGHT)
+    const violet = ctx.createRadialGradient(90, 40, 5, 90, 40, 330)
+    violet.addColorStop(0, "rgba(124,58,237,0.48)")
+    violet.addColorStop(1, "rgba(124,58,237,0)")
+    ctx.fillStyle = violet
+    ctx.fillRect(0, 0, 450, HEIGHT)
 
-    const rightGlow = ctx.createRadialGradient(900, 250, 10, 900, 250, 320)
-    rightGlow.addColorStop(0, "rgba(236,72,153,0.28)")
-    rightGlow.addColorStop(1, "rgba(236,72,153,0)")
-    ctx.fillStyle = rightGlow
-    ctx.fillRect(590, 0, 410, HEIGHT)
+    const pink = ctx.createRadialGradient(900, 265, 5, 900, 265, 320)
+    pink.addColorStop(0, "rgba(236,72,153,0.28)")
+    pink.addColorStop(1, "rgba(236,72,153,0)")
+    ctx.fillStyle = pink
+    ctx.fillRect(580, 0, 420, HEIGHT)
 
     ctx.save()
-    ctx.globalAlpha = 0.12
+    ctx.globalAlpha = 0.11
     ctx.strokeStyle = "#C084FC"
-    ctx.lineWidth = 1
-    for (let x = -60; x < WIDTH + 100; x += 72) {
+    for (let x = -100; x < WIDTH + 120; x += 74) {
         ctx.beginPath()
         ctx.moveTo(x, HEIGHT)
-        ctx.lineTo(x + 180, 0)
+        ctx.lineTo(x + 190, 0)
         ctx.stroke()
     }
     ctx.restore()
 }
 
-async function drawAvatar(ctx, user, x, y, size) {
-    const avatarUrl = user?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 512 })
-    const avatar = await loadRemoteImage(avatarUrl)
-
-    ctx.save()
-    ctx.shadowColor = "rgba(168,85,247,0.85)"
-    ctx.shadowBlur = 28
+async function avatar(ctx, user, x, y, size) {
+    const image = await remoteImage(user?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 512 }))
     const ring = ctx.createLinearGradient(x, y, x + size, y + size)
     ring.addColorStop(0, "#8B5CF6")
     ring.addColorStop(0.55, "#D946EF")
-    ring.addColorStop(1, "#F472B6")
+    ring.addColorStop(1, "#FB7185")
+
+    ctx.save()
     ctx.fillStyle = ring
+    ctx.shadowColor = "rgba(168,85,247,0.9)"
+    ctx.shadowBlur = 28
     ctx.beginPath()
     ctx.arc(x + size / 2, y + size / 2, size / 2 + 7, 0, Math.PI * 2)
     ctx.fill()
@@ -239,17 +232,17 @@ async function drawAvatar(ctx, user, x, y, size) {
     ctx.beginPath()
     ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2)
     ctx.clip()
-    if (avatar) {
-        drawCoverImage(ctx, avatar, x, y, size, size)
+    if (image) {
+        cover(ctx, image, x, y, size, size)
     } else {
         const fallback = ctx.createLinearGradient(x, y, x + size, y + size)
-        fallback.addColorStop(0, "#1F1630")
-        fallback.addColorStop(1, "#3B1558")
+        fallback.addColorStop(0, "#21152F")
+        fallback.addColorStop(1, "#48145F")
         ctx.fillStyle = fallback
         ctx.fillRect(x, y, size, size)
-        drawText(ctx, "?", x + size / 2, y + size / 2 + 2, {
+        text(ctx, "?", x + size / 2, y + size / 2, {
             size: 78,
-            weight: 800,
+            weight: 900,
             color: "#E9D5FF",
             align: "center",
             baseline: "middle",
@@ -257,21 +250,17 @@ async function drawAvatar(ctx, user, x, y, size) {
     }
     ctx.restore()
 
-    ctx.fillStyle = "#0B0612"
+    ctx.fillStyle = "#09050F"
     ctx.beginPath()
-    ctx.arc(x + size - 4, y + size - 4, 27, 0, Math.PI * 2)
+    ctx.arc(x + size - 5, y + size - 5, 28, 0, Math.PI * 2)
     ctx.fill()
-    const badge = ctx.createLinearGradient(x + size - 24, y + size - 24, x + size + 20, y + size + 20)
-    badge.addColorStop(0, "#A855F7")
-    badge.addColorStop(1, "#EC4899")
-    ctx.fillStyle = badge
+    ctx.fillStyle = ring
     ctx.beginPath()
-    ctx.arc(x + size - 4, y + size - 4, 22, 0, Math.PI * 2)
+    ctx.arc(x + size - 5, y + size - 5, 22, 0, Math.PI * 2)
     ctx.fill()
-    drawText(ctx, "↑", x + size - 4, y + size - 3, {
-        size: 26,
+    text(ctx, "↑", x + size - 5, y + size - 5, {
+        size: 27,
         weight: 900,
-        color: "#FFFFFF",
         align: "center",
         baseline: "middle",
         glowColor: "rgba(255,255,255,0.8)",
@@ -279,89 +268,71 @@ async function drawAvatar(ctx, user, x, y, size) {
     })
 }
 
-async function drawGuildBadge(ctx, guildName, guildIconUrl) {
-    const icon = await loadRemoteImage(guildIconUrl)
-    const x = 716
-    const y = 48
-    const width = 225
-    const height = 42
-
+function guildBadge(ctx, guildName) {
     ctx.fillStyle = "rgba(7,3,16,0.48)"
-    roundRect(ctx, x, y, width, height, 16)
+    roundRect(ctx, 715, 48, 226, 42, 16)
     ctx.fill()
     ctx.strokeStyle = "rgba(255,255,255,0.09)"
     ctx.stroke()
-
-    if (icon) {
-        ctx.save()
-        ctx.beginPath()
-        ctx.arc(x + 22, y + 21, 14, 0, Math.PI * 2)
-        ctx.clip()
-        drawCoverImage(ctx, icon, x + 8, y + 7, 28, 28)
-        ctx.restore()
-    } else {
-        ctx.fillStyle = "rgba(168,85,247,0.28)"
-        ctx.beginPath()
-        ctx.arc(x + 22, y + 21, 14, 0, Math.PI * 2)
-        ctx.fill()
-    }
-
-    drawText(ctx, guildName || "Discord Server", x + 45, y + 22, {
+    ctx.fillStyle = "#A855F7"
+    ctx.beginPath()
+    ctx.arc(738, 69, 5, 0, Math.PI * 2)
+    ctx.fill()
+    text(ctx, guildName || "Discord Server", 752, 70, {
         size: 14,
         minSize: 10,
         weight: 700,
         color: "#DDD6FE",
-        maxWidth: width - 58,
+        maxWidth: 170,
         baseline: "middle",
     })
 }
 
-function drawLevelMedallion(ctx, x, y, radius, level) {
-    ctx.save()
-    ctx.shadowColor = "rgba(168,85,247,0.65)"
-    ctx.shadowBlur = 32
+function medallion(ctx, x, y, radius, level) {
     const outer = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius)
     outer.addColorStop(0, "#7C3AED")
-    outer.addColorStop(0.48, "#D946EF")
+    outer.addColorStop(0.5, "#D946EF")
     outer.addColorStop(1, "#FB7185")
+    ctx.save()
     ctx.fillStyle = outer
+    ctx.shadowColor = "rgba(168,85,247,0.65)"
+    ctx.shadowBlur = 34
     ctx.beginPath()
     ctx.arc(x, y, radius, 0, Math.PI * 2)
     ctx.fill()
     ctx.restore()
 
-    const inner = ctx.createRadialGradient(x - 24, y - 28, 10, x, y, radius - 8)
-    inner.addColorStop(0, "#3B185B")
-    inner.addColorStop(1, "#0B0612")
+    const inner = ctx.createRadialGradient(x - 28, y - 34, 8, x, y, radius - 8)
+    inner.addColorStop(0, "#451B67")
+    inner.addColorStop(1, "#09050F")
     ctx.fillStyle = inner
     ctx.beginPath()
     ctx.arc(x, y, radius - 8, 0, Math.PI * 2)
     ctx.fill()
 
-    drawText(ctx, "LEVEL", x, y - 39, {
+    text(ctx, "LEVEL", x, y - 42, {
         size: 15,
         weight: 800,
         color: "#D8B4FE",
         align: "center",
-        letterSpacing: 2,
+        tracking: 2,
     })
-    drawText(ctx, String(level), x, y + 25, {
+    text(ctx, String(level), x, y + 20, {
         size: 80,
         minSize: 42,
         weight: 900,
-        color: "#FFFFFF",
         maxWidth: radius * 1.45,
         align: "center",
         baseline: "middle",
         glowColor: "rgba(216,180,254,0.65)",
         glowBlur: 12,
     })
-    drawText(ctx, "UNLOCKED", x, y + 66, {
+    text(ctx, "UNLOCKED", x, y + 67, {
         size: 12,
         weight: 800,
         color: "#F0ABFC",
         align: "center",
-        letterSpacing: 1.5,
+        tracking: 1.5,
     })
 }
 
@@ -369,7 +340,6 @@ async function generateLevelUpCard({
     user,
     displayName,
     guildName,
-    guildIconUrl,
     oldLevel,
     newLevel,
     xp = 0,
@@ -377,19 +347,22 @@ async function generateLevelUpCard({
 }) {
     const canvas = createCanvas(WIDTH, HEIGHT)
     const ctx = canvas.getContext("2d")
-    const progress = getLevelProgress(xp)
-    const currentLevel = Math.max(Number(newLevel) || progress.level, progress.level)
+    const announcedLevel = Math.max(0, Math.floor(Number(newLevel) || 0))
+    const suppliedXp = Math.max(0, Math.floor(Number(xp) || 0))
+    const totalXp = suppliedXp || totalXpForLevel(announcedLevel)
+    const progress = getLevelProgress(totalXp)
+    const currentLevel = Math.max(announcedLevel, progress.level)
+    const gained = Math.max(0, Math.floor(Number(xpGain) || 0))
 
-    drawBackground(ctx)
+    background(ctx)
 
     ctx.save()
-    ctx.shadowColor = "rgba(0,0,0,0.65)"
-    ctx.shadowBlur = 36
-    ctx.fillStyle = "rgba(10,6,18,0.82)"
+    ctx.fillStyle = "rgba(9,5,16,0.84)"
+    ctx.shadowColor = "rgba(0,0,0,0.7)"
+    ctx.shadowBlur = 38
     roundRect(ctx, 28, 28, WIDTH - 56, HEIGHT - 56, 30)
     ctx.fill()
     ctx.restore()
-
     ctx.strokeStyle = "rgba(216,180,254,0.16)"
     ctx.lineWidth = 1.5
     roundRect(ctx, 28, 28, WIDTH - 56, HEIGHT - 56, 30)
@@ -402,27 +375,24 @@ async function generateLevelUpCard({
     roundRect(ctx, 28, 28, 7, HEIGHT - 56, 4)
     ctx.fill()
 
-    await drawAvatar(ctx, user, 66, 96, 160)
-    await drawGuildBadge(ctx, guildName, guildIconUrl)
+    await avatar(ctx, user, 66, 96, 160)
+    guildBadge(ctx, guildName)
 
-    drawText(ctx, "CURSED  //  LEVELING", 270, 71, {
+    text(ctx, "CURSED  //  LEVELING", 270, 71, {
         size: 16,
         weight: 800,
         color: "#C4B5FD",
-        letterSpacing: 1.4,
+        tracking: 1.4,
     })
-
-    drawText(ctx, `LEVEL ${currentLevel} UNLOCKED`, 270, 127, {
+    text(ctx, `LEVEL ${currentLevel} UNLOCKED`, 270, 127, {
         size: 40,
         minSize: 28,
         weight: 900,
-        color: "#FFFFFF",
         maxWidth: 430,
-        glowColor: "rgba(168,85,247,0.48)",
+        glowColor: "rgba(168,85,247,0.5)",
         glowBlur: 12,
     })
-
-    drawText(ctx, displayName || user?.globalName || user?.username || "Member", 270, 169, {
+    text(ctx, displayName || user?.globalName || user?.username || "Member", 270, 169, {
         size: 25,
         minSize: 16,
         weight: 700,
@@ -430,46 +400,44 @@ async function generateLevelUpCard({
         maxWidth: 425,
     })
 
-    drawPill(ctx, 270, 194, 158, 38, `${oldLevel}  →  ${currentLevel}`, {
+    pill(ctx, 270, 194, 158, `${oldLevel}  →  ${currentLevel}`, {
         background: "rgba(168,85,247,0.12)",
         border: "rgba(192,132,252,0.24)",
         color: "#F5D0FE",
     })
-    drawPill(ctx, 440, 194, 130, 38, `+${Math.max(0, Math.floor(xpGain)).toLocaleString()} XP`, {
+    pill(ctx, 440, 194, 130, gained ? `+${gained.toLocaleString()} XP` : "MILESTONE", {
         background: "rgba(236,72,153,0.09)",
         border: "rgba(244,114,182,0.20)",
         color: "#FBCFE8",
-        accent: "#EC4899",
+        dot: "#EC4899",
     })
-    drawPill(ctx, 582, 194, 128, 38, `${Math.max(0, Math.floor(xp)).toLocaleString()} TOTAL`, {
+    pill(ctx, 582, 194, 128, `${totalXp.toLocaleString()} XP`, {
         background: "rgba(124,58,237,0.10)",
         border: "rgba(167,139,250,0.20)",
         color: "#DDD6FE",
-        accent: "#8B5CF6",
+        dot: "#8B5CF6",
     })
 
-    drawText(ctx, `PROGRESS TO LEVEL ${currentLevel + 1}`, 270, 263, {
+    text(ctx, `PROGRESS TO LEVEL ${currentLevel + 1}`, 270, 263, {
         size: 13,
         weight: 800,
         color: "#C4B5FD",
-        letterSpacing: 1,
+        tracking: 1,
     })
-    drawText(ctx, `${progress.current.toLocaleString()} / ${progress.needed.toLocaleString()} XP`, 710, 263, {
+    text(ctx, `${progress.current.toLocaleString()} / ${progress.needed.toLocaleString()} XP`, 710, 263, {
         size: 13,
         weight: 700,
         color: "#E9D5FF",
         align: "right",
     })
-    drawProgressBar(ctx, 270, 278, 440, 16, progress.ratio)
-
-    drawText(ctx, `${Math.max(0, progress.needed - progress.current).toLocaleString()} XP until the next level`, 270, 318, {
+    progressBar(ctx, 270, 278, 440, progress.ratio)
+    text(ctx, `${Math.max(0, progress.needed - progress.current).toLocaleString()} XP until the next level`, 270, 318, {
         size: 13,
         weight: 600,
         color: "rgba(233,213,255,0.72)",
     })
 
-    drawLevelMedallion(ctx, 835, 208, 99, currentLevel)
-
+    medallion(ctx, 835, 208, 99, currentLevel)
     return canvas.toBuffer("image/png")
 }
 
