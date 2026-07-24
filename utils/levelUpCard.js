@@ -3,7 +3,65 @@ const { getLevelProgress, totalXpForLevel } = require("./levelingMath")
 
 const WIDTH = 1000
 const HEIGHT = 360
-const FONT = '"DejaVu Sans", "Noto Sans", sans-serif'
+
+// Railway containers do not guarantee any system fonts. These embedded 5x7
+// glyphs keep every critical label visible without shipping or loading fonts.
+const GLYPHS = {
+    " ": ["00000","00000","00000","00000","00000","00000","00000"],
+    "A": ["01110","10001","10001","11111","10001","10001","10001"],
+    "B": ["11110","10001","10001","11110","10001","10001","11110"],
+    "C": ["01111","10000","10000","10000","10000","10000","01111"],
+    "D": ["11110","10001","10001","10001","10001","10001","11110"],
+    "E": ["11111","10000","10000","11110","10000","10000","11111"],
+    "F": ["11111","10000","10000","11110","10000","10000","10000"],
+    "G": ["01111","10000","10000","10111","10001","10001","01111"],
+    "H": ["10001","10001","10001","11111","10001","10001","10001"],
+    "I": ["11111","00100","00100","00100","00100","00100","11111"],
+    "J": ["00111","00010","00010","00010","10010","10010","01100"],
+    "K": ["10001","10010","10100","11000","10100","10010","10001"],
+    "L": ["10000","10000","10000","10000","10000","10000","11111"],
+    "M": ["10001","11011","10101","10101","10001","10001","10001"],
+    "N": ["10001","11001","10101","10011","10001","10001","10001"],
+    "O": ["01110","10001","10001","10001","10001","10001","01110"],
+    "P": ["11110","10001","10001","11110","10000","10000","10000"],
+    "Q": ["01110","10001","10001","10001","10101","10010","01101"],
+    "R": ["11110","10001","10001","11110","10100","10010","10001"],
+    "S": ["01111","10000","10000","01110","00001","00001","11110"],
+    "T": ["11111","00100","00100","00100","00100","00100","00100"],
+    "U": ["10001","10001","10001","10001","10001","10001","01110"],
+    "V": ["10001","10001","10001","10001","10001","01010","00100"],
+    "W": ["10001","10001","10001","10101","10101","10101","01010"],
+    "X": ["10001","10001","01010","00100","01010","10001","10001"],
+    "Y": ["10001","10001","01010","00100","00100","00100","00100"],
+    "Z": ["11111","00001","00010","00100","01000","10000","11111"],
+    "0": ["01110","10001","10011","10101","11001","10001","01110"],
+    "1": ["00100","01100","00100","00100","00100","00100","01110"],
+    "2": ["01110","10001","00001","00010","00100","01000","11111"],
+    "3": ["11110","00001","00001","01110","00001","00001","11110"],
+    "4": ["00010","00110","01010","10010","11111","00010","00010"],
+    "5": ["11111","10000","10000","11110","00001","00001","11110"],
+    "6": ["01110","10000","10000","11110","10001","10001","01110"],
+    "7": ["11111","00001","00010","00100","01000","01000","01000"],
+    "8": ["01110","10001","10001","01110","10001","10001","01110"],
+    "9": ["01110","10001","10001","01111","00001","00001","01110"],
+    "-": ["00000","00000","00000","11111","00000","00000","00000"],
+    "_": ["00000","00000","00000","00000","00000","00000","11111"],
+    ".": ["00000","00000","00000","00000","00000","00110","00110"],
+    ",": ["00000","00000","00000","00000","00110","00110","01100"],
+    "!": ["00100","00100","00100","00100","00100","00000","00100"],
+    "?": ["01110","10001","00001","00010","00100","00000","00100"],
+    ":": ["00000","00110","00110","00000","00110","00110","00000"],
+    "/": ["00001","00010","00010","00100","01000","01000","10000"],
+    "+": ["00000","00100","00100","11111","00100","00100","00000"],
+    "#": ["01010","11111","01010","01010","11111","01010","00000"],
+    "%": ["11001","11010","00100","01000","10110","00110","00000"],
+    "@": ["01110","10001","10111","10101","10111","10000","01111"],
+    ">": ["10000","01000","00100","00010","00100","01000","10000"],
+    "<": ["00001","00010","00100","01000","00100","00010","00001"],
+    "'": ["00100","00100","00000","00000","00000","00000","00000"],
+    "(": ["00010","00100","01000","01000","01000","00100","00010"],
+    ")": ["01000","00100","00010","00010","00010","00100","01000"],
+}
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, Number(value) || 0))
@@ -22,6 +80,117 @@ function roundRect(ctx, x, y, width, height, radius) {
     ctx.lineTo(x, y + r)
     ctx.quadraticCurveTo(x, y, x + r, y)
     ctx.closePath()
+}
+
+function normalizeText(value, fallback = "MEMBER") {
+    const source = String(value || fallback)
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[•·|]/g, "-")
+        .replace(/[→➜➝]/g, ">")
+        .replace(/[↑⬆]/g, "+")
+        .toUpperCase()
+
+    let output = ""
+    for (const character of source) {
+        if (GLYPHS[character]) output += character
+        else if (/\s/u.test(character)) output += " "
+        else if (character.codePointAt(0) > 127) output += " "
+        else output += "?"
+    }
+    return output.replace(/\s+/g, " ").trim() || fallback
+}
+
+function vectorMetrics(height, spacingRatio = 0.18, tracking = 0) {
+    const cell = height / 7
+    return {
+        cell,
+        glyphWidth: cell * 5,
+        spacing: height * spacingRatio + tracking,
+    }
+}
+
+function measureVectorText(value, height, spacingRatio = 0.18, tracking = 0) {
+    const text = normalizeText(value, "")
+    if (!text) return 0
+    const metrics = vectorMetrics(height, spacingRatio, tracking)
+    return text.length * metrics.glyphWidth + Math.max(0, text.length - 1) * metrics.spacing
+}
+
+function fittedVectorHeight(value, maxWidth, preferred, minimum, spacingRatio, tracking) {
+    const measured = measureVectorText(value, preferred, spacingRatio, tracking)
+    if (!maxWidth || measured <= maxWidth) return preferred
+    return Math.max(minimum, preferred * (maxWidth / measured))
+}
+
+function shortenVectorText(value, height, maxWidth, spacingRatio, tracking) {
+    let output = normalizeText(value, "")
+    if (!maxWidth || measureVectorText(output, height, spacingRatio, tracking) <= maxWidth) return output
+    const suffix = "..."
+    while (output.length > 1 && measureVectorText(`${output}${suffix}`, height, spacingRatio, tracking) > maxWidth) {
+        output = output.slice(0, -1).trimEnd()
+    }
+    return `${output}${suffix}`
+}
+
+function drawVectorText(ctx, value, x, y, options = {}) {
+    const {
+        height: preferredHeight = 20,
+        minHeight = 8,
+        color = "#FFFFFF",
+        maxWidth,
+        align = "left",
+        baseline = "alphabetic",
+        glowColor,
+        glowBlur = 0,
+        spacingRatio = 0.18,
+        tracking = 0,
+        weight = 700,
+    } = options
+
+    const normalized = normalizeText(value, options.fallback || "MEMBER")
+    const height = fittedVectorHeight(normalized, maxWidth, preferredHeight, minHeight, spacingRatio, tracking)
+    const output = shortenVectorText(normalized, height, maxWidth, spacingRatio, tracking)
+    const metrics = vectorMetrics(height, spacingRatio, tracking)
+    const width = measureVectorText(output, height, spacingRatio, tracking)
+
+    let cursorX = x
+    if (align === "center") cursorX -= width / 2
+    if (align === "right") cursorX -= width
+
+    let topY = y
+    if (baseline === "middle") topY = y - height / 2
+    else if (baseline === "alphabetic" || baseline === "bottom") topY = y - height * 0.84
+
+    const insetRatio = weight >= 850 ? 0.03 : weight >= 700 ? 0.075 : 0.13
+    const inset = Math.max(0.35, metrics.cell * insetRatio)
+    const block = Math.max(0.8, metrics.cell - inset * 2)
+    const radius = Math.max(0.5, Math.min(2.4, block * 0.18))
+
+    ctx.save()
+    ctx.globalAlpha = 1
+    ctx.fillStyle = color
+    if (glowColor && glowBlur) {
+        ctx.shadowColor = glowColor
+        ctx.shadowBlur = glowBlur
+    }
+
+    for (const character of output) {
+        const glyph = GLYPHS[character] || GLYPHS["?"]
+        for (let row = 0; row < 7; row += 1) {
+            for (let column = 0; column < 5; column += 1) {
+                if (glyph[row][column] !== "1") continue
+                const px = cursorX + column * metrics.cell + inset
+                const py = topY + row * metrics.cell + inset
+                roundRect(ctx, px, py, block, block, radius)
+                ctx.fill()
+            }
+        }
+        cursorX += metrics.glyphWidth + metrics.spacing
+    }
+    ctx.restore()
+
+    return { text: output, width, height }
 }
 
 function cover(ctx, image, x, y, width, height) {
@@ -57,76 +226,6 @@ async function remoteImage(url) {
     }
 }
 
-function setFont(ctx, size, weight = 700) {
-    ctx.font = `${weight} ${Math.max(1, Math.floor(size))}px ${FONT}`
-}
-
-function fittedFont(ctx, value, maxWidth, preferred, minimum = 12, weight = 700) {
-    const text = String(value || "")
-    let size = preferred
-    setFont(ctx, size, weight)
-    while (size > minimum && ctx.measureText(text).width > maxWidth) {
-        size -= 1
-        setFont(ctx, size, weight)
-    }
-    return size
-}
-
-function shorten(ctx, value, maxWidth) {
-    const text = String(value || "")
-    if (ctx.measureText(text).width <= maxWidth) return text
-    let result = text
-    while (result.length > 1 && ctx.measureText(`${result}…`).width > maxWidth) result = result.slice(0, -1)
-    return `${result.trim()}…`
-}
-
-function text(ctx, value, x, y, options = {}) {
-    const {
-        size = 20,
-        minSize = 11,
-        weight = 700,
-        color = "#FFFFFF",
-        maxWidth,
-        align = "left",
-        baseline = "alphabetic",
-        glowColor,
-        glowBlur = 0,
-        tracking = 0,
-    } = options
-    const raw = String(value || "")
-    const actualSize = maxWidth ? fittedFont(ctx, raw, maxWidth, size, minSize, weight) : size
-    setFont(ctx, actualSize, weight)
-    const output = maxWidth ? shorten(ctx, raw, maxWidth) : raw
-
-    ctx.save()
-    ctx.fillStyle = color
-    ctx.textAlign = align
-    ctx.textBaseline = baseline
-    if (glowColor && glowBlur) {
-        ctx.shadowColor = glowColor
-        ctx.shadowBlur = glowBlur
-    }
-
-    if (!tracking) {
-        ctx.fillText(output, x, y)
-        ctx.restore()
-        return
-    }
-
-    const characters = [...output]
-    const widths = characters.map(character => ctx.measureText(character).width)
-    const total = widths.reduce((sum, width) => sum + width, 0) + tracking * Math.max(0, characters.length - 1)
-    let cursor = x
-    if (align === "center") cursor -= total / 2
-    if (align === "right") cursor -= total
-    ctx.textAlign = "left"
-    characters.forEach((character, index) => {
-        ctx.fillText(character, cursor, y)
-        cursor += widths[index] + tracking
-    })
-    ctx.restore()
-}
-
 function pill(ctx, x, y, width, label, options = {}) {
     const height = 38
     ctx.fillStyle = options.background || "rgba(255,255,255,0.065)"
@@ -143,14 +242,15 @@ function pill(ctx, x, y, width, label, options = {}) {
         ctx.fill()
     }
 
-    text(ctx, label, options.dot ? x + 30 : x + width / 2, y + height / 2 + 1, {
-        size: 14,
-        minSize: 10,
+    drawVectorText(ctx, label, options.dot ? x + 30 : x + width / 2, y + height / 2, {
+        height: 13,
+        minHeight: 8,
         weight: 800,
         color: options.color || "#E9D5FF",
         maxWidth: width - (options.dot ? 42 : 20),
         align: options.dot ? "left" : "center",
         baseline: "middle",
+        spacingRatio: 0.11,
     })
 }
 
@@ -212,6 +312,27 @@ function background(ctx) {
     ctx.restore()
 }
 
+function drawUpArrow(ctx, x, y) {
+    ctx.save()
+    ctx.strokeStyle = "#FFFFFF"
+    ctx.fillStyle = "#FFFFFF"
+    ctx.lineWidth = 4
+    ctx.lineCap = "round"
+    ctx.shadowColor = "rgba(255,255,255,0.8)"
+    ctx.shadowBlur = 5
+    ctx.beginPath()
+    ctx.moveTo(x, y + 9)
+    ctx.lineTo(x, y - 7)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(x, y - 11)
+    ctx.lineTo(x - 7, y - 3)
+    ctx.lineTo(x + 7, y - 3)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+}
+
 async function avatar(ctx, user, x, y, size) {
     const image = await remoteImage(user?.displayAvatarURL?.({ extension: "png", forceStatic: true, size: 512 }))
     const ring = ctx.createLinearGradient(x, y, x + size, y + size)
@@ -240,8 +361,9 @@ async function avatar(ctx, user, x, y, size) {
         fallback.addColorStop(1, "#48145F")
         ctx.fillStyle = fallback
         ctx.fillRect(x, y, size, size)
-        text(ctx, "?", x + size / 2, y + size / 2, {
-            size: 78,
+        drawVectorText(ctx, "?", x + size / 2, y + size / 2, {
+            height: 72,
+            minHeight: 42,
             weight: 900,
             color: "#E9D5FF",
             align: "center",
@@ -258,14 +380,7 @@ async function avatar(ctx, user, x, y, size) {
     ctx.beginPath()
     ctx.arc(x + size - 5, y + size - 5, 22, 0, Math.PI * 2)
     ctx.fill()
-    text(ctx, "↑", x + size - 5, y + size - 5, {
-        size: 27,
-        weight: 900,
-        align: "center",
-        baseline: "middle",
-        glowColor: "rgba(255,255,255,0.8)",
-        glowBlur: 5,
-    })
+    drawUpArrow(ctx, x + size - 5, y + size - 5)
 }
 
 function guildBadge(ctx, guildName) {
@@ -278,13 +393,14 @@ function guildBadge(ctx, guildName) {
     ctx.beginPath()
     ctx.arc(738, 69, 5, 0, Math.PI * 2)
     ctx.fill()
-    text(ctx, guildName || "Discord Server", 752, 70, {
-        size: 14,
-        minSize: 10,
+    drawVectorText(ctx, guildName || "Discord Server", 752, 69, {
+        height: 12,
+        minHeight: 7,
         weight: 700,
         color: "#DDD6FE",
         maxWidth: 170,
         baseline: "middle",
+        spacingRatio: 0.11,
     })
 }
 
@@ -310,30 +426,43 @@ function medallion(ctx, x, y, radius, level) {
     ctx.arc(x, y, radius - 8, 0, Math.PI * 2)
     ctx.fill()
 
-    text(ctx, "LEVEL", x, y - 42, {
-        size: 15,
+    drawVectorText(ctx, "LEVEL", x, y - 43, {
+        height: 15,
+        minHeight: 10,
         weight: 800,
         color: "#D8B4FE",
         align: "center",
-        tracking: 2,
+        baseline: "middle",
+        tracking: 1,
+        spacingRatio: 0.11,
     })
-    text(ctx, String(level), x, y + 20, {
-        size: 80,
-        minSize: 42,
+    drawVectorText(ctx, String(level), x, y + 13, {
+        height: 76,
+        minHeight: 40,
         weight: 900,
-        maxWidth: radius * 1.45,
+        maxWidth: radius * 1.35,
         align: "center",
         baseline: "middle",
-        glowColor: "rgba(216,180,254,0.65)",
+        glowColor: "rgba(216,180,254,0.75)",
         glowBlur: 12,
+        spacingRatio: 0.08,
     })
-    text(ctx, "UNLOCKED", x, y + 67, {
-        size: 12,
+    drawVectorText(ctx, "UNLOCKED", x, y + 68, {
+        height: 11,
+        minHeight: 7,
         weight: 800,
         color: "#F0ABFC",
         align: "center",
-        tracking: 1.5,
+        baseline: "middle",
+        tracking: 0.5,
+        spacingRatio: 0.09,
     })
+}
+
+function safeMemberName(displayName, user) {
+    const preferred = normalizeText(displayName || user?.globalName || "", "")
+    if (/[A-Z0-9]/.test(preferred)) return preferred
+    return normalizeText(user?.username || "MEMBER", "MEMBER")
 }
 
 async function generateLevelUpCard({
@@ -378,29 +507,33 @@ async function generateLevelUpCard({
     await avatar(ctx, user, 66, 96, 160)
     guildBadge(ctx, guildName)
 
-    text(ctx, "CURSED  //  LEVELING", 270, 71, {
-        size: 16,
+    drawVectorText(ctx, "CURSED // LEVELING", 270, 71, {
+        height: 15,
+        minHeight: 10,
         weight: 800,
         color: "#C4B5FD",
-        tracking: 1.4,
+        tracking: 0.8,
+        spacingRatio: 0.11,
     })
-    text(ctx, `LEVEL ${currentLevel} UNLOCKED`, 270, 127, {
-        size: 40,
-        minSize: 28,
+    drawVectorText(ctx, `LEVEL ${currentLevel} UNLOCKED`, 270, 128, {
+        height: 38,
+        minHeight: 24,
         weight: 900,
         maxWidth: 430,
         glowColor: "rgba(168,85,247,0.5)",
         glowBlur: 12,
+        spacingRatio: 0.11,
     })
-    text(ctx, displayName || user?.globalName || user?.username || "Member", 270, 169, {
-        size: 25,
-        minSize: 16,
-        weight: 700,
+    drawVectorText(ctx, safeMemberName(displayName, user), 270, 171, {
+        height: 22,
+        minHeight: 13,
+        weight: 750,
         color: "#E9D5FF",
         maxWidth: 425,
+        spacingRatio: 0.12,
     })
 
-    pill(ctx, 270, 194, 158, `${oldLevel}  →  ${currentLevel}`, {
+    pill(ctx, 270, 194, 158, `${oldLevel} > ${currentLevel}`, {
         background: "rgba(168,85,247,0.12)",
         border: "rgba(192,132,252,0.24)",
         color: "#F5D0FE",
@@ -418,27 +551,39 @@ async function generateLevelUpCard({
         dot: "#8B5CF6",
     })
 
-    text(ctx, `PROGRESS TO LEVEL ${currentLevel + 1}`, 270, 263, {
-        size: 13,
+    drawVectorText(ctx, `PROGRESS TO LEVEL ${currentLevel + 1}`, 270, 263, {
+        height: 12,
+        minHeight: 8,
         weight: 800,
         color: "#C4B5FD",
-        tracking: 1,
+        tracking: 0.45,
+        spacingRatio: 0.10,
     })
-    text(ctx, `${progress.current.toLocaleString()} / ${progress.needed.toLocaleString()} XP`, 710, 263, {
-        size: 13,
+    drawVectorText(ctx, `${progress.current.toLocaleString()} / ${progress.needed.toLocaleString()} XP`, 710, 263, {
+        height: 12,
+        minHeight: 8,
         weight: 700,
         color: "#E9D5FF",
         align: "right",
+        spacingRatio: 0.10,
     })
     progressBar(ctx, 270, 278, 440, progress.ratio)
-    text(ctx, `${Math.max(0, progress.needed - progress.current).toLocaleString()} XP until the next level`, 270, 318, {
-        size: 13,
-        weight: 600,
+    drawVectorText(ctx, `${Math.max(0, progress.needed - progress.current).toLocaleString()} XP UNTIL NEXT LEVEL`, 270, 318, {
+        height: 11,
+        minHeight: 7,
+        weight: 650,
         color: "rgba(233,213,255,0.72)",
+        spacingRatio: 0.10,
     })
 
     medallion(ctx, 835, 208, 99, currentLevel)
     return canvas.toBuffer("image/png")
 }
 
-module.exports = { generateLevelUpCard, WIDTH, HEIGHT }
+module.exports = {
+    generateLevelUpCard,
+    WIDTH,
+    HEIGHT,
+    drawVectorText,
+    normalizeText,
+}
