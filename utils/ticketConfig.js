@@ -1,6 +1,8 @@
 const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./serverConfig")
 
+const UNLIMITED_OPEN_TICKETS = Number.MAX_SAFE_INTEGER
+
 const DEFAULT_TICKET_CONFIG = Object.freeze({
     enabled: false,
     defaultCategoryId: null,
@@ -9,7 +11,7 @@ const DEFAULT_TICKET_CONFIG = Object.freeze({
     transcriptChannelId: null,
     supportRoleIds: [],
     adminRoleIds: [],
-    maxOpenPerUser: 3,
+    maxOpenPerUser: UNLIMITED_OPEN_TICKETS,
     cooldownMinutes: 2,
     autoCloseHours: 0,
     deleteAfterCloseMinutes: 0,
@@ -54,7 +56,9 @@ function normalizeTicketConfig(raw = {}) {
         transcriptChannelId: channelId(source.transcriptChannelId),
         supportRoleIds: uniqueIds(source.supportRoleIds, 25),
         adminRoleIds: uniqueIds(source.adminRoleIds, 25),
-        maxOpenPerUser: integer(source.maxOpenPerUser, DEFAULT_TICKET_CONFIG.maxOpenPerUser, 1, 10),
+        // Ticket creation itself is unlimited on both plans. Premium differences
+        // are applied to dashboard panels, categories, questions, and history.
+        maxOpenPerUser: UNLIMITED_OPEN_TICKETS,
         cooldownMinutes: integer(source.cooldownMinutes, DEFAULT_TICKET_CONFIG.cooldownMinutes, 0, 1440),
         autoCloseHours: integer(source.autoCloseHours, DEFAULT_TICKET_CONFIG.autoCloseHours, 0, 2160),
         deleteAfterCloseMinutes: integer(source.deleteAfterCloseMinutes, DEFAULT_TICKET_CONFIG.deleteAfterCloseMinutes, 0, 10080),
@@ -102,6 +106,7 @@ function canManageTicketSettings(member, config = getTicketConfig(member?.guild?
 }
 
 module.exports = {
+    UNLIMITED_OPEN_TICKETS,
     DEFAULT_TICKET_CONFIG,
     PRIORITIES,
     normalizeTicketConfig,
