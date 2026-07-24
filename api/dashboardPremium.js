@@ -106,10 +106,17 @@ function payload(client) {
 
 function createDashboardPremiumRouter(getClient) {
     const router = express.Router()
-    router.use(originGuard)
-    router.use(rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false }))
-    router.use(dashboardAuth)
-    router.use(ownerAuth)
+    const ownerLimiter = rateLimit({
+        windowMs: 60 * 1000,
+        limit: 120,
+        standardHeaders: true,
+        legacyHeaders: false,
+    })
+
+    // This router is mounted before the general dashboard router. Restrict
+    // owner-only middleware to the Premium path so unrelated endpoints such
+    // as /guilds/presence can continue to the next router.
+    router.use("/owner/premium", originGuard, ownerLimiter, dashboardAuth, ownerAuth)
 
     router.get("/owner/premium", (req, res) => {
         res.json({ data: payload(getClient()) })
