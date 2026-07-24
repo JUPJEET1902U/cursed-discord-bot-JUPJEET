@@ -71,10 +71,10 @@ assert.deepEqual(protection.staffLimitDefinition("bans", isolated), { key: "bans
 assert.deepEqual(protection.staffLimitDefinition("channelDeletes", isolated), { key: "channelChanges", threshold: 6 })
 assert.equal(protection.staffLimitDefinition("guildUpdates", isolated), null)
 
-const strict = shield.effectiveShield(defaults, { active: true })
+const strict = shield.effectiveShield(isolated, { active: true })
 assert.equal(strict.botInviteThreshold, 1)
-assert.ok(strict.rapidMessageThreshold < defaults.messageShield.rapidMessageThreshold)
-assert.ok(strict.maxMentions < defaults.messageShield.maxMentions)
+assert.ok(strict.rapidMessageThreshold < isolated.messageShield.rapidMessageThreshold)
+assert.ok(strict.maxMentions < isolated.messageShield.maxMentions)
 
 const fakeMember = {
     user: {
