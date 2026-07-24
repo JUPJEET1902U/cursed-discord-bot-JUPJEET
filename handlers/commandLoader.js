@@ -21,6 +21,7 @@ const {
 require("../commands/helpCatalog")
 require("../commands/prefixCommandCatalog")
 require("../commands/imageGenerationCatalog")
+require("../commands/birthdayCatalog")
 
 const log = logger.child("CommandLoader")
 
