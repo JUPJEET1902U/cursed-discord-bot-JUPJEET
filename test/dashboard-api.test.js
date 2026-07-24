@@ -7,7 +7,7 @@ const {
     validateAutorole,
     validateWelcome,
 } = require("../api/dashboard")
-const { trustAuthenticatedDashboardRequest } = require("../webhook")
+const { prepareDashboardApiRequest } = require("../webhook")
 
 const GUILD_ID = "123456789012345678"
 const OTHER_GUILD_ID = "223456789012345678"
@@ -40,7 +40,7 @@ before(async () => {
     const app = express()
     app.set("trust proxy", 1)
     app.use(express.json())
-    app.use("/api/dashboard", trustAuthenticatedDashboardRequest)
+    app.use("/api/dashboard", prepareDashboardApiRequest)
     app.use("/api/dashboard", createDashboardRouter(() => client))
     await new Promise((resolve) => {
         server = app.listen(0, "127.0.0.1", resolve)
@@ -75,7 +75,7 @@ test("health returns safe availability data", async () => {
     assert.equal("token" in body.data, false)
 })
 
-test("authenticated server request is not rejected for a deployment origin", async () => {
+test("valid bearer token works with a changing Vercel origin", async () => {
     const response = await fetch(`${baseUrl}/health`, {
         headers: {
             Authorization: `Bearer ${SECRET}`,
@@ -85,14 +85,14 @@ test("authenticated server request is not rejected for a deployment origin", asy
     assert.equal(response.status, 200)
 })
 
-test("untrusted browser origin remains rejected", async () => {
+test("incorrect bearer token is rejected independently of origin", async () => {
     const response = await fetch(`${baseUrl}/health`, {
         headers: {
             Authorization: "Bearer incorrect-secret",
             Origin: "https://temporary-preview.vercel.app",
         },
     })
-    assert.equal(response.status, 403)
+    assert.equal(response.status, 401)
 })
 
 test("guild presence reports only guilds in the live client cache", async () => {
