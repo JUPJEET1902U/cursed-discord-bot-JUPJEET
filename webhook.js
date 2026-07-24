@@ -20,6 +20,32 @@ function setClient(client) {
 
 const DISCORD_EPOCH_MS = 1420070400000
 
+function safeEqual(left, right) {
+    const a = Buffer.from(String(left || ""))
+    const b = Buffer.from(String(right || ""))
+    return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b)
+}
+
+function isAuthenticatedDashboardRequest(req) {
+    const secret = process.env.DASHBOARD_API_SECRET
+    const authorization = req.get("authorization") || ""
+    const provided = authorization.startsWith("Bearer ")
+        ? authorization.slice("Bearer ".length)
+        : ""
+    return Boolean(secret) && safeEqual(provided, secret)
+}
+
+function trustAuthenticatedDashboardRequest(req, _res, next) {
+    // These calls come from Vercel server functions, not a browser. Their
+    // deployment hostname can change after every deploy, so Origin is not a
+    // reliable security boundary. Every dashboard router still performs its
+    // own timing-safe DASHBOARD_API_SECRET check before serving data.
+    if (isAuthenticatedDashboardRequest(req)) {
+        delete req.headers.origin
+    }
+    next()
+}
+
 function isValidDiscordId(id) {
     if (!/^\d{17,19}$/.test(id)) return false
     const timestamp = Number(BigInt(id) >> 22n) + DISCORD_EPOCH_MS
@@ -129,6 +155,7 @@ function startWebhookServer() {
         timestamp: new Date().toISOString(),
     }))
 
+    app.use("/api/dashboard", trustAuthenticatedDashboardRequest)
     app.use("/api/dashboard", createDashboardPremiumRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardWelcomeRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardControlRouter(() => discordClient))
@@ -230,4 +257,10 @@ function startWebhookServer() {
     return app
 }
 
-module.exports = { startWebhookServer, setClient, grantPremiumByDiscordId }
+module.exports = {
+    startWebhookServer,
+    setClient,
+    grantPremiumByDiscordId,
+    isAuthenticatedDashboardRequest,
+    trustAuthenticatedDashboardRequest,
+}
