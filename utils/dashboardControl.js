@@ -18,6 +18,7 @@ const CONTROL_MODULES = [
     { key: "server-insights", label: "Server Insights", description: "Server activity and insight commands." },
     { key: "public-stats-status", label: "Public Stats", description: "Public bot and server status commands." },
     { key: "leveling", label: "Leveling Commands", description: "Rank, levels, and leveling administration commands." },
+    { key: "birthdays", label: "Birthdays", description: "Birthday records, lists, DMs, and server announcements." },
 ]
 
 const CONTROL_MODULE_KEYS = new Set(CONTROL_MODULES.map(item => item.key))
