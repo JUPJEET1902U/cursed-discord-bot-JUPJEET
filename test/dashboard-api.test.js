@@ -7,6 +7,7 @@ const {
     validateAutorole,
     validateWelcome,
 } = require("../api/dashboard")
+const { createDashboardPremiumRouter } = require("../api/dashboardPremium")
 const { prepareDashboardApiRequest } = require("../webhook")
 
 const GUILD_ID = "123456789012345678"
@@ -41,6 +42,9 @@ before(async () => {
     app.set("trust proxy", 1)
     app.use(express.json())
     app.use("/api/dashboard", prepareDashboardApiRequest)
+    // Match the production router order. The Premium router must pass through
+    // unrelated paths rather than applying ownerAuth to all dashboard calls.
+    app.use("/api/dashboard", createDashboardPremiumRouter(() => client))
     app.use("/api/dashboard", createDashboardRouter(() => client))
     await new Promise((resolve) => {
         server = app.listen(0, "127.0.0.1", resolve)
@@ -95,7 +99,7 @@ test("incorrect bearer token is rejected independently of origin", async () => {
     assert.equal(response.status, 401)
 })
 
-test("guild presence reports only guilds in the live client cache", async () => {
+test("premium owner middleware does not block guild presence", async () => {
     const response = await fetch(`${baseUrl}/guilds/presence`, {
         method: "POST",
         headers: {
