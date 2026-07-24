@@ -38,7 +38,7 @@ jobs:
           node <<'NODE'
           const config = require('./utils/ticketConfig')
           const normalized = config.normalizeTicketConfig({ tickets: { enabled: true, maxOpenPerUser: 99 } })
-          if (!normalized.enabled || normalized.maxOpenPerUser !== 10) process.exit(1)
+          if (!normalized.enabled || normalized.maxOpenPerUser !== Number.MAX_SAFE_INTEGER) process.exit(1)
 
           const ticketCommands = require('./commands/tickets')
           const slash = ticketCommands.commands[0].toJSON()

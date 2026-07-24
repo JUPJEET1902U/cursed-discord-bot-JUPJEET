@@ -4,24 +4,16 @@ const rateLimit = require("express-rate-limit")
 const mongoose = require("mongoose")
 const { ChannelType, PermissionFlagsBits } = require("discord.js")
 const { getGuildConfig, updateGuildConfigAndWait } = require("../utils/serverConfig")
+const { isGuildPremium, getGuildPlanLimits } = require("../utils/premium")
 
 const SNOWFLAKE = /^\d{17,20}$/
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
 const THEMES = new Set(["classic", "midnight", "neon"])
 const WELCOME_FIELDS = new Set([
-    "welcomeEnabled",
-    "welcomeChannelId",
-    "welcomeMessage",
-    "welcomeUseAI",
-    "welcomeColor",
-    "welcomeThumbnail",
-    "welcomeImageUrl",
-    "welcomeFooter",
-    "welcomeCardEnabled",
-    "welcomeCardTheme",
-    "welcomeCardBackground",
-    "welcomeAccentColor",
-    "welcomeMediaUrl",
+    "welcomeEnabled", "welcomeChannelId", "welcomeMessage", "welcomeUseAI",
+    "welcomeColor", "welcomeThumbnail", "welcomeImageUrl", "welcomeFooter",
+    "welcomeCardEnabled", "welcomeCardTheme", "welcomeCardBackground",
+    "welcomeAccentColor", "welcomeMediaUrl",
 ])
 
 function safeEqual(left, right) {
@@ -94,7 +86,8 @@ function usableWelcomeChannels(guild) {
         }))
 }
 
-function welcomeConfig(config) {
+function premiumSafeWelcome(config, guild) {
+    const premium = isGuildPremium(guild)
     return {
         welcomeEnabled: config.welcomeEnabled !== false,
         welcomeChannelId: config.welcomeChannelId || null,
@@ -104,23 +97,19 @@ function welcomeConfig(config) {
         welcomeThumbnail: config.welcomeThumbnail !== false,
         welcomeImageUrl: config.welcomeImageUrl || null,
         welcomeFooter: config.welcomeFooter || null,
-        welcomeCardEnabled: config.welcomeCardEnabled !== false,
-        welcomeCardTheme: THEMES.has(config.welcomeCardTheme) ? config.welcomeCardTheme : "classic",
-        welcomeCardBackground: config.welcomeCardBackground || null,
-        welcomeAccentColor: config.welcomeAccentColor || null,
-        welcomeMediaUrl: config.welcomeMediaUrl || null,
+        welcomeCardEnabled: premium && config.welcomeCardEnabled !== false,
+        welcomeCardTheme: premium && THEMES.has(config.welcomeCardTheme) ? config.welcomeCardTheme : "classic",
+        welcomeCardBackground: premium ? config.welcomeCardBackground || null : null,
+        welcomeAccentColor: premium ? config.welcomeAccentColor || null : null,
+        welcomeMediaUrl: premium ? config.welcomeMediaUrl || null : null,
     }
 }
 
 function validateWelcome(body) {
     const errors = {}
     if (!isRecord(body)) return { body: ["Expected a JSON object."] }
-    for (const key of Object.keys(body)) {
-        if (!WELCOME_FIELDS.has(key)) errors[key] = ["Unknown field."]
-    }
-    for (const field of WELCOME_FIELDS) {
-        if (!(field in body)) errors[field] = ["This field is required."]
-    }
+    for (const key of Object.keys(body)) if (!WELCOME_FIELDS.has(key)) errors[key] = ["Unknown field."]
+    for (const field of WELCOME_FIELDS) if (!(field in body)) errors[field] = ["This field is required."]
 
     if (typeof body.welcomeEnabled !== "boolean") errors.welcomeEnabled = ["Expected a boolean."]
     if (body.welcomeEnabled && !body.welcomeChannelId) errors.welcomeChannelId = ["Choose a welcome channel before enabling welcome messages."]
@@ -139,6 +128,18 @@ function validateWelcome(body) {
     return errors
 }
 
+function planPayload(guild) {
+    const limits = getGuildPlanLimits(guild)
+    return {
+        plan: isGuildPremium(guild) ? "premium" : "free",
+        planLimits: {
+            welcomeCard: limits.welcomeCard,
+            customBackground: limits.welcomeCustomBackground,
+            themes: limits.welcomeThemes,
+        },
+    }
+}
+
 function createDashboardWelcomeRouter(getClient) {
     const router = express.Router()
     const readLimiter = rateLimit({ windowMs: 60 * 1000, max: 180, standardHeaders: true, legacyHeaders: false })
@@ -148,9 +149,7 @@ function createDashboardWelcomeRouter(getClient) {
         res.set("Cache-Control", "no-store")
         const origin = req.get("origin")
         const dashboardUrl = process.env.DASHBOARD_URL
-        if (origin && (!dashboardUrl || origin !== dashboardUrl)) {
-            return res.status(403).json({ error: "Origin is not allowed.", code: "ORIGIN_DENIED" })
-        }
+        if (origin && (!dashboardUrl || origin !== dashboardUrl)) return res.status(403).json({ error: "Origin is not allowed.", code: "ORIGIN_DENIED" })
         if (origin && origin === dashboardUrl) {
             res.set("Access-Control-Allow-Origin", origin)
             res.set("Vary", "Origin")
@@ -166,13 +165,12 @@ function createDashboardWelcomeRouter(getClient) {
             if (!guild) return
             res.json({
                 data: {
-                    config: welcomeConfig(getGuildConfig(guild.id)),
+                    config: premiumSafeWelcome(getGuildConfig(guild.id), guild),
                     channels: usableWelcomeChannels(guild),
+                    ...planPayload(guild),
                 },
             })
-        } catch (err) {
-            next(err)
-        }
+        } catch (err) { next(err) }
     })
 
     router.put("/guilds/:guildId/welcome", writeLimiter, async (req, res, next) => {
@@ -181,11 +179,7 @@ function createDashboardWelcomeRouter(getClient) {
             if (!guild) return
             const fieldErrors = validateWelcome(req.body)
             if (Object.keys(fieldErrors).length > 0) {
-                return res.status(422).json({
-                    error: "Welcome settings are not valid.",
-                    code: "VALIDATION_ERROR",
-                    fieldErrors,
-                })
+                return res.status(422).json({ error: "Welcome settings are not valid.", code: "VALIDATION_ERROR", fieldErrors })
             }
 
             if (req.body.welcomeChannelId) {
@@ -199,11 +193,18 @@ function createDashboardWelcomeRouter(getClient) {
                 }
             }
 
-            const saved = await updateGuildConfigAndWait(guild.id, req.body)
-            res.json({ data: { config: welcomeConfig(saved) } })
-        } catch (err) {
-            next(err)
-        }
+            const premium = isGuildPremium(guild)
+            const updates = premium ? req.body : {
+                ...req.body,
+                welcomeCardEnabled: false,
+                welcomeCardTheme: "classic",
+                welcomeCardBackground: null,
+                welcomeAccentColor: null,
+                welcomeMediaUrl: null,
+            }
+            const saved = await updateGuildConfigAndWait(guild.id, updates)
+            res.json({ data: { config: premiumSafeWelcome(saved, guild), ...planPayload(guild) } })
+        } catch (err) { next(err) }
     })
 
     router.use((err, req, res, _next) => {

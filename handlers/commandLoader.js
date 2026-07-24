@@ -7,6 +7,7 @@
 const logger = require("../utils/logger")
 const { trackDetailedCommand } = require("../utils/activityTracker")
 const { getServerConfig } = require("../utils/serverConfig")
+const { checkCommandPlan } = require("../utils/premiumCommandGate")
 const {
     extractCommandName,
     isCommandEnabled,
@@ -17,55 +18,41 @@ const {
     resolveCommandPrefix,
 } = require("../utils/prefix")
 
-// Keep Help and dashboard command controls aligned with the command
-// implementations that are actually deployed before consumers read the
-// shared registry.
 require("../commands/helpCatalog")
 require("../commands/prefixCommandCatalog")
 require("../commands/imageGenerationCatalog")
 
 const log = logger.child("CommandLoader")
 
-/**
- * Load all command handlers in priority order.
- * Each handler exports a { handle(message) } function returning true if handled.
- */
 function loadCommands() {
     const commandModules = [
         { name: "moderation-prefix", module: require("../commands/moderationPrefix") },
         { name: "tickets",           module: require("../commands/ticketsPrefix")   },
-        { name: "help",             module: require("../commands/help")             },
-        { name: "premium",          module: require("../commands/premium")          },
-        { name: "fun",              module: require("../commands/fun")              },
-        { name: "shop",             module: require("../commands/shop")             },
-        { name: "economy",          module: require("../commands/economy")          },
-        { name: "economy-advanced", module: require("../commands/economy-advanced") },
-        { name: "gambling",         module: require("../commands/gambling")         },
-        { name: "games",            module: require("../commands/games")            },
-        { name: "quests",           module: require("../commands/quests")           },
-        { name: "battle",           module: require("../commands/battle")           },
-        { name: "pets",             module: require("../commands/pets")             },
-        { name: "profiles",         module: require("../commands/profiles")         },
-        { name: "leaderboards",     module: require("../commands/leaderboards")     },
-        { name: "images",           module: require("../commands/images")           },
-        { name: "admin",            module: require("../commands/admin")            },
-        { name: "memory",           module: require("../commands/memory")           },
-        { name: "server-insights",  module: require("../commands/serverInsights")   },
+        { name: "help",              module: require("../commands/help")             },
+        { name: "premium",           module: require("../commands/premium")          },
+        { name: "fun",               module: require("../commands/fun")              },
+        { name: "shop",              module: require("../commands/shop")             },
+        { name: "economy",           module: require("../commands/economy")          },
+        { name: "economy-advanced",  module: require("../commands/economy-advanced") },
+        { name: "gambling",          module: require("../commands/gambling")         },
+        { name: "games",             module: require("../commands/games")            },
+        { name: "quests",            module: require("../commands/quests")           },
+        { name: "battle",            module: require("../commands/battle")           },
+        { name: "pets",              module: require("../commands/pets")             },
+        { name: "profiles",          module: require("../commands/profiles")         },
+        { name: "leaderboards",      module: require("../commands/leaderboards")     },
+        { name: "images",            module: require("../commands/images")           },
+        { name: "admin",             module: require("../commands/admin")            },
+        { name: "memory",            module: require("../commands/memory")           },
+        { name: "server-insights",   module: require("../commands/serverInsights")   },
         { name: "public-stats-status", module: require("../commands/publicStatsStatus") },
-        { name: "leveling",         module: require("../commands/leveling")         },
+        { name: "leveling",          module: require("../commands/leveling")         },
     ]
 
     log.info(`Loaded ${commandModules.length} command modules`)
     return commandModules
 }
 
-/**
- * Dispatch a message to all command handlers in order.
- * Returns true if any handler consumed the message.
- * @param {import("discord.js").Message} message
- * @param {Array} commandModules
- * @returns {Promise<boolean>}
- */
 async function dispatchCommand(message, commandModules) {
     const guildConfig = message.guild
         ? getServerConfig(message.guild.id).config
@@ -79,6 +66,11 @@ async function dispatchCommand(message, commandModules) {
     if (commandName && !isCommandEnabled(guildConfig, commandName)) {
         await message.channel.send("⛔ That command is disabled in this server.").catch(() => {})
         return true
+    }
+
+    if (commandName) {
+        const planCheck = await checkCommandPlan(commandMessage, commandName)
+        if (!planCheck.ok) return true
     }
 
     for (const { name, module } of commandModules) {
