@@ -1,6 +1,9 @@
 name: Birthday System CI
 
 on:
+  push:
+    branches:
+      - feat/birthday-system
   pull_request:
     paths:
       - "utils/birthdays.js"
