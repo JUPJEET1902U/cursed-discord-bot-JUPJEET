@@ -65,9 +65,11 @@ for (const name of [
 assert.equal(typeof listeners.attachSecurityRecoveryListeners, "function")
 assert.equal(typeof listeners.processAdvancedJoin, "function")
 
-assert.deepEqual(protection.staffLimitDefinition("bans", defaults), { key: "bans", threshold: 5 })
-assert.deepEqual(protection.staffLimitDefinition("channelDeletes", defaults), { key: "channelChanges", threshold: 8 })
-assert.equal(protection.staffLimitDefinition("guildUpdates", defaults), null)
+assert.equal(protection.staffLimitDefinition("bans", defaults), null)
+assert.equal(protection.staffLimitDefinition("channelDeletes", defaults), null)
+assert.deepEqual(protection.staffLimitDefinition("bans", isolated), { key: "bans", threshold: 4 })
+assert.deepEqual(protection.staffLimitDefinition("channelDeletes", isolated), { key: "channelChanges", threshold: 6 })
+assert.equal(protection.staffLimitDefinition("guildUpdates", isolated), null)
 
 const strict = shield.effectiveShield(defaults, { active: true })
 assert.equal(strict.botInviteThreshold, 1)
