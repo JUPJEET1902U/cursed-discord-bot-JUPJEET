@@ -4,34 +4,18 @@
  */
 
 const { createCanvas, loadImage } = require("@napi-rs/canvas")
+const { isGuildPremium } = require("./premium")
 
 const WIDTH = 1000
 const HEIGHT = 420
 const DEFAULT_ACCENT = "#5865F2"
 const THEMES = {
-    classic: {
-        background: ["#111827", "#1f2937"],
-        panel: "rgba(17, 24, 39, 0.78)",
-        text: "#FFFFFF",
-        muted: "#D1D5DB",
-    },
-    midnight: {
-        background: ["#020617", "#172554"],
-        panel: "rgba(2, 6, 23, 0.82)",
-        text: "#F8FAFC",
-        muted: "#CBD5E1",
-    },
-    neon: {
-        background: ["#12001F", "#111827"],
-        panel: "rgba(17, 24, 39, 0.76)",
-        text: "#FFFFFF",
-        muted: "#E9D5FF",
-    },
+    classic: { background: ["#111827", "#1f2937"], panel: "rgba(17, 24, 39, 0.78)", text: "#FFFFFF", muted: "#D1D5DB" },
+    midnight: { background: ["#020617", "#172554"], panel: "rgba(2, 6, 23, 0.82)", text: "#F8FAFC", muted: "#CBD5E1" },
+    neon: { background: ["#12001F", "#111827"], panel: "rgba(17, 24, 39, 0.76)", text: "#FFFFFF", muted: "#E9D5FF" },
 }
 
-function normalizeTheme(theme) {
-    return THEMES[theme] ? theme : "classic"
-}
+function normalizeTheme(theme) { return THEMES[theme] ? theme : "classic" }
 
 function normalizeHex(value, fallback = DEFAULT_ACCENT) {
     if (typeof value !== "string") return fallback
@@ -57,11 +41,7 @@ function roundRect(ctx, x, y, width, height, radius) {
 function drawCoverImage(ctx, image, x, y, width, height) {
     const sourceRatio = image.width / image.height
     const targetRatio = width / height
-    let sx = 0
-    let sy = 0
-    let sw = image.width
-    let sh = image.height
-
+    let sx = 0, sy = 0, sw = image.width, sh = image.height
     if (sourceRatio > targetRatio) {
         sw = image.height * targetRatio
         sx = (image.width - sw) / 2
@@ -69,7 +49,6 @@ function drawCoverImage(ctx, image, x, y, width, height) {
         sh = image.width / targetRatio
         sy = (image.height - sh) / 2
     }
-
     ctx.drawImage(image, sx, sy, sw, sh, x, y, width, height)
 }
 
@@ -77,10 +56,7 @@ function truncateText(ctx, text, maxWidth) {
     if (!text) return ""
     let out = String(text)
     if (ctx.measureText(out).width <= maxWidth) return out
-
-    while (out.length > 1 && ctx.measureText(`${out}...`).width > maxWidth) {
-        out = out.slice(0, -1)
-    }
+    while (out.length > 1 && ctx.measureText(`${out}...`).width > maxWidth) out = out.slice(0, -1)
     return `${out}...`
 }
 
@@ -91,11 +67,8 @@ async function loadRemoteImage(url) {
         if (!["http:", "https:"].includes(parsed.protocol)) return null
         const response = await fetch(parsed)
         if (!response.ok) return null
-        const buffer = Buffer.from(await response.arrayBuffer())
-        return await loadImage(buffer)
-    } catch {
-        return null
-    }
+        return await loadImage(Buffer.from(await response.arrayBuffer()))
+    } catch { return null }
 }
 
 function drawGradientBackground(ctx, theme) {
@@ -107,10 +80,7 @@ function drawGradientBackground(ctx, theme) {
 }
 
 function drawAvatar(ctx, avatarImage, accent) {
-    const x = 70
-    const y = 90
-    const size = 210
-
+    const x = 70, y = 90, size = 210
     ctx.save()
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)"
     ctx.shadowBlur = 18
@@ -124,9 +94,8 @@ function drawAvatar(ctx, avatarImage, accent) {
     ctx.beginPath()
     ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2)
     ctx.clip()
-    if (avatarImage) {
-        drawCoverImage(ctx, avatarImage, x, y, size, size)
-    } else {
+    if (avatarImage) drawCoverImage(ctx, avatarImage, x, y, size, size)
+    else {
         ctx.fillStyle = "#374151"
         ctx.fillRect(x, y, size, size)
         ctx.fillStyle = "#9CA3AF"
@@ -138,14 +107,13 @@ function drawAvatar(ctx, avatarImage, accent) {
     ctx.restore()
 }
 
-/**
- * Generate a PNG buffer for a new member welcome card.
- * @param {import("discord.js").GuildMember} member
- * @param {object} config
- * @param {{ assignedRoleId?: string|null }} options
- * @returns {Promise<Buffer>}
- */
 async function generateWelcomeCard(member, config = {}, options = {}) {
+    if (!isGuildPremium(member.guild)) {
+        const error = new Error("Premium welcome cards are not enabled for this server owner.")
+        error.code = "PREMIUM_REQUIRED"
+        throw error
+    }
+
     const canvas = createCanvas(WIDTH, HEIGHT)
     const ctx = canvas.getContext("2d")
     const theme = THEMES[normalizeTheme(config.welcomeCardTheme)]
@@ -156,9 +124,7 @@ async function generateWelcomeCard(member, config = {}, options = {}) {
         drawCoverImage(ctx, background, 0, 0, WIDTH, HEIGHT)
         ctx.fillStyle = "rgba(0, 0, 0, 0.55)"
         ctx.fillRect(0, 0, WIDTH, HEIGHT)
-    } else {
-        drawGradientBackground(ctx, theme)
-    }
+    } else drawGradientBackground(ctx, theme)
 
     ctx.save()
     ctx.fillStyle = theme.panel
@@ -171,8 +137,7 @@ async function generateWelcomeCard(member, config = {}, options = {}) {
     ctx.fill()
 
     const avatarUrl = member.user.displayAvatarURL({ extension: "png", forceStatic: true, size: 256 })
-    const avatar = await loadRemoteImage(avatarUrl)
-    drawAvatar(ctx, avatar, accent)
+    drawAvatar(ctx, await loadRemoteImage(avatarUrl), accent)
 
     const guildName = member.guild?.name || "the server"
     const displayName = member.displayName || member.user?.username || "new member"
@@ -183,35 +148,25 @@ async function generateWelcomeCard(member, config = {}, options = {}) {
     ctx.fillStyle = accent
     ctx.font = "700 34px Arial"
     ctx.fillText("WELCOME", 330, 112)
-
     ctx.fillStyle = theme.text
     ctx.font = "800 58px Arial"
     ctx.fillText(truncateText(ctx, displayName, 585), 330, 185)
-
     ctx.fillStyle = theme.muted
     ctx.font = "500 30px Arial"
     ctx.fillText(truncateText(ctx, `to ${guildName}`, 585), 330, 235)
-
     ctx.fillStyle = "rgba(255, 255, 255, 0.16)"
     roundRect(ctx, 330, 274, 585, 70, 18)
     ctx.fill()
-
     ctx.fillStyle = theme.text
     ctx.font = "700 24px Arial"
     const memberCount = member.guild?.memberCount ? `Member #${member.guild.memberCount}` : "New member"
     ctx.fillText(memberCount, 354, 318)
-
     if (roleText) {
         ctx.fillStyle = theme.muted
         ctx.font = "500 18px Arial"
         ctx.fillText(truncateText(ctx, roleText, 350), 545, 318)
     }
-
     return canvas.toBuffer("image/png")
 }
 
-module.exports = {
-    generateWelcomeCard,
-    WIDTH,
-    HEIGHT,
-}
+module.exports = { generateWelcomeCard, WIDTH, HEIGHT }
