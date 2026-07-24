@@ -1,5 +1,6 @@
 const express = require("express")
 const crypto = require("crypto")
+require("./utils/serverPremium")
 const { createDashboardRouter } = require("./api/dashboard")
 const { createDashboardControlRouter } = require("./api/dashboardControl")
 const { createDashboardWelcomeRouter } = require("./api/dashboardWelcome")
