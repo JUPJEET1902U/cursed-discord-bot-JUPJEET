@@ -10,6 +10,7 @@
     "api:dev": "npx tsx --watch api/server.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:dashboard-api": "node --test test/dashboard-api.test.js",
+    "test:premium": "node --test test/premium-plans.test.js",
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build"
   },
