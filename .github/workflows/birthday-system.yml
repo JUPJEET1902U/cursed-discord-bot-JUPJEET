@@ -1,0 +1,35 @@
+name: Birthday System CI
+
+on:
+  pull_request:
+    paths:
+      - "utils/birthdays.js"
+      - "commands/birthdays.js"
+      - "commands/birthdayCatalog.js"
+      - "api/dashboardBirthdays.js"
+      - "handlers/commandLoader.js"
+      - "webhook.js"
+      - "test/birthdays.test.js"
+      - ".github/workflows/birthday-system.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate syntax
+        run: |
+          node --check utils/birthdays.js
+          node --check commands/birthdays.js
+          node --check commands/birthdayCatalog.js
+          node --check api/dashboardBirthdays.js
+          node --check handlers/commandLoader.js
+          node --check webhook.js
+          node --check test/birthdays.test.js
+      - name: Run birthday tests
+        run: node --test test/birthdays.test.js
