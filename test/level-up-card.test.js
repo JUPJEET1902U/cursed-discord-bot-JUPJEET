@@ -1,12 +1,12 @@
-const fs = require("node:fs")
-const path = require("node:path")
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const { createCanvas } = require("@napi-rs/canvas")
+const { createCanvas, GlobalFonts } = require("@napi-rs/canvas")
 const {
     generateLevelUpCard,
-    drawVectorText,
+    ensureDisplayFont,
+    drawText,
     normalizeText,
+    FONT_FAMILY,
     WIDTH,
     HEIGHT,
 } = require("../utils/levelUpCard")
@@ -20,29 +20,31 @@ function visiblePixelCount(ctx, width, height) {
     return visible
 }
 
-test("critical card text is rendered without system fonts", () => {
-    const source = fs.readFileSync(path.join(__dirname, "../utils/levelUpCard.js"), "utf8")
-    assert.doesNotMatch(source, /\.fillText\s*\(/)
-    assert.doesNotMatch(source, /\.measureText\s*\(/)
+test("Russo One loads and renders as the primary level-up font", async () => {
+    const loaded = await ensureDisplayFont()
+    assert.equal(loaded, true)
+    assert.equal(GlobalFonts.has(FONT_FAMILY), true)
 
-    const canvas = createCanvas(420, 100)
+    const canvas = createCanvas(520, 120)
     const ctx = canvas.getContext("2d")
-    drawVectorText(ctx, "LEVEL 25 UNLOCKED", 10, 78, {
-        height: 52,
+    const result = drawText(ctx, "LEVEL 25 UNLOCKED", 18, 82, {
+        size: 54,
+        minSize: 32,
         color: "#FFFFFF",
-        weight: 900,
+        maxWidth: 480,
     })
 
-    assert.ok(visiblePixelCount(ctx, 420, 100) > 1_000)
+    assert.equal(result.renderer, "font")
+    assert.ok(visiblePixelCount(ctx, 520, 120) > 1_000)
 })
 
-test("display names are normalized into visible Railway-safe glyphs", () => {
+test("display names remain normalized for reliable card labels", () => {
     assert.equal(normalizeText("Issue"), "ISSUE")
     assert.equal(normalizeText("ＣＵＲＳＥＤ Member ✦"), "CURSED MEMBER")
     assert.equal(normalizeText("Level 4 → 5"), "LEVEL 4 > 5")
 })
 
-test("level-up card renders a valid PNG with all text sections", async () => {
+test("level-up card renders a valid PNG with modern typography", async () => {
     const user = {
         username: "cursed-user",
         globalName: "ＣＵＲＳＥＤ Member",
