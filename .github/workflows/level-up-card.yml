@@ -1,0 +1,23 @@
+name: Level-Up Card CI
+
+on:
+  pull_request:
+    paths:
+      - "utils/levelUpCard.js"
+      - "test/level-up-card.test.js"
+      - ".github/workflows/level-up-card.yml"
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate renderer syntax
+        run: node --check utils/levelUpCard.js
+      - name: Render card tests
+        run: node --test test/level-up-card.test.js
