@@ -16,6 +16,11 @@ function boundedLimit(value, fallback, max) {
     return Math.max(0, Math.min(max, Math.floor(parsed)))
 }
 
+function planLimits(userId) {
+    try { return require("./premium").getPlanLimits(userId) }
+    catch { return { memoryStoredMessages: 8, memoryContextMessages: 4 } }
+}
+
 function loadMemory() {
     try {
         if (fs.existsSync(MEMORY_FILE)) return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"))
@@ -49,17 +54,19 @@ function cleanupMemory() {
     if (changed) saveMemory(mem)
 }
 
-function getUserMemory(guildId, userId, contextLimit = MAX_CONTEXT) {
+function getUserMemory(guildId, userId, contextLimit) {
     const mem = loadMemory()
     const history = mem[memKey(guildId, userId)] || []
-    const limit = boundedLimit(contextLimit, MAX_CONTEXT, MAX_CONTEXT)
+    const defaultLimit = planLimits(userId).memoryContextMessages
+    const limit = boundedLimit(contextLimit, defaultLimit, MAX_CONTEXT)
     return limit === 0 ? [] : history.slice(-limit)
 }
 
-function appendUserMemory(guildId, userId, userMsg, botReply, storageLimit = MAX_MEMORY) {
+function appendUserMemory(guildId, userId, userMsg, botReply, storageLimit) {
     const mem = loadMemory()
     const key = memKey(guildId, userId)
-    const limit = boundedLimit(storageLimit, MAX_MEMORY, MAX_MEMORY)
+    const defaultLimit = planLimits(userId).memoryStoredMessages
+    const limit = boundedLimit(storageLimit, defaultLimit, MAX_MEMORY)
     if (limit === 0) {
         delete mem[key]
         saveMemory(mem)
