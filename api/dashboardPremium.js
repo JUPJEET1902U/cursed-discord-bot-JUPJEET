@@ -6,11 +6,18 @@ const { getServerConfig, updateGuildConfigAndWait } = require("../utils/serverCo
 const {
     PLAN_LIMITS,
     isBotOwnerId,
+    isPremiumUser,
+    isGuildPremium,
+    isServerPremium,
+    getServerPremiumAccount,
     getPaymentSettings,
     updatePaymentSettings,
     grantPremiumUser,
     revokePremiumUser,
     listPremiumUsers,
+    grantServerPremium,
+    revokeServerPremium,
+    listServerPremiumAccounts,
 } = require("../utils/premium")
 
 const SNOWFLAKE = /^\d{17,20}$/
@@ -73,6 +80,16 @@ function validateSettings(body) {
     return errors
 }
 
+function parseDays(value) {
+    const days = value == null || value === "" ? null : Number(value)
+    if (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+        const error = new Error("Days must be a whole number from 1 to 3650.")
+        error.code = "VALIDATION_ERROR"
+        throw error
+    }
+    return days
+}
+
 function assignableRoles(guild) {
     const me = guild.members.me
     if (!me?.permissions.has(PermissionFlagsBits.ManageRoles)) return []
@@ -84,12 +101,17 @@ function assignableRoles(guild) {
 
 function guildSummary(guild) {
     const config = getServerConfig(guild.id).config
+    const serverAccount = isServerPremium(guild.id) ? getServerPremiumAccount(guild.id) : null
+    const ownerPremium = isPremiumUser(guild.ownerId)
     return {
         id: guild.id,
         name: guild.name,
         iconUrl: guild.iconURL({ extension: "png", size: 128 }),
         premiumRoleId: config.premiumRoleId || null,
         roles: assignableRoles(guild),
+        effectivePremium: isGuildPremium(guild),
+        premiumSource: serverAccount ? "server" : ownerPremium ? "owner" : null,
+        serverPremium: serverAccount,
     }
 }
 
@@ -97,6 +119,7 @@ function payload(client) {
     return {
         settings: getPaymentSettings(),
         accounts: listPremiumUsers(),
+        serverAccounts: listServerPremiumAccounts(),
         plans: PLAN_LIMITS,
         guilds: client?.isReady()
             ? [...client.guilds.cache.values()].sort((a, b) => a.name.localeCompare(b.name)).map(guildSummary)
@@ -138,11 +161,8 @@ function createDashboardPremiumRouter(getClient) {
     router.post("/owner/premium/accounts", async (req, res) => {
         const userId = String(req.body?.userId || "")
         if (!SNOWFLAKE.test(userId)) return res.status(422).json({ error: "Enter a valid Discord user ID.", code: "VALIDATION_ERROR" })
-        const days = req.body?.days == null || req.body.days === "" ? null : Number(req.body.days)
-        if (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)) {
-            return res.status(422).json({ error: "Days must be a whole number from 1 to 3650.", code: "VALIDATION_ERROR" })
-        }
         try {
+            const days = parseDays(req.body?.days)
             await grantPremiumUser(userId, {
                 client: getClient(),
                 grantedBy: req.dashboardOwnerId,
@@ -152,7 +172,7 @@ function createDashboardPremiumRouter(getClient) {
             })
             res.json({ data: payload(getClient()) })
         } catch (err) {
-            res.status(422).json({ error: err.message, code: "PREMIUM_GRANT_FAILED" })
+            res.status(422).json({ error: err.message, code: err.code || "PREMIUM_GRANT_FAILED" })
         }
     })
 
@@ -163,6 +183,37 @@ function createDashboardPremiumRouter(getClient) {
             res.json({ data: payload(getClient()) })
         } catch (err) {
             res.status(422).json({ error: err.message, code: "PREMIUM_REVOKE_FAILED" })
+        }
+    })
+
+    router.post("/owner/premium/guilds", async (req, res) => {
+        const client = getClient()
+        const guildId = String(req.body?.guildId || "")
+        const guild = client?.guilds.cache.get(guildId)
+        if (!guild) return res.status(404).json({ error: "CURSED is not in that server.", code: "BOT_NOT_IN_GUILD" })
+        try {
+            const days = parseDays(req.body?.days)
+            await grantServerPremium(guildId, {
+                grantedBy: req.dashboardOwnerId,
+                source: "owner-dashboard-server",
+                note: String(req.body?.note || "").slice(0, 500),
+                expiresAt: days ? new Date(Date.now() + days * 86_400_000) : null,
+            })
+            res.json({ data: payload(client) })
+        } catch (err) {
+            res.status(422).json({ error: err.message, code: err.code || "SERVER_PREMIUM_GRANT_FAILED" })
+        }
+    })
+
+    router.delete("/owner/premium/guilds/:guildId", async (req, res) => {
+        const client = getClient()
+        const guild = client?.guilds.cache.get(req.params.guildId)
+        if (!guild) return res.status(404).json({ error: "CURSED is not in that server.", code: "BOT_NOT_IN_GUILD" })
+        try {
+            await revokeServerPremium(guild.id)
+            res.json({ data: payload(client) })
+        } catch (err) {
+            res.status(422).json({ error: err.message, code: "SERVER_PREMIUM_REVOKE_FAILED" })
         }
     })
 
