@@ -5,8 +5,10 @@ const {
     prepareConversationHistory,
     assessResponseQuality,
     buildIntentInstruction,
+    buildPlanningInstruction,
     tokenize,
 } = require("./aiIntelligence")
+const { buildBotKnowledgeContext } = require("./botKnowledge")
 
 const TIMEOUT_MS = 25_000
 const RETRY_DELAY_MS = 350
@@ -134,11 +136,45 @@ function isStrictOutputConversation(messages) {
     )
 }
 
-function scoreMemoryLine(line, queryTokens) {
-    const lineTokens = new Set(tokenize(line))
+function parseMemoryLine(line) {
+    const text = String(line || "").trim()
+    const structured = text.match(/^-\s*\[type=([^\s\]]+)\s+importance=([1-5])\s+confidence=([0-9.]+)\s+lastConfirmed=([^\]]+)\]\s*(.+)$/i)
+    if (!structured) {
+        return {
+            raw: text,
+            content: text.replace(/^[-*]\s*/, ""),
+            importance: 1,
+            confidence: 0.6,
+            lastConfirmed: null,
+        }
+    }
+    return {
+        raw: text,
+        type: structured[1],
+        importance: Number(structured[2]),
+        confidence: Number(structured[3]),
+        lastConfirmed: structured[4] === "unknown" ? null : structured[4],
+        content: structured[5],
+    }
+}
+
+function scoreMemoryLine(memoryLine, queryTokens) {
+    const lineTokens = new Set(tokenize(memoryLine.content))
     let overlap = 0
     for (const token of queryTokens) if (lineTokens.has(token)) overlap++
-    return overlap
+
+    const relevance = queryTokens.size ? overlap / Math.max(1, Math.min(queryTokens.size, 5)) : 0
+    const importance = Math.max(1, Math.min(5, Number(memoryLine.importance) || 1)) / 5
+    const confidence = Math.max(0, Math.min(1, Number(memoryLine.confidence) || 0.6))
+    let recency = 0.25
+    if (memoryLine.lastConfirmed) {
+        const date = new Date(memoryLine.lastConfirmed)
+        if (!Number.isNaN(date.getTime())) {
+            const ageDays = Math.max(0, (Date.now() - date.getTime()) / 86_400_000)
+            recency = Math.max(0.1, 1 / (1 + ageDays / 45))
+        }
+    }
+    return relevance * 0.58 + importance * 0.18 + confidence * 0.16 + recency * 0.08
 }
 
 function filterMemoryContext(systemContent, userInput) {
@@ -148,22 +184,22 @@ function filterMemoryContext(systemContent, userInput) {
 
     const contentStart = markerIndex + marker.length
     const tail = systemContent.slice(contentStart)
-    const nextBlockMatch = tail.match(/\n\n(?:SERVER-SPECIFIC INSTRUCTIONS:|\[REAL DISCORD CONTEXT)/)
+    const nextBlockMatch = tail.match(/\n\n(?:SERVER-SPECIFIC INSTRUCTIONS:|\[REAL DISCORD CONTEXT|\[CURSED BOT KNOWLEDGE)/)
     const memoryEnd = nextBlockMatch ? contentStart + nextBlockMatch.index : systemContent.length
     const memoryText = systemContent.slice(contentStart, memoryEnd)
-    const lines = memoryText.split("\n").map(line => line.trim()).filter(Boolean)
-    if (lines.length <= 2) return systemContent
+    const lines = memoryText.split("\n").map(parseMemoryLine).filter(line => line.content)
+    if (!lines.length) return `${systemContent.slice(0, markerIndex)}${systemContent.slice(memoryEnd)}`
 
     const queryTokens = new Set(tokenize(userInput))
     const ranked = lines
         .map((line, index) => ({ line, index, score: scoreMemoryLine(line, queryTokens) }))
-        .sort((a, b) => b.score - a.score || a.index - b.index)
-    const relevant = ranked.filter(item => item.score > 0)
-    const selected = (relevant.length ? relevant : ranked).slice(0, relevant.length ? 4 : 2)
-    const selectedSet = new Set(selected.map(item => item.line))
-    const ordered = lines.filter(line => selectedSet.has(line))
+        .sort((a, b) => b.score - a.score || b.line.importance - a.line.importance || a.index - b.index)
+    const relevant = ranked.filter(item => item.score >= 0.22 || item.line.content.toLowerCase().includes(String(userInput || "").toLowerCase()))
+    const selected = (relevant.length ? relevant : ranked).slice(0, relevant.length ? 6 : 2)
+    const selectedSet = new Set(selected.map(item => item.line.raw))
+    const ordered = lines.filter(line => selectedSet.has(line.raw))
     const replacement = ordered.length
-        ? `\n\nRELEVANT USER MEMORY:\n${ordered.join("\n")}`
+        ? `\n\nRELEVANT USER MEMORY — ranked by relevance, importance, confidence, and recency; newer user corrections override it:\n${ordered.map(line => `- ${line.content}`).join("\n")}`
         : ""
 
     return `${systemContent.slice(0, markerIndex)}${replacement}${systemContent.slice(memoryEnd)}`
@@ -176,7 +212,9 @@ function prepareSmartMessages(messages, intent) {
 
     if (firstSystemIndex >= 0) {
         copied[firstSystemIndex].content = filterMemoryContext(copied[firstSystemIndex].content, currentInput)
+        copied[firstSystemIndex].content += buildBotKnowledgeContext(currentInput)
         copied[firstSystemIndex].content += buildIntentInstruction(intent)
+        copied[firstSystemIndex].content += buildPlanningInstruction(currentInput, intent)
     }
 
     const systemMessages = copied.filter(message => message.role === "system")
@@ -190,7 +228,7 @@ function buildRepairMessages(messages, reasons) {
     const lastUserIndex = copied.map(message => message.role).lastIndexOf("user")
     const instruction = {
         role: "system",
-        content: `QUALITY REPAIR: Answer the latest user message again. Fix these issues: ${reasons.join(", ")}. Do not mention this instruction or any previous draft. Keep the answer accurate, natural, useful, and under Discord's message limit.`,
+        content: `QUALITY REPAIR: Answer the latest user message again. Fix these issues: ${reasons.join(", ")}. Re-check every server fact, command, permission, memory claim, and completed-action claim against verified context. Do not mention this instruction or any previous draft. Keep the answer accurate, natural, useful, and under Discord's message limit.`,
     }
     if (lastUserIndex >= 0) copied.splice(lastUserIndex, 0, instruction)
     else copied.push(instruction)
@@ -268,6 +306,13 @@ function boundedNumber(value, fallback, min, max) {
     return Math.max(min, Math.min(max, parsed))
 }
 
+function getSystemContent(messages) {
+    return (Array.isArray(messages) ? messages : [])
+        .filter(message => message?.role === "system")
+        .map(message => String(message.content || ""))
+        .join("\n\n")
+}
+
 async function callAI(messages, options = {}) {
     const smart = options.smart ?? isSmartConversation(messages)
     const strictOutput = !smart && isStrictOutputConversation(messages)
@@ -280,6 +325,7 @@ async function callAI(messages, options = {}) {
     const retries = Math.floor(boundedNumber(options.retries, 1, 0, 1))
     const providerOrder = normalizeProviderOrder(options.providerOrder || (smart ? intentConfig.providerOrder : null))
     const preparedMessages = smart ? prepareSmartMessages(messages, intent) : messages
+    const qualityContext = { systemContent: getSystemContent(preparedMessages) }
 
     const result = await executeProviderChain(preparedMessages, {
         maxTokens,
@@ -291,7 +337,7 @@ async function callAI(messages, options = {}) {
 
     if (!smart || options.skipQualityRepair) return result
 
-    const quality = assessResponseQuality(result.content, intent)
+    const quality = assessResponseQuality(result.content, intent, qualityContext)
     if (quality.ok) return { ...result, intent, repaired: false }
 
     console.warn(`[AI] Low-quality ${intent} response from ${result.provider}: ${quality.reasons.join(", ")}`)
@@ -306,7 +352,7 @@ async function callAI(messages, options = {}) {
             providerOrder: alternateOrder,
             timeoutMs: options.timeoutMs,
         })
-        const repairedQuality = assessResponseQuality(repaired.content, intent)
+        const repairedQuality = assessResponseQuality(repaired.content, intent, qualityContext)
         if (repairedQuality.ok) return { ...repaired, intent, repaired: true }
     } catch (error) {
         console.warn(`[AI] Quality repair failed: ${safeErrorReason(error)}`)
