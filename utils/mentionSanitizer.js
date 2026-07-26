@@ -31,14 +31,12 @@ function sanitize(text) {
     if (typeof text !== "string") text = String(text)
 
     let result = text
-    let modified = false
 
     for (const { pattern, replacement, label } of DANGEROUS_PATTERNS) {
         const before = result
         result = result.replace(pattern, replacement)
         if (result !== before) {
             log.warn(`Sanitized dangerous pattern: ${label}`)
-            modified = true
         }
     }
 
@@ -62,7 +60,8 @@ const SAFE_ALLOWED_MENTIONS = {
 }
 
 /**
- * Safe allowed_mentions that only pings the message author.
+ * Safe allowed_mentions that only pings the message author through an explicit
+ * mention. Used only as the fallback when Discord cannot create a reply.
  * @param {string} userId
  */
 function authorOnlyMentions(userId) {
@@ -71,6 +70,21 @@ function authorOnlyMentions(userId) {
         users: [userId],
         roles: [],
         repliedUser: false,
+    }
+}
+
+/**
+ * Safe allowed_mentions for a Discord message reply. Setting repliedUser to
+ * true creates the normal Discord reply notification without allowing any
+ * arbitrary user, role, @everyone, or @here mentions in the response body.
+ * @param {boolean} mentionAuthor
+ */
+function replyAllowedMentions(mentionAuthor = false) {
+    return {
+        parse: [],
+        users: [],
+        roles: [],
+        repliedUser: Boolean(mentionAuthor),
     }
 }
 
@@ -94,20 +108,43 @@ async function sendSafe(channel, content) {
 }
 
 /**
- * Send a safe reply to a message.
+ * Send a safe reply to the exact triggering message.
+ *
+ * When mentionAuthor is true Discord shows the standard reply header and sends
+ * the normal reply notification to that message author. If the source message
+ * was deleted or cannot be referenced, the fallback sends one explicit,
+ * author-only mention so the response is not lost or sent to the wrong person.
+ *
  * @param {import("discord.js").Message} message
  * @param {string} content
  * @param {object} [opts]
  * @param {boolean} [opts.mentionAuthor]
+ * @param {boolean} [opts.fallbackToChannel]
  * @returns {Promise}
  */
-async function replySafe(message, content, { mentionAuthor = false } = {}) {
-    return message.reply({
-        content: sanitize(content),
-        allowedMentions: mentionAuthor
-            ? authorOnlyMentions(message.author.id)
-            : SAFE_ALLOWED_MENTIONS,
-    })
+async function replySafe(message, content, { mentionAuthor = false, fallbackToChannel = true } = {}) {
+    const safeContent = sanitize(content)
+
+    try {
+        return await message.reply({
+            content: safeContent,
+            allowedMentions: replyAllowedMentions(mentionAuthor),
+        })
+    } catch (error) {
+        if (!fallbackToChannel) throw error
+
+        log.warn(`Message reply failed; using safe channel fallback: ${error.message}`)
+        const fallbackContent = mentionAuthor
+            ? `<@${message.author.id}> ${safeContent}`
+            : safeContent
+
+        return message.channel.send({
+            content: fallbackContent,
+            allowedMentions: mentionAuthor
+                ? authorOnlyMentions(message.author.id)
+                : SAFE_ALLOWED_MENTIONS,
+        })
+    }
 }
 
 /**
@@ -164,4 +201,5 @@ module.exports = {
     interactionFollowUpSafe,
     SAFE_ALLOWED_MENTIONS,
     authorOnlyMentions,
+    replyAllowedMentions,
 }
