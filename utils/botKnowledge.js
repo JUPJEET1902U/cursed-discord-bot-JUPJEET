@@ -1,11 +1,13 @@
 const { COMMAND_REGISTRY } = require("./helpGenerator")
 
-const BOT_KNOWLEDGE_TRIGGERS = [
-    "command", "commands", "prefix", "how do i", "how to", "set up", "setup", "configure",
-    "enable", "disable", "cooldown", "permission", "premium", "what can you do", "help menu",
-    "welcome", "ticket", "autorole", "balance", "economy", "pet", "profile", "memory",
-    "roast", "imagine", "meme", "moderation", "ban", "kick", "mute", "purge",
+const BOT_FEATURE_TRIGGERS = [
+    "command", "commands", "prefix", "cooldown", "permission", "premium", "what can you do",
+    "help menu", "welcome", "ticket", "autorole", "balance", "economy", "pet", "profile",
+    "memory", "roast", "imagine", "meme", "moderation", "ban", "kick", "mute", "purge",
 ]
+
+const BOT_ACTION_TRIGGERS = ["how do i", "how to", "set up", "setup", "configure", "enable", "disable"]
+const BOT_ANCHORS = ["cursed", "bot", "discord", "command", "feature", "server"]
 
 function normalize(value) {
     return String(value || "").replace(/\s+/g, " ").trim()
@@ -36,7 +38,10 @@ function needsBotKnowledge(input) {
     const text = normalize(input).toLowerCase()
     if (!text) return false
     if (/[!/][a-z][a-z0-9-]*/i.test(text)) return true
-    return BOT_KNOWLEDGE_TRIGGERS.some(trigger => text.includes(trigger))
+    if (BOT_FEATURE_TRIGGERS.some(trigger => text.includes(trigger))) return true
+    const asksForAction = BOT_ACTION_TRIGGERS.some(trigger => text.includes(trigger))
+    const hasBotAnchor = BOT_ANCHORS.some(anchor => text.includes(anchor))
+    return asksForAction && hasBotAnchor
 }
 
 function scoreCommand(command, queryTokens, rawQuery) {
