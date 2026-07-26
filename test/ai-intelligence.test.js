@@ -87,6 +87,7 @@ function run() {
         { systemContent: "[CURSED BOT KNOWLEDGE — verified from the command registry]\nVerified command names: !help, !welcome" }
     ).ok, false)
     assert.equal(assessResponseQuality("The command fails because the bot lacks Manage Messages in that channel.", "technical").ok, true)
+    assert.equal(assessResponseQuality("Call the /api/health route to verify the deployment.", "technical", { systemContent: "[CURSED BOT KNOWLEDGE — verified from the command registry]\nVerified command names: !help" }).ok, true)
 
     const prompt = buildSystemPrompt({ personality: "developer" })
     assert.ok(prompt.includes(CORE_INTELLIGENCE_RULES))
@@ -124,6 +125,7 @@ function run() {
     assert.doesNotMatch(filtered, /importance=/)
 
     assert.equal(needsBotKnowledge("How do I check my balance command?"), true)
+    assert.equal(needsBotKnowledge("How do I bake a cake?"), false)
     const botKnowledge = buildBotKnowledgeContext("How do I check my balance?")
     assert.match(botKnowledge, /!balance/)
     assert.match(botKnowledge, /Verified command names/)
