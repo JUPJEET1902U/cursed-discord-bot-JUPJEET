@@ -94,20 +94,32 @@ async function sendSafe(channel, content) {
 }
 
 /**
- * Send a safe reply to a message.
+ * Send a safe native Discord reply without pinging the author.
+ * Falls back to one normal channel message if the original message can no
+ * longer be referenced. The fallback prevents lost AI responses without
+ * sending both a reply and a duplicate channel message.
  * @param {import("discord.js").Message} message
  * @param {string} content
  * @param {object} [opts]
  * @param {boolean} [opts.mentionAuthor]
+ * @param {boolean} [opts.fallbackToChannel]
  * @returns {Promise}
  */
-async function replySafe(message, content, { mentionAuthor = false } = {}) {
-    return message.reply({
+async function replySafe(message, content, { mentionAuthor = false, fallbackToChannel = true } = {}) {
+    const payload = {
         content: sanitize(content),
         allowedMentions: mentionAuthor
             ? authorOnlyMentions(message.author.id)
             : SAFE_ALLOWED_MENTIONS,
-    })
+        failIfNotExists: false,
+    }
+
+    try {
+        return await message.reply(payload)
+    } catch (error) {
+        if (!fallbackToChannel || !message.channel?.send) throw error
+        return message.channel.send(payload)
+    }
 }
 
 /**
