@@ -1,0 +1,35 @@
+name: AI Native Reply CI
+
+on:
+  pull_request:
+    paths:
+      - "index.js"
+      - "utils/mentionSanitizer.js"
+      - "utils/errorFormatter.js"
+      - "test/ai-native-reply.test.js"
+      - ".github/workflows/ai-native-replies.yml"
+  push:
+    paths:
+      - "index.js"
+      - "utils/mentionSanitizer.js"
+      - "utils/errorFormatter.js"
+      - "test/ai-native-reply.test.js"
+      - ".github/workflows/ai-native-replies.yml"
+
+jobs:
+  syntax-and-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate JavaScript syntax
+        run: |
+          node --check index.js
+          node --check utils/mentionSanitizer.js
+          node --check test/ai-native-reply.test.js
+      - name: Validate native no-ping AI replies
+        run: node test/ai-native-reply.test.js
