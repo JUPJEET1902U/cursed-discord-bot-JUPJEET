@@ -1,0 +1,39 @@
+name: AI Intelligence CI
+
+on:
+  pull_request:
+    paths:
+      - "utils/ai.js"
+      - "utils/aiIntelligence.js"
+      - "utils/prompts.js"
+      - "test/ai-intelligence.test.js"
+      - ".github/workflows/ai-intelligence.yml"
+  workflow_dispatch:
+
+jobs:
+  ai-intelligence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax checks
+        run: |
+          node --check utils/ai.js
+          node --check utils/aiIntelligence.js
+          node --check utils/prompts.js
+          node --check test/ai-intelligence.test.js
+
+      - name: AI intelligence contracts
+        run: node test/ai-intelligence.test.js
