@@ -24,9 +24,9 @@ async function run() {
     assert.equal(replyPayloads.length, 1, "native Discord reply should be used first")
     assert.equal(fallbackPayloads.length, 0, "successful replies must not create duplicates")
     assert.equal(replyPayloads[0].failIfNotExists, false)
-    assert.deepEqual(replyPayloads[0].allowedMentions, SAFE_ALLOWED_MENTIONS)
-    assert.equal(replyPayloads[0].allowedMentions.repliedUser, false, "reply header must not ping the author")
-    assert.deepEqual(replyPayloads[0].allowedMentions.users, [], "no explicit user mention may be allowed")
+    assert.equal(replyPayloads[0].allowedMentions.repliedUser, true, "native reply should notify the replied author")
+    assert.deepEqual(replyPayloads[0].allowedMentions.users, [], "no explicit user mention may be allowed in response text")
+    assert.deepEqual(replyPayloads[0].allowedMentions.roles, [])
     assert.doesNotMatch(replyPayloads[0].content, /<@!?\d+>/)
     assert.doesNotMatch(replyPayloads[0].content, /@everyone/)
 
@@ -50,7 +50,8 @@ async function run() {
     assert.equal(fallbackResult.id, "fallback-only")
     assert.equal(failedReplies.length, 1)
     assert.equal(fallbackSends.length, 1, "failed message references should create exactly one fallback")
-    assert.equal(fallbackSends[0].allowedMentions.repliedUser, false)
+    assert.deepEqual(fallbackSends[0].allowedMentions, SAFE_ALLOWED_MENTIONS)
+    assert.equal(fallbackSends[0].allowedMentions.repliedUser, false, "normal fallback messages must not ping anyone")
     assert.deepEqual(fallbackSends[0].allowedMentions.users, [])
 
     await assert.rejects(
@@ -58,6 +59,17 @@ async function run() {
         /Unknown Message/
     )
     assert.equal(fallbackSends.length, 1, "disabled fallback must not send another message")
+
+    const silentReplyPayloads = []
+    const silentMessage = {
+        ...message,
+        reply: async payload => {
+            silentReplyPayloads.push(payload)
+            return { id: "silent-reply" }
+        },
+    }
+    await replySafe(silentMessage, "Silent reply", { mentionAuthor: false })
+    assert.equal(silentReplyPayloads[0].allowedMentions.repliedUser, false)
 
     const indexSource = fs.readFileSync(require.resolve("../index"), "utf8")
     assert.match(indexSource, /const \{ sendSafe, replySafe \} = require\("\.\/utils\/mentionSanitizer"\)/)
@@ -74,7 +86,7 @@ async function run() {
     assert.doesNotMatch(aiSection, /sendSafe\(message\.channel/)
     assert.doesNotMatch(aiSection, /<@\$\{userId\}>|<@!\$\{userId\}>/)
 
-    console.log("AI native no-ping reply contracts passed")
+    console.log("AI native reply notification contracts passed")
 }
 
 run().catch(error => {
