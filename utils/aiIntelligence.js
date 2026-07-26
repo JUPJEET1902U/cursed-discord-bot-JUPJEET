@@ -1,7 +1,3 @@
-const logger = require("./logger")
-
-const log = logger.child("AIIntelligence")
-
 const STOP_WORDS = new Set([
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
     "had", "has", "have", "he", "her", "him", "his", "i", "if", "in", "is",
@@ -33,7 +29,7 @@ const INTENT_CONFIG = {
         providerOrder: ["gemini", "groq", "openrouter"],
         temperature: 0.2,
         maxTokens: 900,
-        instruction: "Solve the technical problem step by step internally, then give a clear, usable answer. Preserve code and configuration details exactly.",
+        instruction: "Solve the technical problem carefully, then give a clear, usable answer. Preserve code and configuration details exactly.",
     },
     reasoning: {
         providerOrder: ["gemini", "openrouter", "groq"],
@@ -94,11 +90,10 @@ function classifyIntent(input) {
 function getIntentConfig(intent, requestedMaxTokens = 500) {
     const base = INTENT_CONFIG[intent] || INTENT_CONFIG.casual
     const requested = Number(requestedMaxTokens)
-    const safeRequested = Number.isFinite(requested) ? Math.max(100, Math.min(1800, Math.floor(requested))) : 500
-    return {
-        ...base,
-        maxTokens: Math.min(safeRequested, base.maxTokens),
-    }
+    const safeRequested = Number.isFinite(requested)
+        ? Math.max(100, Math.min(1800, Math.floor(requested)))
+        : 500
+    return { ...base, maxTokens: Math.min(safeRequested, base.maxTokens) }
 }
 
 function compactMessage(message, maxLength = 320) {
@@ -149,34 +144,6 @@ function prepareConversationHistory(history, options = {}) {
     return [...summary, ...recent]
 }
 
-async function buildReplyContext(message) {
-    if (!message?.reference?.messageId || typeof message.fetchReference !== "function") return ""
-
-    try {
-        const referenced = await message.fetchReference()
-        if (!referenced) return ""
-
-        const authorName = normalizeText(
-            referenced.member?.displayName
-            || referenced.author?.globalName
-            || referenced.author?.username
-            || "another user"
-        ).slice(0, 80)
-        const content = normalizeText(referenced.cleanContent || referenced.content).slice(0, 700)
-        const attachmentCount = referenced.attachments?.size || 0
-        const parts = [`The current user is replying to a message from ${authorName}.`]
-
-        if (content) parts.push(`Referenced message: "${content}"`)
-        if (attachmentCount) parts.push(`The referenced message contains ${attachmentCount} attachment(s), but their contents are not available unless separately described.`)
-        parts.push("Use this only to resolve what the user is referring to. Do not claim the referenced author said anything beyond the quoted message.")
-
-        return `\n\n[REPLIED MESSAGE CONTEXT]\n${parts.join("\n")}`
-    } catch (error) {
-        log.debug(`Reply context unavailable: ${error.message}`)
-        return ""
-    }
-}
-
 function repeatedSentenceRatio(text) {
     const sentences = normalizeText(text)
         .toLowerCase()
@@ -212,61 +179,6 @@ function buildIntentInstruction(intent) {
     return `\n\n[RESPONSE MODE: ${intent.toUpperCase()}]\n${config.instruction}\nAnswer the user's latest message, not the internal context blocks.`
 }
 
-function buildRepairMessages(messages, reasons) {
-    const copied = Array.isArray(messages) ? [...messages] : []
-    const lastUserIndex = copied.map(message => message.role).lastIndexOf("user")
-    const repairInstruction = {
-        role: "system",
-        content: `QUALITY REPAIR: Produce a fresh answer to the latest user message. Fix these issues: ${reasons.join(", ")}. Do not mention this repair instruction or the previous draft. Keep the answer accurate, natural, and Discord-safe.`,
-    }
-
-    if (lastUserIndex >= 0) copied.splice(lastUserIndex, 0, repairInstruction)
-    else copied.push(repairInstruction)
-    return copied
-}
-
-async function generateSmartReply({ callAI, systemPrompt, history, currentUserMessage, rawInput, maxTokens = 500 }) {
-    if (typeof callAI !== "function") throw new TypeError("callAI must be a function")
-
-    const intent = classifyIntent(rawInput)
-    const config = getIntentConfig(intent, maxTokens)
-    const compactHistory = prepareConversationHistory(history)
-    const messages = [
-        { role: "system", content: `${systemPrompt}${buildIntentInstruction(intent)}` },
-        ...compactHistory,
-        { role: "user", content: currentUserMessage },
-    ]
-
-    const result = await callAI(messages, {
-        maxTokens: config.maxTokens,
-        temperature: config.temperature,
-        providerOrder: config.providerOrder,
-        retries: 1,
-    })
-
-    const quality = assessResponseQuality(result.content, intent)
-    if (quality.ok) return { ...result, intent, repaired: false }
-
-    log.warn(`Low-quality ${intent} response from ${result.provider}: ${quality.reasons.join(", ")}`)
-
-    try {
-        const alternateOrder = config.providerOrder.filter(provider => provider !== result.provider)
-        alternateOrder.push(result.provider)
-        const repaired = await callAI(buildRepairMessages(messages, quality.reasons), {
-            maxTokens: config.maxTokens,
-            temperature: Math.max(0.15, config.temperature - 0.15),
-            providerOrder: alternateOrder,
-            retries: 0,
-        })
-        const repairedQuality = assessResponseQuality(repaired.content, intent)
-        if (repairedQuality.ok) return { ...repaired, intent, repaired: true }
-    } catch (error) {
-        log.warn(`AI quality repair failed: ${error.message}`)
-    }
-
-    return { ...result, intent, repaired: false, qualityWarning: quality.reasons }
-}
-
 module.exports = {
     INTENT_CONFIG,
     normalizeText,
@@ -274,8 +186,6 @@ module.exports = {
     classifyIntent,
     getIntentConfig,
     prepareConversationHistory,
-    buildReplyContext,
     assessResponseQuality,
     buildIntentInstruction,
-    generateSmartReply,
 }
