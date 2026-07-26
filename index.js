@@ -37,14 +37,14 @@ const { normalizeControlConfig, isCommandEnabled } = require("./utils/dashboardC
 const { startWebhookServer, setClient } = require("./webhook")
 const { setClient: setModLogClient } = require("./utils/modlog")
 const { runAutoMod } = require("./utils/automod")
-const { sendSafe } = require("./utils/mentionSanitizer")
+const { sendSafe, replySafe } = require("./utils/mentionSanitizer")
 const { sanitizeUserInput, sanitizeAIOutput, sanitizeName } = require("./utils/sanitizer")
 const { buildSystemPrompt } = require("./utils/prompts")
 const { getUserPersonality } = require("./utils/personalities")
 const { extractAndStoreMemories, buildMemoryContext } = require("./utils/longTermMemory")
 const { needsDiscordContext, buildDiscordContext } = require("./utils/discordContext")
 const { trackMessage, trackCommand, startVoiceSession, endVoiceSession, getActivity } = require("./utils/activityTracker")
-const { handleCommandError } = require("./utils/errorFormatter")
+const { formatError } = require("./utils/errorFormatter")
 const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
@@ -279,7 +279,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     if (!botMentioned && !repliedToBot) return
     if (!control.aiEnabled) {
-        await sendSafe(message.channel, "⛔ AI chat is disabled in this server.")
+        await replySafe(message, "⛔ AI chat is disabled in this server.")
         return
     }
 
@@ -290,7 +290,7 @@ client.on(Events.MessageCreate, async (message) => {
         : message.content
 
     if (!aiInput) {
-        await sendSafe(message.channel, "You called? What do you need?")
+        await replySafe(message, "You called? What do you need?")
         return
     }
 
@@ -301,14 +301,14 @@ client.on(Events.MessageCreate, async (message) => {
         scope: guildId,
     })
     if (!rl.ok) {
-        await sendSafe(message.channel,
+        await replySafe(message,
             `⏳ **${senderName}**, slow down! Wait **${rl.remaining}s** before sending another message. 😤`)
         return
     }
 
     const { safe, sanitized: sanitizedInput } = sanitizeUserInput(aiInput)
     if (!safe) {
-        await sendSafe(message.channel, `🛡️ Nice try, **${senderName}**. I see what you're doing. 😏`)
+        await replySafe(message, `🛡️ Nice try, **${senderName}**. I see what you're doing. 😏`)
         return
     }
 
@@ -367,9 +367,14 @@ client.on(Events.MessageCreate, async (message) => {
         log.info(`[${result.provider}] response: ${result.content.slice(0, 60)}...`)
 
         safeOutput = sanitizeAIOutput(result.content)
-        await sendSafe(message.channel, safeOutput)
+        await replySafe(message, safeOutput)
     } catch (err) {
-        await handleCommandError(err, message, "ai-chat")
+        const userMessage = formatError(err, "ai-chat", {
+            guildId,
+            channelId,
+            userId,
+        })
+        await replySafe(message, userMessage)
         return
     }
 
