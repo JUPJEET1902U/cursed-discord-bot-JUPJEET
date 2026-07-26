@@ -127,6 +127,13 @@ function isSmartConversation(messages) {
     )
 }
 
+function isStrictOutputConversation(messages) {
+    return Array.isArray(messages) && messages.some(message =>
+        message?.role === "system"
+        && /output only|valid json|json array|no explanation/i.test(String(message.content || ""))
+    )
+}
+
 function scoreMemoryLine(line, queryTokens) {
     const lineTokens = new Set(tokenize(line))
     let overlap = 0
@@ -255,14 +262,22 @@ async function executeProviderChain(messages, options) {
     throw new Error(`All AI providers failed — ${errors.join(" | ")}`)
 }
 
+function boundedNumber(value, fallback, min, max) {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.max(min, Math.min(max, parsed))
+}
+
 async function callAI(messages, options = {}) {
     const smart = options.smart ?? isSmartConversation(messages)
+    const strictOutput = !smart && isStrictOutputConversation(messages)
     const input = latestUserContent(messages)
     const intent = smart ? classifyIntent(input) : (options.intent || "casual")
     const intentConfig = getIntentConfig(intent, options.maxTokens || 500)
-    const maxTokens = Math.max(50, Math.min(2000, Number(options.maxTokens || intentConfig.maxTokens) || 500))
-    const temperature = Math.max(0, Math.min(1.2, Number(options.temperature ?? intentConfig.temperature ?? 0.7)))
-    const retries = Math.max(0, Math.min(1, Number(options.retries ?? 1)))
+    const maxTokens = Math.floor(boundedNumber(options.maxTokens, intentConfig.maxTokens, 50, 2000))
+    const defaultTemperature = smart ? intentConfig.temperature : (strictOutput ? 0.1 : 0.7)
+    const temperature = boundedNumber(options.temperature, defaultTemperature, 0, 1.2)
+    const retries = Math.floor(boundedNumber(options.retries, 1, 0, 1))
     const providerOrder = normalizeProviderOrder(options.providerOrder || (smart ? intentConfig.providerOrder : null))
     const preparedMessages = smart ? prepareSmartMessages(messages, intent) : messages
 
@@ -324,6 +339,7 @@ module.exports = {
     normalizeProviderOrder,
     isRetryableError,
     isSmartConversation,
+    isStrictOutputConversation,
     filterMemoryContext,
     prepareSmartMessages,
     getStatus,
