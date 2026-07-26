@@ -220,7 +220,7 @@ function assessGroundingRisk(content, intent, systemContent = "") {
         }
     }
 
-    const verifiedCommands = extractVerifiedCommands(systemContent)
+    const verifiedCommands = intent === "discord" ? extractVerifiedCommands(systemContent) : null
     if (verifiedCommands && verifiedCommands.size) {
         const mentioned = [...text.matchAll(/(?:^|\s|[`(])([!/][a-z][a-z0-9-]*)\b/gi)]
             .map(match => match[1].toLowerCase())
