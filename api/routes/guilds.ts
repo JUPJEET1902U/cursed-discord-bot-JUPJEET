@@ -5,24 +5,24 @@ import { requireAuth, requireGuildAdmin } from '../middleware/auth.js'
 import rateLimit from 'express-rate-limit'
 import { getSession } from '../services/sessions.js'
 import { getGuildConfig, updateGuildConfig, getGuildStats } from '../services/guild.js'
+import {
+  CustomRoleValidationError,
+  getCustomRoleDashboard,
+  saveCustomRoleDashboard,
+} from '../services/customRoles.js'
 
 const router = Router()
 const DISCORD_API = 'https://discord.com/api/v10'
 const BOT_TOKEN = process.env.BOT_TOKEN || ''
 
-// Rate limiter for guild config writes (stricter than global)
 const configWriteLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 30,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: 'Too many config update requests, please try again later.' },
 })
 
-/**
- * GET /api/guilds
- * List guilds the user is in, with bot presence info.
- */
 router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const session = getSession(req.user!.token)
@@ -31,7 +31,6 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
       return
     }
 
-    // Fetch user's guilds
     const userGuildsRes = await fetch(`${DISCORD_API}/users/@me/guilds`, {
       headers: { Authorization: `Bearer ${session.accessToken}` },
     })
@@ -49,13 +48,11 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
       permissions: string
     }>
 
-    // Filter to guilds where user has admin/manage permissions
     const adminGuilds = userGuilds.filter((g) => {
       const perms = BigInt(g.permissions)
       return g.owner || (perms & 0x8n) === 0x8n || (perms & 0x20n) === 0x20n
     })
 
-    // Check which guilds have the bot
     const guildsWithBotStatus = await Promise.all(
       adminGuilds.map(async (guild) => {
         let botPresent = false
@@ -79,10 +76,39 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
   }
 })
 
-/**
- * GET /api/guilds/:id
- * Get guild configuration. Requires the caller to be an admin of that guild.
- */
+router.get('/:id/custom-roles', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const data = await getCustomRoleDashboard(req.params.id)
+    res.json({ success: true, data })
+  } catch (err) {
+    console.error('Custom roles fetch error:', err instanceof Error ? err.message : err)
+    res.status(500).json({ success: false, error: 'Failed to fetch custom role settings' })
+  }
+})
+
+router.put('/:id/custom-roles', requireAuth, requireGuildAdmin, configWriteLimiter, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const data = await saveCustomRoleDashboard(
+      req.params.id,
+      req.body?.config || req.body,
+      req.user!.id,
+    )
+    res.json({ success: true, data })
+  } catch (err) {
+    if (err instanceof CustomRoleValidationError) {
+      res.status(422).json({
+        success: false,
+        error: 'Custom role settings are not valid',
+        code: err.code,
+        fieldErrors: err.fieldErrors,
+      })
+      return
+    }
+    console.error('Custom roles update error:', err instanceof Error ? err.message : err)
+    res.status(500).json({ success: false, error: 'Failed to update custom role settings' })
+  }
+})
+
 router.get('/:id', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const config = await getGuildConfig(req.params.id)
@@ -92,10 +118,6 @@ router.get('/:id', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequ
   }
 })
 
-/**
- * PUT /api/guilds/:id
- * Update guild configuration. Requires admin permission + stricter rate limit.
- */
 router.put('/:id', requireAuth, requireGuildAdmin, configWriteLimiter, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const config = await updateGuildConfig(req.params.id, req.body)
@@ -105,10 +127,6 @@ router.put('/:id', requireAuth, requireGuildAdmin, configWriteLimiter, async (re
   }
 })
 
-/**
- * GET /api/guilds/:id/stats
- * Get guild statistics. Requires the caller to be an admin of that guild.
- */
 router.get('/:id/stats', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const stats = await getGuildStats(req.params.id)
