@@ -1,13 +1,11 @@
 import { API_BASE, SESSION_KEY } from '@/utils/constants'
 import type { APIResponse, GuildConfig, GuildStats } from '@/types'
-import type { CustomRoleConfig, CustomRoleDashboardData } from '@/types/customRoles'
 
 class APIError extends Error {
   constructor(
     message: string,
     public status: number,
     public code?: string,
-    public fieldErrors?: Record<string, string>,
   ) {
     super(message)
     this.name = 'APIError'
@@ -56,17 +54,10 @@ async function request<T>(
   }
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({})) as {
-      error?: string
-      message?: string
-      code?: string
-      fieldErrors?: Record<string, string>
-    }
+    const body = await res.json().catch(() => ({})) as { error?: string; message?: string }
     throw new APIError(
       body.error || body.message || `HTTP ${res.status}`,
       res.status,
-      body.code,
-      body.fieldErrors,
     )
   }
 
@@ -117,21 +108,6 @@ export const guildsAPI = {
 
   async getStats(guildId: string) {
     return request<GuildStats>(`/guilds/${guildId}/stats`)
-  },
-}
-
-// ── Custom role commands ───────────────────────────────────────────────────────
-
-export const customRolesAPI = {
-  async get(guildId: string) {
-    return request<CustomRoleDashboardData>(`/guilds/${guildId}/custom-roles`)
-  },
-
-  async update(guildId: string, config: CustomRoleConfig) {
-    return request<Pick<CustomRoleDashboardData, 'config' | 'roles'>>(`/guilds/${guildId}/custom-roles`, {
-      method: 'PUT',
-      body: JSON.stringify({ config }),
-    })
   },
 }
 
