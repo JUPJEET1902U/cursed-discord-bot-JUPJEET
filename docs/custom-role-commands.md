@@ -1,4 +1,4 @@
-# CURSED Custom Role Commands — deployment and safety guide
+# CURSED Custom Role Commands — bot deployment and safety guide
 
 ## Purpose
 
@@ -45,43 +45,41 @@ If the target lacks the mapped role, CURSED adds it. If the target already has i
 
 Clearing `req.role` also disables the feature, preventing an accidentally unlocked configuration. Owner/admin recovery remains available.
 
-### Stage 4 — dashboard
+### Stage 4 — secure dashboard bridge
 
-The dashboard has a **Custom Roles** page with:
+This bot repository exposes authenticated server-to-server routes under the existing private dashboard API:
 
-- Feature enable toggle
-- Required Role selector
-- Five base role slots
-- Up to 50 extra custom commands
-- Assignable-role filtering
-- Per-field validation messages
-- Reset and delete controls
-- Recent 90-day activity view
+- `GET /api/dashboard/guilds/:guildId/custom-roles`
+- `PUT /api/dashboard/guilds/:guildId/custom-roles`
 
-Dashboard routes require an authenticated server administrator. The API validates all role IDs and command names again; frontend checks are never trusted by themselves.
+The separate dashboard repository is `JUPJEET1902U/cursed-discord-bot-DASHBOARD`. Its companion PR provides the Next.js page, API proxy route, editor components, navigation, and production build checks.
+
+The bot API validates role IDs, role hierarchy, dangerous permissions, command collisions, uniqueness, limits, and the required-role rule again. Dashboard input is never trusted directly.
 
 ### Stage 5 — audit, regression, and deployment checks
 
 - Successful role adds/removals and denied attempts are persisted.
 - Configuration changes are audited.
-- Successful role changes are also sent to the configured moderation-log channel when available.
-- CI checks JavaScript syntax, policy contracts, API TypeScript, and the production dashboard build.
+- Successful role changes are sent to the configured moderation-log channel when available.
+- Bot CI checks JavaScript syntax, command isolation, policy contracts, storage contracts, and the secure dashboard API bridge.
+- The companion dashboard repository runs its own Next.js production build and type checks.
 
 ## Manual Railway and Discord tests
 
-1. Confirm Railway deploys the PR merge commit with no missing-module or syntax errors.
-2. Place CURSED's role above the roles it will assign and grant Manage Roles.
-3. Open Dashboard → Custom Roles.
-4. Select a Required Role, map Staff to a safe role, enable the feature, and save.
-5. Wait up to five seconds for cross-process cache refresh.
-6. As a member without `req.role`, run `!staff @member`; expect denial.
-7. Add `req.role` to the command user and run it again; expect Role Added.
-8. Run it a second time; expect Role Removed.
-9. Try a target at or above the command user's highest role; expect denial.
-10. Try selecting an Administrator, Manage Roles, managed, or above-CURSED role; dashboard save must reject it.
-11. Try creating `help`, `balance`, or another built-in command name; save must reject it.
-12. Run `!help`, `!balance`, AI chat, economy, welcome, tickets, games, images, and moderation regression checks.
-13. Restart Railway and confirm settings persist.
+1. Merge and deploy the bot PR to Railway.
+2. Merge and deploy the companion dashboard PR to Vercel.
+3. Place CURSED's role above the roles it will assign and grant Manage Roles.
+4. Open Dashboard → Custom Roles.
+5. Select a Required Role, map Staff to a safe role, enable the feature, and save.
+6. Wait up to five seconds for cross-process cache refresh.
+7. As a member without `req.role`, run `!staff @member`; expect denial.
+8. Add `req.role` to the command user and run it again; expect Role Added.
+9. Run it a second time; expect Role Removed.
+10. Try a target at or above the command user's highest role; expect denial.
+11. Try selecting an Administrator, Manage Roles, managed, or above-CURSED role; dashboard save must reject it.
+12. Try creating `help`, `balance`, or another built-in command name; save must reject it.
+13. Run `!help`, `!balance`, AI chat, economy, welcome, tickets, games, images, and moderation regression checks.
+14. Restart Railway and confirm settings persist.
 
 ## Scope lock
 
