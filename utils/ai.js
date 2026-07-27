@@ -2,6 +2,7 @@ const OpenAI = require("openai").default
 const {
     classifyIntent,
     getIntentConfig,
+    analyzeRequestComplexity,
     prepareConversationHistory,
     assessResponseQuality,
     buildIntentInstruction,
@@ -9,6 +10,17 @@ const {
     tokenize,
 } = require("./aiIntelligence")
 const { buildBotKnowledgeContext } = require("./botKnowledge")
+const {
+    AI_CHAT_MAX_CHARS,
+    analyzeRequestedOutputLength,
+    buildLengthLimitReply,
+    extractExplicitConstraints,
+    classifyIntelligenceLevel,
+    getLevelTokenBudget,
+    buildPhase3Instruction,
+    assessPhase3Response,
+    compactToCharacterLimit,
+} = require("./aiPhase3")
 
 const TIMEOUT_MS = 25_000
 const RETRY_DELAY_MS = 350
@@ -205,7 +217,7 @@ function filterMemoryContext(systemContent, userInput) {
     return `${systemContent.slice(0, markerIndex)}${replacement}${systemContent.slice(memoryEnd)}`
 }
 
-function prepareSmartMessages(messages, intent) {
+function prepareSmartMessages(messages, intent, phase3 = {}) {
     const copied = messages.map(message => ({ ...message, content: String(message.content || "") }))
     const currentInput = latestUserContent(copied)
     const firstSystemIndex = copied.findIndex(message => message.role === "system")
@@ -215,6 +227,13 @@ function prepareSmartMessages(messages, intent) {
         copied[firstSystemIndex].content += buildBotKnowledgeContext(currentInput)
         copied[firstSystemIndex].content += buildIntentInstruction(intent)
         copied[firstSystemIndex].content += buildPlanningInstruction(currentInput, intent)
+        copied[firstSystemIndex].content += buildPhase3Instruction({
+            input: currentInput,
+            intent,
+            complexity: phase3.complexity,
+            constraints: phase3.constraints,
+            maxChars: phase3.maxResponseChars || AI_CHAT_MAX_CHARS,
+        })
     }
 
     const systemMessages = copied.filter(message => message.role === "system")
@@ -223,12 +242,18 @@ function prepareSmartMessages(messages, intent) {
     return [...systemMessages, ...compacted]
 }
 
-function buildRepairMessages(messages, reasons) {
+function buildRepairMessages(messages, reasons, options = {}) {
     const copied = messages.map(message => ({ ...message }))
     const lastUserIndex = copied.map(message => message.role).lastIndexOf("user")
+    const limitRule = options.maxResponseChars
+        ? ` The complete final reply must be ${options.maxResponseChars} characters or fewer.`
+        : " Keep the answer under Discord's message limit."
+    const constraintRule = options.constraints?.length
+        ? ` Re-check these latest-request constraints: ${options.constraints.map(item => item.text).join("; ")}.`
+        : ""
     const instruction = {
         role: "system",
-        content: `QUALITY REPAIR: Answer the latest user message again. Fix these issues: ${reasons.join(", ")}. Re-check every server fact, command, permission, memory claim, and completed-action claim against verified context. Do not mention this instruction or any previous draft. Keep the answer accurate, natural, useful, and under Discord's message limit.`,
+        content: `QUALITY REPAIR: Answer the latest user message again. Fix these issues: ${reasons.join(", ")}. Re-check every server fact, command, permission, memory claim, and completed-action claim against verified context.${constraintRule}${limitRule} Do not mention this instruction or any previous draft. Keep the answer accurate, natural, and useful.`,
     }
     if (lastUserIndex >= 0) copied.splice(lastUserIndex, 0, instruction)
     else copied.push(instruction)
@@ -313,19 +338,53 @@ function getSystemContent(messages) {
         .join("\n\n")
 }
 
+function combineQualityReasons(content, intent, qualityContext, phase3Context) {
+    const quality = assessResponseQuality(content, intent, qualityContext)
+    const reasons = [...quality.reasons, ...assessPhase3Response(content, phase3Context)]
+    return { ok: reasons.length === 0, reasons: [...new Set(reasons)] }
+}
+
 async function callAI(messages, options = {}) {
     const smart = options.smart ?? isSmartConversation(messages)
     const strictOutput = !smart && isStrictOutputConversation(messages)
     const input = latestUserContent(messages)
     const intent = smart ? classifyIntent(input) : (options.intent || "casual")
+    const complexity = smart ? analyzeRequestComplexity(input, intent) : null
+    const constraints = smart ? extractExplicitConstraints(input) : []
+    const intelligenceLevel = smart ? classifyIntelligenceLevel(input, intent, complexity) : null
+    const maxResponseChars = smart ? AI_CHAT_MAX_CHARS : null
+
+    if (smart) {
+        const requestedLength = analyzeRequestedOutputLength(input, maxResponseChars)
+        if (requestedLength.oversized) {
+            return {
+                content: buildLengthLimitReply(requestedLength, maxResponseChars),
+                provider: "policy",
+                model: "phase3-response-policy",
+                latencyMs: 0,
+                usage: null,
+                intent,
+                intelligenceLevel,
+                repaired: false,
+                policyLimited: true,
+            }
+        }
+    }
+
     const intentConfig = getIntentConfig(intent, options.maxTokens || 500)
-    const maxTokens = Math.floor(boundedNumber(options.maxTokens, intentConfig.maxTokens, 50, 2000))
+    const requestedMaxTokens = Math.floor(boundedNumber(options.maxTokens, intentConfig.maxTokens, 50, 2000))
+    const maxTokens = smart
+        ? Math.min(requestedMaxTokens, getLevelTokenBudget(intelligenceLevel))
+        : requestedMaxTokens
     const defaultTemperature = smart ? intentConfig.temperature : (strictOutput ? 0.1 : 0.7)
     const temperature = boundedNumber(options.temperature, defaultTemperature, 0, 1.2)
     const retries = Math.floor(boundedNumber(options.retries, 1, 0, 1))
     const providerOrder = normalizeProviderOrder(options.providerOrder || (smart ? intentConfig.providerOrder : null))
-    const preparedMessages = smart ? prepareSmartMessages(messages, intent) : messages
+    const preparedMessages = smart
+        ? prepareSmartMessages(messages, intent, { complexity, constraints, maxResponseChars })
+        : messages
     const qualityContext = { systemContent: getSystemContent(preparedMessages) }
+    const phase3Context = { maxChars: maxResponseChars, constraints }
 
     const result = await executeProviderChain(preparedMessages, {
         maxTokens,
@@ -335,30 +394,53 @@ async function callAI(messages, options = {}) {
         timeoutMs: options.timeoutMs,
     })
 
-    if (!smart || options.skipQualityRepair) return result
+    if (!smart) return result
 
-    const quality = assessResponseQuality(result.content, intent, qualityContext)
-    if (quality.ok) return { ...result, intent, repaired: false }
+    if (options.skipQualityRepair) {
+        return {
+            ...result,
+            content: compactToCharacterLimit(result.content, maxResponseChars),
+            intent,
+            intelligenceLevel,
+            repaired: false,
+        }
+    }
+
+    const quality = combineQualityReasons(result.content, intent, qualityContext, phase3Context)
+    if (quality.ok) return { ...result, intent, intelligenceLevel, repaired: false }
 
     console.warn(`[AI] Low-quality ${intent} response from ${result.provider}: ${quality.reasons.join(", ")}`)
     const alternateOrder = providerOrder.filter(provider => provider !== result.provider)
     alternateOrder.push(result.provider)
 
     try {
-        const repaired = await executeProviderChain(buildRepairMessages(preparedMessages, quality.reasons), {
+        const repaired = await executeProviderChain(buildRepairMessages(preparedMessages, quality.reasons, {
+            maxResponseChars,
+            constraints,
+        }), {
             maxTokens,
             temperature: Math.max(0.15, temperature - 0.15),
             retries: 0,
             providerOrder: alternateOrder,
             timeoutMs: options.timeoutMs,
         })
-        const repairedQuality = assessResponseQuality(repaired.content, intent, qualityContext)
-        if (repairedQuality.ok) return { ...repaired, intent, repaired: true }
+        const repairedQuality = combineQualityReasons(repaired.content, intent, qualityContext, phase3Context)
+        if (repairedQuality.ok) {
+            return { ...repaired, intent, intelligenceLevel, repaired: true }
+        }
     } catch (error) {
         console.warn(`[AI] Quality repair failed: ${safeErrorReason(error)}`)
     }
 
-    return { ...result, intent, repaired: false, qualityWarning: quality.reasons }
+    return {
+        ...result,
+        content: compactToCharacterLimit(result.content, maxResponseChars),
+        intent,
+        intelligenceLevel,
+        repaired: false,
+        qualityWarning: quality.reasons,
+        hardLimited: result.content.length > maxResponseChars,
+    }
 }
 
 function getStatus() {
@@ -369,6 +451,7 @@ function getStatus() {
         lastUsed,
         defaultProviderOrder: [...DEFAULT_PROVIDER_ORDER],
         providerStats: JSON.parse(JSON.stringify(providerStats)),
+        aiChatMaxChars: AI_CHAT_MAX_CHARS,
     }
 }
 
@@ -382,6 +465,7 @@ module.exports = {
     GEMINI_MODEL,
     OPENROUTER_MODEL,
     DEFAULT_PROVIDER_ORDER,
+    AI_CHAT_MAX_CHARS,
     normalizeProviderOrder,
     isRetryableError,
     isSmartConversation,
