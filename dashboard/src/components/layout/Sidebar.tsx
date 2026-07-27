@@ -12,7 +12,6 @@ import {
   Users,
   ChevronLeft,
   Server,
-  BadgePlus,
 } from 'lucide-react'
 
 interface NavItem {
@@ -31,7 +30,6 @@ function getNavItems(guildId: string): NavItem[] {
     { label: 'Welcome',        href: `${base}/welcome`,        icon: <UserPlus className="h-4 w-4" /> },
     { label: 'Moderation',     href: `${base}/moderation`,     icon: <Bot className="h-4 w-4" /> },
     { label: 'Community',      href: `${base}/community`,      icon: <Users className="h-4 w-4" /> },
-    { label: 'Custom Roles',   href: `${base}/custom-roles`,   icon: <BadgePlus className="h-4 w-4" /> },
   ]
 }
 
