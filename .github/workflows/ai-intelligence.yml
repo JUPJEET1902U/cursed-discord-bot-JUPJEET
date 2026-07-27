@@ -5,6 +5,7 @@ on:
     paths:
       - "utils/ai.js"
       - "utils/aiIntelligence.js"
+      - "utils/aiPhase3.js"
       - "utils/memoryIntelligence.js"
       - "utils/longTermMemory.js"
       - "utils/botKnowledge.js"
@@ -12,6 +13,7 @@ on:
       - "utils/prompts.js"
       - "utils/helpGenerator.js"
       - "test/ai-intelligence.test.js"
+      - "test/ai-phase3.test.js"
       - ".github/workflows/ai-intelligence.yml"
   workflow_dispatch:
 
@@ -37,12 +39,16 @@ jobs:
         run: |
           node --check utils/ai.js
           node --check utils/aiIntelligence.js
+          node --check utils/aiPhase3.js
           node --check utils/memoryIntelligence.js
           node --check utils/longTermMemory.js
           node --check utils/botKnowledge.js
           node --check utils/discordContext.js
           node --check utils/prompts.js
           node --check test/ai-intelligence.test.js
+          node --check test/ai-phase3.test.js
 
       - name: AI intelligence contracts
-        run: node test/ai-intelligence.test.js
+        run: |
+          node test/ai-intelligence.test.js
+          node test/ai-phase3.test.js
