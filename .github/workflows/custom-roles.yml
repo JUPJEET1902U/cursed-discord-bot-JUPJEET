@@ -1,22 +1,17 @@
-name: Custom role commands CI
+name: Custom role commands bot CI
 
 on:
   pull_request:
     paths:
+      - "api/dashboardCustomRoles.js"
       - "commands/customRoleCatalog.js"
       - "commands/customRoles.js"
       - "handlers/commandLoader.js"
       - "utils/customRolePolicy.js"
       - "utils/customRoles.js"
-      - "api/routes/guilds.ts"
-      - "api/services/customRoles.ts"
-      - "dashboard/src/App.tsx"
-      - "dashboard/src/components/layout/Sidebar.tsx"
-      - "dashboard/src/pages/CustomRoles.tsx"
-      - "dashboard/src/services/api.ts"
-      - "dashboard/src/types/customRoles.ts"
       - "test/custom-roles.test.js"
       - "docs/custom-role-commands.md"
+      - "webhook.js"
       - ".github/workflows/custom-roles.yml"
   workflow_dispatch:
 
@@ -26,7 +21,7 @@ permissions:
 jobs:
   custom-roles:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -38,28 +33,19 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install bot and API dependencies
+      - name: Install dependencies
         run: npm ci
 
       - name: JavaScript syntax checks
         run: |
+          node --check api/dashboardCustomRoles.js
           node --check commands/customRoleCatalog.js
           node --check commands/customRoles.js
           node --check handlers/commandLoader.js
           node --check utils/customRolePolicy.js
           node --check utils/customRoles.js
           node --check test/custom-roles.test.js
+          node --check webhook.js
 
       - name: Custom role contracts
         run: node test/custom-roles.test.js
-
-      - name: Type-check dashboard API
-        run: npx tsc -p api/tsconfig.json --noEmit
-
-      - name: Install dashboard dependencies
-        working-directory: dashboard
-        run: npm ci
-
-      - name: Build dashboard
-        working-directory: dashboard
-        run: npm run build
