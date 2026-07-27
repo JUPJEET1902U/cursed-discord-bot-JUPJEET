@@ -8,10 +8,10 @@ import {
   Bot,
   Sparkles,
   UserPlus,
-  MessageSquare,
   Users,
   ChevronLeft,
   Server,
+  BadgePlus,
 } from 'lucide-react'
 
 interface NavItem {
@@ -30,6 +30,7 @@ function getNavItems(guildId: string): NavItem[] {
     { label: 'Welcome',        href: `${base}/welcome`,        icon: <UserPlus className="h-4 w-4" /> },
     { label: 'Moderation',     href: `${base}/moderation`,     icon: <Bot className="h-4 w-4" /> },
     { label: 'Community',      href: `${base}/community`,      icon: <Users className="h-4 w-4" /> },
+    { label: 'Custom Roles',   href: `${base}/custom-roles`,   icon: <BadgePlus className="h-4 w-4" /> },
   ]
 }
 
@@ -39,7 +40,6 @@ export function Sidebar() {
 
   return (
     <>
-      {/* Mobile overlay */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 bg-black/50 z-20 lg:hidden"
@@ -55,7 +55,6 @@ export function Sidebar() {
         )}
       >
         <div className="flex flex-col h-full p-3 gap-1 min-w-[224px]">
-          {/* Server selector link */}
           <NavLink
             to="/dashboard"
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all text-sm font-medium mb-2"
@@ -75,9 +74,7 @@ export function Sidebar() {
                 <NavLink
                   key={item.href}
                   to={item.href}
-                  className={({ isActive }) =>
-                    cn('nav-item', isActive && 'active')
-                  }
+                  className={({ isActive }) => cn('nav-item', isActive && 'active')}
                 >
                   {item.icon}
                   <span>{item.label}</span>
@@ -94,7 +91,6 @@ export function Sidebar() {
 
           <div className="flex-1" />
 
-          {/* Collapse button */}
           <button
             onClick={() => setSidebarOpen(false)}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-all text-sm"
