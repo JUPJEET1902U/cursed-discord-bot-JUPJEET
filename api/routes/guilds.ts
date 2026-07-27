@@ -5,11 +5,6 @@ import { requireAuth, requireGuildAdmin } from '../middleware/auth.js'
 import rateLimit from 'express-rate-limit'
 import { getSession } from '../services/sessions.js'
 import { getGuildConfig, updateGuildConfig, getGuildStats } from '../services/guild.js'
-import {
-  CustomRoleValidationError,
-  getCustomRoleDashboard,
-  saveCustomRoleDashboard,
-} from '../services/customRoles.js'
 
 const router = Router()
 const DISCORD_API = 'https://discord.com/api/v10'
@@ -81,47 +76,6 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =>
   } catch (err) {
     console.error('Guilds fetch error:', err)
     res.status(500).json({ success: false, error: 'Failed to fetch guilds' })
-  }
-})
-
-/**
- * GET /api/guilds/:id/custom-roles
- * Load role-command settings, safe role options, and recent activity.
- */
-router.get('/:id/custom-roles', requireAuth, requireGuildAdmin, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const data = await getCustomRoleDashboard(req.params.id)
-    res.json({ success: true, data })
-  } catch (err) {
-    console.error('Custom roles fetch error:', err instanceof Error ? err.message : err)
-    res.status(500).json({ success: false, error: 'Failed to fetch custom role settings' })
-  }
-})
-
-/**
- * PUT /api/guilds/:id/custom-roles
- * Validate and save role-command settings for an authenticated guild admin.
- */
-router.put('/:id/custom-roles', requireAuth, requireGuildAdmin, configWriteLimiter, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const data = await saveCustomRoleDashboard(
-      req.params.id,
-      req.body?.config || req.body,
-      req.user!.id,
-    )
-    res.json({ success: true, data })
-  } catch (err) {
-    if (err instanceof CustomRoleValidationError) {
-      res.status(422).json({
-        success: false,
-        error: 'Custom role settings are not valid',
-        code: err.code,
-        fieldErrors: err.fieldErrors,
-      })
-      return
-    }
-    console.error('Custom roles update error:', err instanceof Error ? err.message : err)
-    res.status(500).json({ success: false, error: 'Failed to update custom role settings' })
   }
 })
 
