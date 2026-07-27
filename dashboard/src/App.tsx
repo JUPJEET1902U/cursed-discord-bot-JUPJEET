@@ -15,7 +15,6 @@ import { AIConfigPage } from '@/pages/AIConfig'
 import { WelcomeGoodbyePage } from '@/pages/WelcomeGoodbye'
 import { StatisticsPage } from '@/pages/Statistics'
 import { CommunityPage } from '@/pages/Community'
-import { CustomRolesPage } from '@/pages/CustomRoles'
 import { NotFoundPage } from '@/pages/NotFound'
 import { cn } from '@/utils/cn'
 
@@ -92,7 +91,6 @@ export default function App() {
           <Route path=":guildId/ai-config" element={<AIConfigPage />} />
           <Route path=":guildId/welcome" element={<WelcomeGoodbyePage />} />
           <Route path=":guildId/community" element={<CommunityPage />} />
-          <Route path=":guildId/custom-roles" element={<CustomRolesPage />} />
           <Route path=":guildId/moderation" element={<BotConfigPage />} />
         </Route>
 
