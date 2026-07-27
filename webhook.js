@@ -12,6 +12,7 @@ const { createDashboardPrefixRouter } = require("./api/dashboardPrefix")
 const { createDashboardTicketsRouter } = require("./api/dashboardTickets")
 const { createDashboardPremiumRouter } = require("./api/dashboardPremium")
 const { createDashboardBirthdaysRouter } = require("./api/dashboardBirthdays")
+const { createDashboardCustomRolesRouter } = require("./api/dashboardCustomRoles")
 const { startBirthdayScheduler } = require("./utils/birthdays")
 const { grantPremiumUser } = require("./utils/premium")
 
@@ -153,6 +154,7 @@ function startWebhookServer() {
     app.use("/api/dashboard", createDashboardPrefixRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardTicketsRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardBirthdaysRouter(() => discordClient))
+    app.use("/api/dashboard", createDashboardCustomRolesRouter(() => discordClient))
     app.use("/api/dashboard", createDashboardRouter(() => discordClient))
 
     app.post("/webhook/kofi", async (req, res) => {
