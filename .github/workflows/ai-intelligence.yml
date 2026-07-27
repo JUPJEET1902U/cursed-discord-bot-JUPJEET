@@ -5,7 +5,12 @@ on:
     paths:
       - "utils/ai.js"
       - "utils/aiIntelligence.js"
+      - "utils/memoryIntelligence.js"
+      - "utils/longTermMemory.js"
+      - "utils/botKnowledge.js"
+      - "utils/discordContext.js"
       - "utils/prompts.js"
+      - "utils/helpGenerator.js"
       - "test/ai-intelligence.test.js"
       - ".github/workflows/ai-intelligence.yml"
   workflow_dispatch:
@@ -32,6 +37,10 @@ jobs:
         run: |
           node --check utils/ai.js
           node --check utils/aiIntelligence.js
+          node --check utils/memoryIntelligence.js
+          node --check utils/longTermMemory.js
+          node --check utils/botKnowledge.js
+          node --check utils/discordContext.js
           node --check utils/prompts.js
           node --check test/ai-intelligence.test.js
 

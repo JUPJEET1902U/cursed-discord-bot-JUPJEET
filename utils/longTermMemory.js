@@ -1,27 +1,45 @@
 /**
  * utils/longTermMemory.js
- * Persistent long-term user memory system.
- * Stores structured facts about users extracted from conversations.
- * Uses MongoDB when available, falls back to in-memory storage.
- * Prevents duplicate memories and updates contradicted facts.
+ * Persistent adaptive long-term user memory system.
+ * Uses MongoDB when available and falls back to process memory.
  */
 
 const mongoose = require("mongoose")
 const { callAI } = require("./ai")
 const logger = require("./logger")
-const log = logger.child("LongTermMemory")
+const {
+    rankMemories,
+    deriveMemoryKey,
+    normalizeMemoryOperation,
+    memoryMatchesOperation,
+    isExplicitClearAllRequest,
+} = require("./memoryIntelligence")
 
-// ── Mongoose Schema ────────────────────────────────────────────────────────────
+const log = logger.child("LongTermMemory")
+const MEMORY_TYPES = [
+    "like", "dislike", "game", "anime", "music", "friend", "note", "fact",
+    "friendship", "personality",
+]
+
 const memorySchema = new mongoose.Schema({
-    userId:      { type: String, required: true, index: true },
-    type:        { type: String, required: true, enum: ["like", "dislike", "game", "anime", "music", "friend", "note", "fact", "friendship", "personality"] },
-    content:     { type: String, required: true, maxlength: 500 },
-    importance:  { type: Number, default: 1, min: 1, max: 5 },
-    tags:        [{ type: String }],
-    extractedAt: { type: Date, default: Date.now },
+    userId:          { type: String, required: true, index: true },
+    type:            { type: String, required: true, enum: MEMORY_TYPES },
+    content:         { type: String, required: true, maxlength: 500 },
+    importance:      { type: Number, default: 1, min: 1, max: 5 },
+    confidence:      { type: Number, default: 0.65, min: 0, max: 1 },
+    tags:            [{ type: String }],
+    memoryKey:       { type: String, default: "fact:general", maxlength: 120 },
+    source:          { type: String, enum: ["explicit", "inferred", "correction"], default: "inferred" },
+    active:          { type: Boolean, default: true, index: true },
+    extractedAt:     { type: Date, default: Date.now },
+    lastConfirmedAt: { type: Date, default: Date.now },
+    lastUsedAt:      { type: Date, default: null },
+    useCount:        { type: Number, default: 0, min: 0 },
+    supersededAt:    { type: Date, default: null },
 })
 
-memorySchema.index({ userId: 1, type: 1 })
+memorySchema.index({ userId: 1, active: 1, importance: -1, lastConfirmedAt: -1 })
+memorySchema.index({ userId: 1, memoryKey: 1, active: 1 })
 
 let MemoryModel
 try {
@@ -30,22 +48,25 @@ try {
     MemoryModel = mongoose.model("LongTermMemory", memorySchema)
 }
 
-// In-memory fallback: Map<userId, MemoryEntry[]>
 const memoryFallback = new Map()
 
 function isMongoConnected() {
     return mongoose.connection.readyState === 1
 }
 
-/**
- * Get all long-term memories for a user.
- * @param {string} userId
- * @returns {Promise<Array>}
- */
-async function getUserLongTermMemories(userId) {
+function activeQuery(userId) {
+    return { userId, active: { $ne: false } }
+}
+
+async function getUserLongTermMemories(userId, options = {}) {
+    const includeInactive = options.includeInactive === true
     if (isMongoConnected()) {
         try {
-            return await MemoryModel.find({ userId }).sort({ importance: -1, extractedAt: -1 }).limit(50).lean()
+            const query = includeInactive ? { userId } : activeQuery(userId)
+            return await MemoryModel.find(query)
+                .sort({ importance: -1, lastConfirmedAt: -1, extractedAt: -1 })
+                .limit(includeInactive ? 100 : 50)
+                .lean()
         } catch (err) {
             if (err.message && err.message.includes("auth")) {
                 log.error(`Auth error fetching memories for ${userId}: ${err.message}`)
@@ -54,83 +75,102 @@ async function getUserLongTermMemories(userId) {
             }
         }
     }
-    return memoryFallback.get(userId) || []
+    const list = memoryFallback.get(userId) || []
+    return includeInactive ? list : list.filter(memory => memory.active !== false)
 }
 
-/**
- * Compute a simple similarity score between two strings (0–1).
- * Uses word-overlap ratio — fast and good enough for short memory facts.
- * @param {string} a
- * @param {string} b
- * @returns {number}
- */
 function stringSimilarity(a, b) {
-    const wordsA = new Set(a.toLowerCase().split(/\W+/).filter(Boolean))
-    const wordsB = new Set(b.toLowerCase().split(/\W+/).filter(Boolean))
+    const wordsA = new Set(String(a || "").toLowerCase().split(/\W+/).filter(Boolean))
+    const wordsB = new Set(String(b || "").toLowerCase().split(/\W+/).filter(Boolean))
     if (!wordsA.size || !wordsB.size) return 0
     let shared = 0
-    for (const w of wordsA) if (wordsB.has(w)) shared++
+    for (const word of wordsA) if (wordsB.has(word)) shared++
     return shared / Math.max(wordsA.size, wordsB.size)
 }
 
-/**
- * Add a long-term memory for a user.
- * Before inserting, checks for near-duplicates (same type, ≥70% word overlap).
- * If a very similar memory exists, updates it in place instead of creating a duplicate.
- * Sensitive content (API keys, tokens, URLs, emails, phone numbers) is silently dropped.
- * @param {string} userId
- * @param {object} memory  { type, content, importance, tags }
- * @returns {Promise<void>}
- */
-async function addLongTermMemory(userId, memory) {
-    const content = String(memory.content || "").slice(0, 500).trim()
-    if (!content) return
-
-    // ── Security: drop sensitive content ──────────────────────────────────────
-    // Never store tokens, API keys, URLs, emails, phone numbers, or env vars.
-    const SENSITIVE_PATTERNS = [
-        /\b[A-Za-z0-9_\-]{20,}\b/,           // long opaque strings (tokens/keys)
-        /https?:\/\//i,                        // URLs
-        /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/,  // emails
-        /\b\d{7,}\b/,                          // long numbers (phone, IDs)
-        /process\.env/i,                       // env var references
+function containsSensitiveMemory(content) {
+    const patterns = [
+        /\b[A-Za-z0-9_\-]{20,}\b/,
+        /https?:\/\//i,
+        /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/,
+        /\b\d{7,}\b/,
+        /process\.env/i,
         /password|secret|token|apikey|api_key/i,
     ]
-    if (SENSITIVE_PATTERNS.some(p => p.test(content))) {
-        log.debug(`Dropped sensitive memory for ${userId}`)
-        return
-    }
+    return patterns.some(pattern => pattern.test(content))
+}
 
-    const entry = {
+function normalizeType(type) {
+    const value = String(type || "fact").toLowerCase()
+    return MEMORY_TYPES.includes(value) ? value : "fact"
+}
+
+function buildEntry(userId, memory) {
+    const normalized = normalizeMemoryOperation({ action: "upsert", ...memory })
+    if (!normalized) return null
+    if (containsSensitiveMemory(normalized.content)) return null
+
+    return {
         userId,
-        type: memory.type || "fact",
-        content,
-        importance: Math.min(5, Math.max(1, parseInt(memory.importance) || 1)),
-        tags: Array.isArray(memory.tags) ? memory.tags.slice(0, 10) : [],
+        type: normalizeType(normalized.type),
+        content: normalized.content,
+        importance: normalized.importance,
+        confidence: normalized.confidence,
+        tags: normalized.tags,
+        memoryKey: normalized.memoryKey || deriveMemoryKey(normalized),
+        source: normalized.source,
+        active: true,
         extractedAt: new Date(),
+        lastConfirmedAt: new Date(),
+        supersededAt: null,
+    }
+}
+
+async function addLongTermMemory(userId, memory) {
+    const entry = buildEntry(userId, memory)
+    if (!entry) {
+        if (memory?.content) log.debug(`Dropped invalid or sensitive memory for ${userId}`)
+        return
     }
 
     if (isMongoConnected()) {
         try {
-            // Check for near-duplicate in the same type bucket
-            const existing = await MemoryModel.findOne({ userId, type: entry.type }).lean()
-            if (existing) {
-                // Look for any record of the same type with high overlap
-                const sameType = await MemoryModel.find({ userId, type: entry.type }).lean()
-                const nearDupe = sameType.find(m => stringSimilarity(m.content, entry.content) >= 0.7)
-                if (nearDupe) {
-                    // Update instead of inserting a duplicate; prefer newer + higher importance
-                    const newImportance = Math.max(nearDupe.importance, entry.importance)
-                    await MemoryModel.findByIdAndUpdate(nearDupe._id, {
-                        content: entry.content,   // prefer the newer phrasing
-                        importance: newImportance,
-                        tags: entry.tags.length ? entry.tags : nearDupe.tags,
-                        extractedAt: entry.extractedAt,
-                    })
-                    log.debug(`Updated existing memory for ${userId}: [${entry.type}] ${entry.content.slice(0, 40)}`)
-                    return
-                }
+            const candidates = await MemoryModel.find({
+                ...activeQuery(userId),
+                $or: [
+                    { type: entry.type },
+                    { memoryKey: entry.memoryKey },
+                ],
+            }).lean()
+
+            const nearDuplicate = candidates.find(candidate =>
+                stringSimilarity(candidate.content, entry.content) >= 0.7
+            )
+            if (nearDuplicate) {
+                await MemoryModel.findByIdAndUpdate(nearDuplicate._id, {
+                    content: entry.content,
+                    importance: Math.max(nearDuplicate.importance || 1, entry.importance),
+                    confidence: Math.max(nearDuplicate.confidence || 0.65, entry.confidence),
+                    tags: entry.tags.length ? entry.tags : nearDuplicate.tags,
+                    memoryKey: entry.memoryKey,
+                    source: entry.source === "correction" ? "correction" : (nearDuplicate.source || entry.source),
+                    active: true,
+                    lastConfirmedAt: entry.lastConfirmedAt,
+                    supersededAt: null,
+                })
+                log.debug(`Confirmed existing memory for ${userId}: [${entry.type}] ${entry.content.slice(0, 40)}`)
+                return
             }
+
+            const conflicts = candidates.filter(candidate => candidate.memoryKey === entry.memoryKey)
+            if (conflicts.length) {
+                await MemoryModel.updateMany(
+                    { _id: { $in: conflicts.map(memoryItem => memoryItem._id) } },
+                    { active: false, supersededAt: new Date() }
+                )
+                entry.source = "correction"
+            }
+
             await new MemoryModel(entry).save()
             log.debug(`Added memory for ${userId}: [${entry.type}] ${entry.content.slice(0, 40)}`)
             return
@@ -139,30 +179,39 @@ async function addLongTermMemory(userId, memory) {
         }
     }
 
-    // ── In-memory fallback with dedup ──────────────────────────────────────────
     const list = memoryFallback.get(userId) || []
-    const nearDupe = list.find(m => m.type === entry.type && stringSimilarity(m.content, entry.content) >= 0.7)
-    if (nearDupe) {
-        nearDupe.content = entry.content
-        nearDupe.importance = Math.max(nearDupe.importance, entry.importance)
-        nearDupe.extractedAt = entry.extractedAt
+    const active = list.filter(item => item.active !== false)
+    const nearDuplicate = active.find(item =>
+        (item.type === entry.type || item.memoryKey === entry.memoryKey)
+        && stringSimilarity(item.content, entry.content) >= 0.7
+    )
+
+    if (nearDuplicate) {
+        nearDuplicate.content = entry.content
+        nearDuplicate.importance = Math.max(nearDuplicate.importance || 1, entry.importance)
+        nearDuplicate.confidence = Math.max(nearDuplicate.confidence || 0.65, entry.confidence)
+        nearDuplicate.tags = entry.tags.length ? entry.tags : nearDuplicate.tags
+        nearDuplicate.memoryKey = entry.memoryKey
+        nearDuplicate.lastConfirmedAt = entry.lastConfirmedAt
+        nearDuplicate.active = true
     } else {
+        for (const existing of active) {
+            if (existing.memoryKey === entry.memoryKey) {
+                existing.active = false
+                existing.supersededAt = new Date()
+                entry.source = "correction"
+            }
+        }
         list.push(entry)
         if (list.length > 100) list.splice(0, list.length - 100)
     }
     memoryFallback.set(userId, list)
 }
 
-/**
- * Delete a specific memory by ID (MongoDB) or index (fallback).
- * @param {string} userId
- * @param {string} memoryId
- * @returns {Promise<boolean>}
- */
 async function deleteLongTermMemory(userId, memoryId) {
     if (isMongoConnected()) {
         try {
-            const result = await MemoryModel.findByIdAndDelete(memoryId)
+            const result = await MemoryModel.findOneAndDelete({ _id: memoryId, userId })
             return result !== null
         } catch (err) {
             log.error(`Failed to delete memory ${memoryId}: ${err.message}`)
@@ -170,20 +219,47 @@ async function deleteLongTermMemory(userId, memoryId) {
         }
     }
     const list = memoryFallback.get(userId) || []
-    const idx = parseInt(memoryId)
-    if (!isNaN(idx) && idx >= 0 && idx < list.length) {
-        list.splice(idx, 1)
+    const index = parseInt(memoryId)
+    if (!Number.isNaN(index) && index >= 0 && index < list.length) {
+        list.splice(index, 1)
         memoryFallback.set(userId, list)
         return true
     }
     return false
 }
 
-/**
- * Clear all long-term memories for a user.
- * @param {string} userId
- * @returns {Promise<void>}
- */
+async function deleteMatchingMemories(userId, operation) {
+    const normalized = normalizeMemoryOperation(operation)
+    if (!normalized || normalized.action !== "delete") return 0
+    const memories = await getUserLongTermMemories(userId)
+    const matches = memories.filter(memory => memoryMatchesOperation(memory, normalized)).slice(0, 8)
+    if (!matches.length) return 0
+
+    if (isMongoConnected()) {
+        try {
+            await MemoryModel.updateMany(
+                { userId, _id: { $in: matches.map(memory => memory._id) } },
+                { active: false, supersededAt: new Date() }
+            )
+            return matches.length
+        } catch (err) {
+            log.error(`Failed to deactivate matching memories for ${userId}: ${err.message}`)
+            return 0
+        }
+    }
+
+    const list = memoryFallback.get(userId) || []
+    const matchSet = new Set(matches)
+    for (const memory of list) {
+        if (matchSet.has(memory)) {
+            memory.active = false
+            memory.supersededAt = new Date()
+        }
+    }
+    memoryFallback.set(userId, list)
+    return matches.length
+}
+
 async function clearLongTermMemories(userId) {
     if (isMongoConnected()) {
         try {
@@ -197,89 +273,100 @@ async function clearLongTermMemories(userId) {
     memoryFallback.delete(userId)
 }
 
-/**
- * Extract memories from a conversation exchange using AI.
- * Runs asynchronously and does not block the response.
- * @param {string} userId
- * @param {string} userMessage
- * @param {string} botReply
- * @returns {Promise<void>}
- */
+async function applyMemoryOperations(userId, operations) {
+    for (const rawOperation of (Array.isArray(operations) ? operations : []).slice(0, 8)) {
+        const operation = normalizeMemoryOperation(rawOperation)
+        if (!operation) continue
+        if (operation.action === "clear_all") {
+            await clearLongTermMemories(userId)
+            continue
+        }
+        if (operation.action === "delete") {
+            await deleteMatchingMemories(userId, operation)
+            continue
+        }
+        await addLongTermMemory(userId, operation)
+    }
+}
+
 async function extractAndStoreMemories(userId, userMessage, botReply) {
     try {
+        if (isExplicitClearAllRequest(userMessage)) {
+            await clearLongTermMemories(userId)
+            return
+        }
+
         const result = await callAI([
             {
                 role: "system",
-                content: `You are a memory extraction system. Analyze the conversation and extract any personal facts about the user.
-Output ONLY a JSON array of memory objects. Each object must have:
-- "type": one of: like, dislike, game, anime, music, friend, note, fact
-- "content": a short factual statement (max 100 chars)
-- "importance": 1-5 (5 = very important personal detail)
-- "tags": array of 1-3 relevant keywords
+                content: `You are CURSED's memory update extractor. Analyze only what the USER explicitly reveals, corrects, or asks to forget.
+Output ONLY a valid JSON array with up to 6 operations.
 
-If there is nothing worth remembering, output an empty array: []
-Output ONLY valid JSON, no explanation.`
+Allowed operations:
+1. Upsert a useful durable fact:
+{"action":"upsert","type":"fact","content":"short factual statement","importance":1-5,"confidence":0.2-1,"tags":["topic"],"source":"explicit"}
+2. Delete an outdated or explicitly forgotten memory:
+{"action":"delete","match":"specific subject or old value","tags":["topic"]}
+3. Clear all memory only when the user explicitly asks to forget everything:
+{"action":"clear_all"}
+
+Allowed types: like, dislike, game, anime, music, friend, note, fact, friendship, personality.
+Correction rules:
+- New explicit user corrections override old information.
+- "I no longer X" or "forget X" should create a delete operation.
+- "It is Railway, not Replit" should delete the old Replit fact and upsert the Railway fact with source correction.
+- Do not infer personal facts from the bot reply.
+- Do not store secrets, tokens, IDs, contact details, URLs, temporary moods, or one-off requests.
+- If nothing durable changed, output [].
+Output ONLY JSON.`
             },
             {
                 role: "user",
-                content: `User said: "${userMessage}"\nBot replied: "${botReply}"\n\nExtract memorable facts about the user:`
+                content: `User message: ${JSON.stringify(String(userMessage || "").slice(0, 1200))}\nBot reply for context only: ${JSON.stringify(String(botReply || "").slice(0, 800))}`
             }
-        ], { maxTokens: 400 })
+        ], { maxTokens: 550, temperature: 0.1 })
 
-        const text = result.content.trim()
-        // Extract JSON array from response
-        const match = text.match(/\[[\s\S]*\]/)
+        const match = result.content.trim().match(/\[[\s\S]*\]/)
         if (!match) return
-
-        const memories = JSON.parse(match[0])
-        if (!Array.isArray(memories)) return
-
-        for (const mem of memories.slice(0, 5)) {
-            if (mem.content && mem.type) {
-                await addLongTermMemory(userId, mem)
-            }
-        }
+        const operations = JSON.parse(match[0])
+        if (!Array.isArray(operations)) return
+        await applyMemoryOperations(userId, operations)
     } catch (err) {
-        // Memory extraction is best-effort — never block the main flow
         log.debug(`Memory extraction skipped for ${userId}: ${err.message}`)
     }
 }
 
-/**
- * Build a memory context string to prepend to AI conversations.
- * @param {string} userId
- * @returns {Promise<string>}
- */
-async function buildMemoryContext(userId) {
+async function getRelevantMemories(userId, userInput = "", limit = 12) {
     const memories = await getUserLongTermMemories(userId)
+    return rankMemories(memories, userInput, limit)
+}
+
+async function buildMemoryContext(userId, userInput = "") {
+    const memories = await getRelevantMemories(userId, userInput, userInput ? 12 : 20)
     if (!memories.length) return ""
 
-    const grouped = {}
-    for (const m of memories) {
-        if (!grouped[m.type]) grouped[m.type] = []
-        grouped[m.type].push(m.content)
-    }
-
-    const lines = []
-    const typeLabels = {
-        like: "Likes", dislike: "Dislikes", game: "Favorite games",
-        anime: "Favorite anime", music: "Favorite music",
-        friend: "Friends/people they mention", note: "Notes", fact: "Known facts"
-    }
-
-    for (const [type, items] of Object.entries(grouped)) {
-        const label = typeLabels[type] || type
-        lines.push(`${label}: ${items.slice(0, 5).join(", ")}`)
-    }
+    const lines = memories.map(memory => {
+        const confirmed = memory.lastConfirmedAt || memory.extractedAt
+        const confirmedDate = confirmed && !Number.isNaN(new Date(confirmed).getTime())
+            ? new Date(confirmed).toISOString().slice(0, 10)
+            : "unknown"
+        const importance = Math.max(1, Math.min(5, Number(memory.importance) || 1))
+        const confidence = Math.max(0, Math.min(1, Number(memory.confidence) || 0.65)).toFixed(2)
+        return `- [type=${memory.type || "fact"} importance=${importance} confidence=${confidence} lastConfirmed=${confirmedDate}] ${memory.content}`
+    })
 
     return `\n\nWHAT YOU KNOW ABOUT THIS USER:\n${lines.join("\n")}`
 }
 
 module.exports = {
     getUserLongTermMemories,
+    getRelevantMemories,
     addLongTermMemory,
     deleteLongTermMemory,
+    deleteMatchingMemories,
     clearLongTermMemories,
+    applyMemoryOperations,
     extractAndStoreMemories,
     buildMemoryContext,
+    stringSimilarity,
 }
