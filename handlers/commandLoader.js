@@ -22,6 +22,7 @@ require("../commands/helpCatalog")
 require("../commands/prefixCommandCatalog")
 require("../commands/imageGenerationCatalog")
 require("../commands/birthdayCatalog")
+require("../commands/customRoleCatalog")
 
 const log = logger.child("CommandLoader")
 
@@ -49,6 +50,8 @@ function loadCommands() {
         { name: "server-insights",   module: require("../commands/serverInsights")   },
         { name: "public-stats-status", module: require("../commands/publicStatsStatus") },
         { name: "leveling",          module: require("../commands/leveling")         },
+        // Deliberately last: built-in CURSED commands always win command-name collisions.
+        { name: "custom-roles",      module: require("../commands/customRoles")      },
     ]
 
     log.info(`Loaded ${commandModules.length} command modules`)
