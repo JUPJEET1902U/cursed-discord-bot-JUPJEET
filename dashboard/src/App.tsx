@@ -15,10 +15,10 @@ import { AIConfigPage } from '@/pages/AIConfig'
 import { WelcomeGoodbyePage } from '@/pages/WelcomeGoodbye'
 import { StatisticsPage } from '@/pages/Statistics'
 import { CommunityPage } from '@/pages/Community'
+import { CustomRolesPage } from '@/pages/CustomRoles'
 import { NotFoundPage } from '@/pages/NotFound'
 import { cn } from '@/utils/cn'
 
-// ── Protected layout ───────────────────────────────────────────────────────────
 function DashboardLayout() {
   const { sidebarOpen } = useUIStore()
 
@@ -42,40 +42,25 @@ function DashboardLayout() {
   )
 }
 
-// ── Auth guard ─────────────────────────────────────────────────────────────────
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading, fetchMe, token } = useAuthStore()
 
-  // Always validate the persisted token with the backend on mount.
-  // This catches expired sessions even when isAuthenticated is true from
-  // the persisted zustand store.
   useEffect(() => {
-    if (token) {
-      fetchMe()
-    }
+    if (token) fetchMe()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (isLoading) {
-    return <Loading fullPage text="Loading..." />
-  }
-
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />
-  }
-
+  if (isLoading) return <Loading fullPage text="Loading..." />
+  if (!isAuthenticated) return <Navigate to="/login" replace />
   return <>{children}</>
 }
 
-// ── App ────────────────────────────────────────────────────────────────────────
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public routes */}
         <Route path="/login" element={<LoginPage />} />
         <Route path="/auth/callback" element={<LoginPage />} />
 
-        {/* Protected routes */}
         <Route
           path="/dashboard"
           element={
@@ -91,10 +76,10 @@ export default function App() {
           <Route path=":guildId/ai-config" element={<AIConfigPage />} />
           <Route path=":guildId/welcome" element={<WelcomeGoodbyePage />} />
           <Route path=":guildId/community" element={<CommunityPage />} />
+          <Route path=":guildId/custom-roles" element={<CustomRolesPage />} />
           <Route path=":guildId/moderation" element={<BotConfigPage />} />
         </Route>
 
-        {/* Redirects */}
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
