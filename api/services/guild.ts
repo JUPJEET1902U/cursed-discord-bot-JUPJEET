@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import type { GuildConfigData } from '../types/index.js'
 
 const nodeRequire = createRequire(import.meta.url)
-const guildConfigStore = nodeRequire('../../utils/serverConfig.js') as {
+const guildConfigStore = nodeRequire(path.resolve(process.cwd(), 'utils', 'serverConfig.js')) as {
   getServerConfig: (guildId: string) => { config: Record<string, unknown> }
   updateGuildConfigAndWait: (
     guildId: string,
