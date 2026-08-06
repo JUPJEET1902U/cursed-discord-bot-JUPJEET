@@ -109,6 +109,18 @@ test("patched reply, deferReply and followUp never pass ephemeral downstream", (
     assert.deepEqual(interaction.followUpOptions, { content: "b" })
 })
 
+test("component and modal interaction prototypes are normalized too", () => {
+    assert.equal(guards.discordInteractionState.patchedMethods, 9)
+
+    const button = new ButtonInteraction()
+    button.reply({ content: "button", ephemeral: true })
+    assert.deepEqual(button.replyOptions, { content: "button", flags: 64 })
+
+    const modal = new ModalSubmitInteraction()
+    modal.deferReply({ ephemeral: true })
+    assert.deepEqual(modal.deferOptions, { flags: 64 })
+})
+
 test("non-object interaction payloads remain unchanged", () => {
     const interaction = new ChatInputCommandInteraction()
     assert.equal(interaction.reply("hello"), "hello")
