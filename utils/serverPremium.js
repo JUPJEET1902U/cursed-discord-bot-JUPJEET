@@ -14,6 +14,8 @@ const premiumGuildAccountSchema = new mongoose.Schema({
     grantedAt: { type: Date, default: Date.now },
     expiresAt: { type: Date, default: null, index: true },
     revokedAt: { type: Date, default: null },
+    migratedFrom: { type: String, default: null },
+    migratedAt: { type: Date, default: null },
 }, { collection: "premiumGuildAccounts", timestamps: true, minimize: false })
 
 function getModel() {
@@ -23,6 +25,7 @@ function getModel() {
 
 const PremiumGuildAccount = getModel()
 const guildCache = new Map()
+const pendingGuildWrites = new Map()
 let refreshPromise = null
 const ownerBasedGuildPremium = premium.isGuildPremium.bind(premium)
 
@@ -54,36 +57,79 @@ function normalizeGuildAccount(account = {}) {
     }
 }
 
-function loadFallback() {
+function accountSetFields(account) {
+    return {
+        active: account.active === true,
+        source: account.source,
+        note: account.note,
+        grantedBy: account.grantedBy,
+        grantedAt: new Date(account.grantedAt),
+        expiresAt: account.expiresAt ? new Date(account.expiresAt) : null,
+        revokedAt: account.revokedAt ? new Date(account.revokedAt) : null,
+    }
+}
+
+function loadLegacyFallback() {
     try {
         if (!fs.existsSync(FALLBACK_FILE)) return {}
         const parsed = JSON.parse(fs.readFileSync(FALLBACK_FILE, "utf8"))
-        return parsed && typeof parsed === "object" ? parsed : {}
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
     } catch (err) {
-        console.error("Server Premium fallback load error:", err.message)
+        console.error("Server Premium legacy load error:", err.message)
         return {}
     }
 }
 
-function saveFallback() {
-    try {
-        const accounts = {}
-        for (const [guildId, account] of guildCache) accounts[guildId] = account
-        fs.writeFileSync(FALLBACK_FILE, JSON.stringify(accounts, null, 2))
-    } catch (err) {
-        console.error("Server Premium fallback save error:", err.message)
+const legacyAccounts = loadLegacyFallback()
+
+async function migrateLegacyServerPremium() {
+    if (!isMongoConnected()) return 0
+    const operations = []
+    for (const [guildId, rawAccount] of Object.entries(legacyAccounts)) {
+        if (!premium.isValidDiscordId(guildId)) continue
+        const account = normalizeGuildAccount({ ...rawAccount, guildId })
+        operations.push({
+            updateOne: {
+                filter: { guildId },
+                update: {
+                    $setOnInsert: {
+                        guildId,
+                        ...accountSetFields(account),
+                        migratedFrom: "serverPremiumData.json",
+                        migratedAt: new Date(),
+                    },
+                },
+                upsert: true,
+            },
+        })
     }
+    if (!operations.length) return 0
+    const result = await PremiumGuildAccount.bulkWrite(operations, { ordered: false })
+    return result.upsertedCount || 0
 }
 
-function bootstrapFallback() {
-    guildCache.clear()
-    for (const [guildId, account] of Object.entries(loadFallback())) {
-        const normalized = normalizeGuildAccount({ ...account, guildId })
-        if (premium.isValidDiscordId(normalized.guildId)) guildCache.set(guildId, normalized)
-    }
+async function persistGuildAccount(guildId, account) {
+    if (!isMongoConnected()) return false
+    await PremiumGuildAccount.findOneAndUpdate(
+        { guildId },
+        {
+            $set: accountSetFields(account),
+            $setOnInsert: { guildId },
+        },
+        { upsert: true, new: true }
+    )
+    if (pendingGuildWrites.get(guildId) === account) pendingGuildWrites.delete(guildId)
+    return true
 }
 
-bootstrapFallback()
+async function flushPendingServerPremiumWrites() {
+    if (!isMongoConnected()) return false
+    for (const [guildId, account] of [...pendingGuildWrites]) {
+        try { await persistGuildAccount(guildId, account) }
+        catch (err) { console.error(`Server Premium save error (${guildId}):`, err.message) }
+    }
+    return pendingGuildWrites.size === 0
+}
 
 async function refreshServerPremiumCache() {
     if (!isMongoConnected()) return false
@@ -91,13 +137,18 @@ async function refreshServerPremiumCache() {
 
     refreshPromise = (async () => {
         try {
-            const accounts = await PremiumGuildAccount.find({ active: true }).lean()
+            const imported = await migrateLegacyServerPremium()
+            const accounts = await PremiumGuildAccount.find({}).lean()
             guildCache.clear()
             for (const account of accounts) {
                 const normalized = normalizeGuildAccount(account)
-                if (premium.isValidDiscordId(normalized.guildId)) guildCache.set(normalized.guildId, normalized)
+                if (premium.isValidDiscordId(normalized.guildId)) {
+                    guildCache.set(normalized.guildId, normalized)
+                }
             }
-            saveFallback()
+            for (const [guildId, account] of pendingGuildWrites) guildCache.set(guildId, account)
+            await flushPendingServerPremiumWrites()
+            console.log(`✅ Server Premium MongoDB ready: ${guildCache.size} account(s), ${imported} imported from legacy JSON`)
             return true
         } catch (err) {
             console.error("Server Premium cache refresh error:", err.message)
@@ -148,27 +199,9 @@ async function grantServerPremium(guildId, options = {}) {
         updatedAt: new Date(),
     })
     guildCache.set(id, account)
-    saveFallback()
+    pendingGuildWrites.set(id, account)
 
-    if (isMongoConnected()) {
-        await PremiumGuildAccount.findOneAndUpdate(
-            { guildId: id },
-            {
-                $set: {
-                    active: true,
-                    source: account.source,
-                    note: account.note,
-                    grantedBy: account.grantedBy,
-                    grantedAt: new Date(account.grantedAt),
-                    expiresAt: account.expiresAt ? new Date(account.expiresAt) : null,
-                    revokedAt: null,
-                },
-                $setOnInsert: { guildId: id },
-            },
-            { upsert: true, new: true }
-        )
-    }
-
+    if (isMongoConnected()) await persistGuildAccount(id, account)
     return { account }
 }
 
@@ -184,16 +217,9 @@ async function revokeServerPremium(guildId) {
         updatedAt: new Date(),
     })
     guildCache.set(id, account)
-    saveFallback()
+    pendingGuildWrites.set(id, account)
 
-    if (isMongoConnected()) {
-        await PremiumGuildAccount.findOneAndUpdate(
-            { guildId: id },
-            { $set: { active: false, revokedAt: new Date() }, $setOnInsert: { guildId: id } },
-            { upsert: true }
-        )
-    }
-
+    if (isMongoConnected()) await persistGuildAccount(id, account)
     return { account }
 }
 
@@ -206,6 +232,7 @@ function listServerPremiumAccounts() {
 
 function _resetForTests() {
     guildCache.clear()
+    pendingGuildWrites.clear()
 }
 
 // Patch the shared Premium module before dashboard, ticket and welcome modules

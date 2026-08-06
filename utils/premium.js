@@ -6,6 +6,7 @@ const mongoose = require("mongoose")
 const CODES_FILE = path.resolve(process.cwd(), "premiumCodes.json")
 const FALLBACK_FILE = path.resolve(process.cwd(), "premiumData.json")
 const DISCORD_ID = /^\d{17,20}$/
+const DELETE_CODE = Symbol("deletePremiumCode")
 
 const BOT_OWNER_IDS = Object.freeze(
     (process.env.BOT_OWNER_IDS || "")
@@ -96,6 +97,8 @@ const premiumAccountSchema = new mongoose.Schema({
     grantedAt: { type: Date, default: Date.now },
     expiresAt: { type: Date, default: null, index: true },
     revokedAt: { type: Date, default: null },
+    migratedFrom: { type: String, default: null },
+    migratedAt: { type: Date, default: null },
 }, { collection: "premiumAccounts", timestamps: true, minimize: false })
 
 const premiumSettingsSchema = new mongoose.Schema({
@@ -112,7 +115,17 @@ const premiumSettingsSchema = new mongoose.Schema({
         checkout: { type: String, default: null, maxlength: 2048 },
     },
     updatedBy: { type: String, default: null },
+    migratedFrom: { type: String, default: null },
+    migratedAt: { type: Date, default: null },
 }, { collection: "premiumSettings", timestamps: true, minimize: false })
+
+const premiumCodeSchema = new mongoose.Schema({
+    code: { type: String, required: true, unique: true, index: true },
+    data: { type: mongoose.Schema.Types.Mixed, default: {} },
+    deleted: { type: Boolean, default: false, index: true },
+    migratedFrom: { type: String, default: null },
+    migratedAt: { type: Date, default: null },
+}, { collection: "premiumCodes", timestamps: true, minimize: false })
 
 function getModel(name, schema) {
     try { return mongoose.model(name) }
@@ -121,9 +134,14 @@ function getModel(name, schema) {
 
 const PremiumAccount = getModel("PremiumAccount", premiumAccountSchema)
 const PremiumSettings = getModel("PremiumSettings", premiumSettingsSchema)
+const PremiumCode = getModel("PremiumCode", premiumCodeSchema)
 
 const accountCache = new Map()
 let paymentSettingsCache = clone(DEFAULT_PAYMENT_SETTINGS)
+const codeCache = new Map()
+const pendingAccountWrites = new Map()
+let pendingSettingsWrite = null
+const pendingCodeWrites = new Map()
 const aiCooldowns = new Map()
 const usageCounters = new Map()
 let refreshPromise = null
@@ -205,7 +223,20 @@ function normalizeAccount(account = {}) {
     }
 }
 
-function loadFallback() {
+function normalizeCodeData(info = {}) {
+    const raw = info && typeof info === "object" && !Array.isArray(info) ? info : {}
+    return {
+        ...clone(raw),
+        used: raw.used === true,
+        createdBy: raw.createdBy || null,
+        note: String(raw.note || ""),
+        createdAt: raw.createdAt || new Date().toISOString(),
+        usedBy: raw.usedBy || null,
+        usedAt: raw.usedAt || null,
+    }
+}
+
+function loadLegacyFallback() {
     try {
         if (!fs.existsSync(FALLBACK_FILE)) return { accounts: {}, settings: clone(DEFAULT_PAYMENT_SETTINGS) }
         const parsed = JSON.parse(fs.readFileSync(FALLBACK_FILE, "utf8"))
@@ -214,32 +245,195 @@ function loadFallback() {
             settings: normalizePaymentSettings(parsed?.settings || DEFAULT_PAYMENT_SETTINGS),
         }
     } catch (err) {
-        console.error("Premium fallback load error:", err.message)
+        console.error("Premium legacy load error:", err.message)
         return { accounts: {}, settings: clone(DEFAULT_PAYMENT_SETTINGS) }
     }
 }
 
-function saveFallback() {
+function loadLegacyCodes() {
     try {
-        const accounts = {}
-        for (const [userId, account] of accountCache) accounts[userId] = account
-        fs.writeFileSync(FALLBACK_FILE, JSON.stringify({ accounts, settings: paymentSettingsCache }, null, 2))
+        if (!fs.existsSync(CODES_FILE)) return {}
+        const parsed = JSON.parse(fs.readFileSync(CODES_FILE, "utf8"))
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
     } catch (err) {
-        console.error("Premium fallback save error:", err.message)
+        console.error("Premium codes legacy load error:", err.message)
+        return {}
     }
 }
 
-function bootstrapFallback() {
-    const fallback = loadFallback()
-    accountCache.clear()
-    for (const [userId, account] of Object.entries(fallback.accounts)) {
-        const normalized = normalizeAccount({ ...account, userId })
-        accountCache.set(userId, normalized)
+const legacyFallbackExists = fs.existsSync(FALLBACK_FILE)
+const legacyCodesExists = fs.existsSync(CODES_FILE)
+const legacyFallback = loadLegacyFallback()
+const legacyCodes = loadLegacyCodes()
+
+function accountSetFields(account) {
+    return {
+        active: account.active === true,
+        source: account.source,
+        note: account.note,
+        grantedBy: account.grantedBy,
+        grantedAt: new Date(account.grantedAt),
+        expiresAt: account.expiresAt ? new Date(account.expiresAt) : null,
+        revokedAt: account.revokedAt ? new Date(account.revokedAt) : null,
     }
-    paymentSettingsCache = normalizePaymentSettings(fallback.settings)
 }
 
-bootstrapFallback()
+function settingsSetFields(settings) {
+    return {
+        enabled: settings.enabled,
+        currency: settings.currency,
+        monthlyPrice: settings.monthlyPrice,
+        headline: settings.headline,
+        instructions: settings.instructions,
+        links: settings.links,
+        updatedBy: settings.updatedBy || null,
+    }
+}
+
+async function migrateLegacyPremiumData() {
+    if (!isMongoConnected()) return { accounts: 0, settings: 0, codes: 0 }
+    let importedAccounts = 0
+    let importedSettings = 0
+    let importedCodes = 0
+
+    const accountOps = []
+    for (const [userId, rawAccount] of Object.entries(legacyFallbackExists ? legacyFallback.accounts : {})) {
+        if (!isValidDiscordId(userId)) continue
+        const account = normalizeAccount({ ...rawAccount, userId })
+        accountOps.push({
+            updateOne: {
+                filter: { userId },
+                update: {
+                    $setOnInsert: {
+                        userId,
+                        ...accountSetFields(account),
+                        migratedFrom: "premiumData.json",
+                        migratedAt: new Date(),
+                    },
+                },
+                upsert: true,
+            },
+        })
+    }
+    if (accountOps.length) {
+        const result = await PremiumAccount.bulkWrite(accountOps, { ordered: false })
+        importedAccounts = result.upsertedCount || 0
+    }
+
+    if (legacyFallbackExists) {
+        const legacySettings = normalizePaymentSettings(legacyFallback.settings)
+        const settingsResult = await PremiumSettings.updateOne(
+            { key: "global" },
+            {
+                $setOnInsert: {
+                    key: "global",
+                    ...settingsSetFields(legacySettings),
+                    migratedFrom: "premiumData.json",
+                    migratedAt: new Date(),
+                },
+            },
+            { upsert: true }
+        )
+        importedSettings = settingsResult.upsertedCount || 0
+    }
+
+    const codeOps = []
+    for (const [code, rawInfo] of Object.entries(legacyCodesExists ? legacyCodes : {})) {
+        if (!code) continue
+        codeOps.push({
+            updateOne: {
+                filter: { code },
+                update: {
+                    $setOnInsert: {
+                        code,
+                        data: normalizeCodeData(rawInfo),
+                        deleted: false,
+                        migratedFrom: "premiumCodes.json",
+                        migratedAt: new Date(),
+                    },
+                },
+                upsert: true,
+            },
+        })
+    }
+    if (codeOps.length) {
+        const result = await PremiumCode.bulkWrite(codeOps, { ordered: false })
+        importedCodes = result.upsertedCount || 0
+    }
+
+    return { accounts: importedAccounts, settings: importedSettings, codes: importedCodes }
+}
+
+async function persistAccount(userId, account) {
+    if (!isMongoConnected()) return false
+    await PremiumAccount.findOneAndUpdate(
+        { userId },
+        {
+            $set: accountSetFields(account),
+            $setOnInsert: { userId },
+        },
+        { upsert: true, new: true }
+    )
+    if (pendingAccountWrites.get(userId) === account) pendingAccountWrites.delete(userId)
+    return true
+}
+
+async function persistSettings(settings) {
+    if (!isMongoConnected()) return false
+    await PremiumSettings.findOneAndUpdate(
+        { key: "global" },
+        {
+            $set: settingsSetFields(settings),
+            $setOnInsert: { key: "global" },
+        },
+        { upsert: true, new: true }
+    )
+    if (pendingSettingsWrite === settings) pendingSettingsWrite = null
+    return true
+}
+
+async function persistCode(code, value) {
+    if (!isMongoConnected()) return false
+    if (value === DELETE_CODE) {
+        await PremiumCode.findOneAndUpdate(
+            { code },
+            {
+                $set: { deleted: true, data: {} },
+                $setOnInsert: { code },
+            },
+            { upsert: true }
+        )
+    } else {
+        await PremiumCode.findOneAndUpdate(
+            { code },
+            {
+                $set: { data: normalizeCodeData(value), deleted: false },
+                $setOnInsert: { code },
+            },
+            { upsert: true }
+        )
+    }
+    if (pendingCodeWrites.get(code) === value) pendingCodeWrites.delete(code)
+    return true
+}
+
+async function flushPendingPremiumWrites() {
+    if (!isMongoConnected()) return false
+    for (const [userId, account] of [...pendingAccountWrites]) {
+        try { await persistAccount(userId, account) }
+        catch (err) { console.error(`Premium account save error (${userId}):`, err.message) }
+    }
+    if (pendingSettingsWrite) {
+        const settings = pendingSettingsWrite
+        try { await persistSettings(settings) }
+        catch (err) { console.error("Premium settings save error:", err.message) }
+    }
+    for (const [code, value] of [...pendingCodeWrites]) {
+        try { await persistCode(code, value) }
+        catch (err) { console.error(`Premium code save error (${code}):`, err.message) }
+    }
+    return pendingAccountWrites.size === 0 && !pendingSettingsWrite && pendingCodeWrites.size === 0
+}
 
 async function refreshPremiumCache() {
     if (!isMongoConnected()) return false
@@ -247,17 +441,42 @@ async function refreshPremiumCache() {
 
     refreshPromise = (async () => {
         try {
-            const [accounts, settings] = await Promise.all([
-                PremiumAccount.find({ active: true }).lean(),
+            const imported = await migrateLegacyPremiumData()
+            const [accounts, settings, codes] = await Promise.all([
+                PremiumAccount.find({}).lean(),
                 PremiumSettings.findOne({ key: "global" }).lean(),
+                PremiumCode.find({ deleted: { $ne: true } }).lean(),
             ])
-            accountCache.clear()
+
+            const nextAccounts = new Map()
             for (const account of accounts) {
                 const normalized = normalizeAccount(account)
-                if (normalized.userId) accountCache.set(normalized.userId, normalized)
+                if (normalized.userId) nextAccounts.set(normalized.userId, normalized)
             }
-            if (settings) paymentSettingsCache = normalizePaymentSettings(settings)
-            saveFallback()
+            accountCache.clear()
+            for (const [userId, account] of nextAccounts) accountCache.set(userId, account)
+            for (const [userId, account] of pendingAccountWrites) accountCache.set(userId, account)
+
+            if (!pendingSettingsWrite) {
+                paymentSettingsCache = settings
+                    ? normalizePaymentSettings(settings)
+                    : clone(DEFAULT_PAYMENT_SETTINGS)
+            }
+
+            codeCache.clear()
+            for (const doc of codes) {
+                if (doc?.code) codeCache.set(doc.code, normalizeCodeData(doc.data))
+            }
+            for (const [code, value] of pendingCodeWrites) {
+                if (value === DELETE_CODE) codeCache.delete(code)
+                else codeCache.set(code, normalizeCodeData(value))
+            }
+
+            await flushPendingPremiumWrites()
+            console.log(
+                `✅ Premium MongoDB ready: ${accountCache.size} account(s), ${codeCache.size} code(s), ` +
+                `${imported.accounts + imported.settings + imported.codes} legacy record(s) imported`
+            )
             return true
         } catch (err) {
             console.error("Premium cache refresh error:", err.message)
@@ -271,6 +490,7 @@ async function refreshPremiumCache() {
 }
 
 mongoose.connection.on("connected", () => { refreshPremiumCache().catch(() => {}) })
+if (isMongoConnected()) refreshPremiumCache().catch(() => {})
 
 function isPremiumUser(userId) {
     const id = String(userId || "")
@@ -411,26 +631,9 @@ async function grantPremiumUser(userId, options = {}) {
         updatedAt: new Date(),
     })
     accountCache.set(id, account)
-    saveFallback()
+    pendingAccountWrites.set(id, account)
 
-    if (isMongoConnected()) {
-        await PremiumAccount.findOneAndUpdate(
-            { userId: id },
-            {
-                $set: {
-                    active: true,
-                    source: account.source,
-                    note: account.note,
-                    grantedBy: account.grantedBy,
-                    grantedAt: new Date(account.grantedAt),
-                    expiresAt: account.expiresAt ? new Date(account.expiresAt) : null,
-                    revokedAt: null,
-                },
-                $setOnInsert: { userId: id },
-            },
-            { upsert: true, new: true }
-        )
-    }
+    if (isMongoConnected()) await persistAccount(id, account)
 
     const roleResults = options.client
         ? await syncPremiumRole(options.client, id, true, options.guildId || null)
@@ -450,15 +653,9 @@ async function revokePremiumUser(userId, options = {}) {
         updatedAt: new Date(),
     })
     accountCache.set(id, account)
-    saveFallback()
+    pendingAccountWrites.set(id, account)
 
-    if (isMongoConnected()) {
-        await PremiumAccount.findOneAndUpdate(
-            { userId: id },
-            { $set: { active: false, revokedAt: new Date() }, $setOnInsert: { userId: id } },
-            { upsert: true }
-        )
-    }
+    if (isMongoConnected()) await persistAccount(id, account)
 
     const roleResults = options.client
         ? await syncPremiumRole(options.client, id, false, options.guildId || null)
@@ -491,39 +688,37 @@ async function updatePaymentSettings(patch = {}, actorId = null) {
         updatedAt: new Date(),
     })
     paymentSettingsCache = merged
-    saveFallback()
+    pendingSettingsWrite = merged
 
-    if (isMongoConnected()) {
-        await PremiumSettings.findOneAndUpdate(
-            { key: "global" },
-            {
-                $set: {
-                    enabled: merged.enabled,
-                    currency: merged.currency,
-                    monthlyPrice: merged.monthlyPrice,
-                    headline: merged.headline,
-                    instructions: merged.instructions,
-                    links: merged.links,
-                    updatedBy: actorId || null,
-                },
-                $setOnInsert: { key: "global" },
-            },
-            { upsert: true, new: true }
-        )
-    }
+    if (isMongoConnected()) await persistSettings(merged)
     return getPaymentSettings()
 }
 
 function loadCodes() {
-    try {
-        if (fs.existsSync(CODES_FILE)) return JSON.parse(fs.readFileSync(CODES_FILE, "utf8"))
-    } catch (err) { console.error("Codes load error:", err.message) }
-    return {}
+    const result = {}
+    for (const [code, info] of codeCache) result[code] = clone(info)
+    return result
 }
 
 function saveCodes(data) {
-    try { fs.writeFileSync(CODES_FILE, JSON.stringify(data, null, 2)) }
-    catch (err) { console.error("Codes save error:", err.message) }
+    const next = data && typeof data === "object" && !Array.isArray(data) ? data : {}
+    const nextKeys = new Set(Object.keys(next))
+
+    for (const code of [...codeCache.keys()]) {
+        if (nextKeys.has(code)) continue
+        codeCache.delete(code)
+        pendingCodeWrites.set(code, DELETE_CODE)
+    }
+
+    for (const [code, rawInfo] of Object.entries(next)) {
+        const info = normalizeCodeData(rawInfo)
+        codeCache.set(code, info)
+        pendingCodeWrites.set(code, info)
+    }
+
+    if (isMongoConnected()) flushPendingPremiumWrites().catch(err =>
+        console.error("Premium code flush error:", err.message)
+    )
 }
 
 function generateCode() {
@@ -531,33 +726,54 @@ function generateCode() {
 }
 
 function createCode(adminId, note = "") {
-    const codes = loadCodes()
-    const code = generateCode()
-    codes[code] = { used: false, createdBy: adminId, note, createdAt: new Date().toISOString(), usedBy: null }
-    saveCodes(codes)
+    let code = generateCode()
+    while (codeCache.has(code)) code = generateCode()
+    const info = normalizeCodeData({
+        used: false,
+        createdBy: adminId,
+        note,
+        createdAt: new Date().toISOString(),
+        usedBy: null,
+        usedAt: null,
+    })
+    codeCache.set(code, info)
+    pendingCodeWrites.set(code, info)
+    if (isMongoConnected()) flushPendingPremiumWrites().catch(err =>
+        console.error("Premium code create error:", err.message)
+    )
     return code
 }
 
 function useCode(code, userId) {
-    const codes = loadCodes()
-    if (!codes[code]) return { ok: false, reason: "invalid" }
-    if (codes[code].used) return { ok: false, reason: "used" }
-    codes[code].used = true
-    codes[code].usedBy = userId
-    codes[code].usedAt = new Date().toISOString()
-    saveCodes(codes)
+    const info = codeCache.get(code)
+    if (!info) return { ok: false, reason: "invalid" }
+    if (info.used) return { ok: false, reason: "used" }
+    const updated = normalizeCodeData({
+        ...info,
+        used: true,
+        usedBy: userId,
+        usedAt: new Date().toISOString(),
+    })
+    codeCache.set(code, updated)
+    pendingCodeWrites.set(code, updated)
+    if (isMongoConnected()) flushPendingPremiumWrites().catch(err =>
+        console.error("Premium code redeem error:", err.message)
+    )
     return { ok: true }
 }
 
 function listCodes() {
-    const codes = loadCodes()
-    return Object.entries(codes).map(([code, info]) => ({ code, ...info }))
+    return [...codeCache.entries()].map(([code, info]) => ({ code, ...clone(info) }))
 }
 
 function _resetForTests() {
     aiCooldowns.clear()
     usageCounters.clear()
     accountCache.clear()
+    codeCache.clear()
+    pendingAccountWrites.clear()
+    pendingCodeWrites.clear()
+    pendingSettingsWrite = null
     paymentSettingsCache = clone(DEFAULT_PAYMENT_SETTINGS)
 }
 
