@@ -66,8 +66,10 @@ test("context ordering and guild-user isolation remain unchanged", () => {
 })
 
 test("clear and cleanup operations persist MongoDB deletions", () => {
-    assert.match(memorySource, /delete mem\[memKey\(guildId, userId\)\]/)
+    assert.match(memorySource, /const key = memKey\(guildId, userId\)/)
+    assert.match(memorySource, /delete memoryCache\[key\]/)
     assert.match(memorySource, /pendingWrites\.set\(key, DELETE_MEMORY\)/)
+    assert.match(memorySource, /knownSnapshots\.delete\(key\)/)
     assert.match(memorySource, /deleteOne:\s*\{\s*filter:\s*\{ memoryKey \}\s*\}/)
     assert.match(memorySource, /if \(!Array\.isArray\(mem\[key\]\) \|\| mem\[key\]\.length === 0\)/)
 })
