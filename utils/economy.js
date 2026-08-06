@@ -1,6 +1,10 @@
 const fs = require("fs")
+const path = require("path")
+const mongoose = require("mongoose")
+const EconomyUser = require("../database/economyModel")
 
 const ECONOMY_FILE = "./economy.json"
+const LEGACY_ECONOMY_PATH = path.resolve(__dirname, "..", "economy.json")
 const CURRENCY = "🪙 Cursed Coins"
 const MEDALS = ["🥇", "🥈", "🥉"]
 
@@ -28,16 +32,220 @@ const QUEST_POOL = [
     { id: "slots1",    desc: "🎰 Play slots once with !slots",   key: "slots",       goal: 1, reward: { coins: 90,  xp: 25 } },
 ]
 
-function loadEconomy() {
+function readLegacyEconomy() {
     try {
-        if (fs.existsSync(ECONOMY_FILE)) return JSON.parse(fs.readFileSync(ECONOMY_FILE, "utf8"))
-    } catch (err) { console.error("Economy load error:", err.message) }
+        if (fs.existsSync(LEGACY_ECONOMY_PATH)) {
+            return JSON.parse(fs.readFileSync(LEGACY_ECONOMY_PATH, "utf8"))
+        }
+    } catch (err) {
+        console.error("Economy legacy import read error:", err.message)
+    }
     return {}
 }
 
+function clone(value) {
+    return JSON.parse(JSON.stringify(value))
+}
+
+function serialize(value) {
+    return JSON.stringify(value)
+}
+
+const economyCache = readLegacyEconomy()
+const knownSnapshots = new Map(
+    Object.entries(economyCache).map(([userId, user]) => [userId, serialize(user)])
+)
+const pendingWrites = new Map()
+let initializationPromise = null
+let initialized = false
+let flushPromise = null
+let retryTimer = null
+
+async function ensureMongoConnected() {
+    if (mongoose.connection.readyState === 1) return true
+    if (!process.env.MONGO_URI) return false
+
+    try {
+        if (mongoose.connection.readyState === 0) {
+            await mongoose.connect(process.env.MONGO_URI)
+        } else {
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    cleanup()
+                    reject(new Error("MongoDB connection timed out"))
+                }, 30000)
+
+                const onConnected = () => {
+                    cleanup()
+                    resolve()
+                }
+                const onError = (err) => {
+                    cleanup()
+                    reject(err)
+                }
+                const cleanup = () => {
+                    clearTimeout(timeout)
+                    mongoose.connection.off("connected", onConnected)
+                    mongoose.connection.off("error", onError)
+                }
+
+                mongoose.connection.once("connected", onConnected)
+                mongoose.connection.once("error", onError)
+            })
+        }
+        return mongoose.connection.readyState === 1
+    } catch (err) {
+        console.error("Economy MongoDB connection error:", err.message)
+        return false
+    }
+}
+
+function scheduleRetry() {
+    if (!process.env.MONGO_URI || retryTimer) return
+    retryTimer = setTimeout(() => {
+        retryTimer = null
+        initializeEconomyStore()
+            .then(ok => { if (ok) return flushEconomy() })
+            .catch(err => console.error("Economy MongoDB retry error:", err.message))
+    }, 30000)
+    retryTimer.unref?.()
+}
+
+async function initializeEconomyStore() {
+    if (initialized) return true
+    if (initializationPromise) return initializationPromise
+
+    initializationPromise = (async () => {
+        const connected = await ensureMongoConnected()
+        if (!connected) {
+            if (!process.env.MONGO_URI) {
+                console.warn("⚠️  MONGO_URI not set — economy is running from memory without persistence")
+            }
+            scheduleRetry()
+            return false
+        }
+
+        const legacyEntries = Object.entries(economyCache)
+        let imported = 0
+
+        if (legacyEntries.length > 0) {
+            const result = await EconomyUser.bulkWrite(
+                legacyEntries.map(([userId, data]) => ({
+                    updateOne: {
+                        filter: { userId },
+                        update: { $setOnInsert: { userId, data: clone(data) } },
+                        upsert: true,
+                    },
+                })),
+                { ordered: false }
+            )
+            imported = result.upsertedCount || 0
+        }
+
+        const records = await EconomyUser.find({}).lean()
+        for (const record of records) {
+            const userId = record.userId
+            const mongoData = clone(record.data || {})
+            // A command may have changed the in-memory copy while MongoDB was
+            // connecting. In that case, keep the newer local state queued for
+            // persistence instead of overwriting it with the startup snapshot.
+            if (!pendingWrites.has(userId)) {
+                economyCache[userId] = mongoData
+                knownSnapshots.set(userId, serialize(mongoData))
+            }
+        }
+
+        initialized = true
+        console.log(`✅ Economy MongoDB ready: ${records.length} user(s), ${imported} imported from legacy JSON`)
+        return true
+    })()
+
+    try {
+        return await initializationPromise
+    } catch (err) {
+        console.error("Economy MongoDB initialization error:", err.message)
+        scheduleRetry()
+        return false
+    } finally {
+        if (!initialized) initializationPromise = null
+    }
+}
+
+function loadEconomy() {
+    return economyCache
+}
+
+function collectChangedUsers(data) {
+    for (const [userId, user] of Object.entries(data || economyCache)) {
+        if (!user || typeof user !== "object") continue
+
+        const snapshot = serialize(user)
+        if (snapshot !== knownSnapshots.get(userId)) {
+            pendingWrites.set(userId, clone(user))
+            knownSnapshots.set(userId, snapshot)
+        }
+    }
+}
+
 function saveEconomy(data) {
-    try { fs.writeFileSync(ECONOMY_FILE, JSON.stringify(data, null, 2)) }
-    catch (err) { console.error("Economy save error:", err.message) }
+    try {
+        collectChangedUsers(data)
+        return flushEconomy()
+    } catch (err) {
+        console.error("Economy save queue error:", err.message)
+        return Promise.resolve(false)
+    }
+}
+
+async function flushEconomy() {
+    if (flushPromise) return flushPromise
+    if (pendingWrites.size === 0) return true
+
+    flushPromise = (async () => {
+        const ready = await initializeEconomyStore()
+        if (!ready) {
+            scheduleRetry()
+            return false
+        }
+
+        while (pendingWrites.size > 0) {
+            const batch = Array.from(pendingWrites.entries())
+            for (const [userId] of batch) pendingWrites.delete(userId)
+
+            try {
+                await EconomyUser.bulkWrite(
+                    batch.map(([userId, data]) => ({
+                        updateOne: {
+                            filter: { userId },
+                            update: { $set: { userId, data: clone(data) } },
+                            upsert: true,
+                        },
+                    })),
+                    { ordered: false }
+                )
+            } catch (err) {
+                for (const [userId, data] of batch) {
+                    if (!pendingWrites.has(userId)) pendingWrites.set(userId, data)
+                }
+                console.error("Economy MongoDB save error:", err.message)
+                scheduleRetry()
+                return false
+            }
+        }
+
+        return true
+    })()
+
+    try {
+        return await flushPromise
+    } finally {
+        flushPromise = null
+        if (pendingWrites.size > 0 && initialized) {
+            setImmediate(() => flushEconomy().catch(err =>
+                console.error("Economy MongoDB follow-up save error:", err.message)
+            ))
+        }
+    }
 }
 
 function getUser(userId, name) {
@@ -110,9 +318,14 @@ function updateQuestProgress(userId, name, statKey, amount = 1) {
     if (updated) saveEconomy(data)
 }
 
+initializeEconomyStore()
+    .then(ok => { if (ok && pendingWrites.size > 0) return flushEconomy() })
+    .catch(err => console.error("Economy MongoDB startup error:", err.message))
+
 module.exports = {
     ECONOMY_FILE, CURRENCY, MEDALS, SHOP, QUEST_POOL,
     loadEconomy, saveEconomy, getUser, calcLevel, xpToNextLevel,
     addXP, addCoins, incrementStat,
-    getOrCreateDailyQuests, updateQuestProgress
+    getOrCreateDailyQuests, updateQuestProgress,
+    initializeEconomyStore, flushEconomy,
 }
