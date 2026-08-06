@@ -145,8 +145,16 @@ async function initializeMemoryStore() {
             // is connecting. Keep that newer local operation queued instead of
             // replacing it with an older startup snapshot.
             if (!pendingWrites.has(key)) {
-                memoryCache[key] = mongoMessages
-                knownSnapshots.set(key, serialize(mongoMessages))
+                if (Array.isArray(mongoMessages) && mongoMessages.length > 0) {
+                    memoryCache[key] = mongoMessages
+                    knownSnapshots.set(key, serialize(mongoMessages))
+                } else {
+                    // An empty MongoDB history is a tombstone. It keeps stale
+                    // memory.json data from being reinserted on a later restart
+                    // while remaining invisible to all existing memory callers.
+                    delete memoryCache[key]
+                    knownSnapshots.delete(key)
+                }
             }
         }
 
@@ -220,15 +228,18 @@ async function flushMemory() {
 
             try {
                 await ShortTermMemory.bulkWrite(
-                    batch.map(([memoryKey, messages]) => messages === DELETE_MEMORY
-                        ? { deleteOne: { filter: { memoryKey } } }
-                        : {
-                            updateOne: {
-                                filter: { memoryKey },
-                                update: { $set: { memoryKey, messages: clone(messages) } },
-                                upsert: true,
+                    batch.map(([memoryKey, messages]) => ({
+                        updateOne: {
+                            filter: { memoryKey },
+                            update: {
+                                $set: {
+                                    memoryKey,
+                                    messages: messages === DELETE_MEMORY ? [] : clone(messages),
+                                },
                             },
-                        }),
+                            upsert: true,
+                        },
+                    })),
                     { ordered: false }
                 )
             } catch (err) {
