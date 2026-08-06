@@ -1,9 +1,14 @@
 /**
  * Backward-compatible server config facade.
  *
- * Existing bot features keep using getServerConfig/saveConfig while the
- * underlying source migrates from serverConfig.json to MongoDB.
+ * Existing bot features keep using getServerConfig/saveConfig while MongoDB is
+ * the source of truth. serverConfig.json remains available only as a legacy
+ * import source and is never updated by production callers.
  */
+
+// GuildConfigStore reads this flag during module initialization. Force the
+// legacy file into read-only import mode before loading the shared store.
+process.env.GUILD_CONFIG_MIRROR_JSON = "false"
 
 const GuildConfigStore = require("./GuildConfigStore")
 
