@@ -101,8 +101,21 @@ function patchInteractionMethod(owner, methodName, discordModule) {
         configurable: true,
         value: original.name,
     })
-    owner[methodName] = normalizedInteractionMethod
-    return true
+
+    try {
+        const descriptor = Object.getOwnPropertyDescriptor(owner, methodName) || {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+        }
+        Object.defineProperty(owner, methodName, {
+            ...descriptor,
+            value: normalizedInteractionMethod,
+        })
+        return owner[methodName] === normalizedInteractionMethod
+    } catch {
+        return false
+    }
 }
 
 function installDiscordInteractionFlagCompatibility(discordModule = discord) {
@@ -122,11 +135,11 @@ function installDiscordInteractionFlagCompatibility(discordModule = discord) {
         discordModule.ModalSubmitInteraction,
     ].filter(Boolean)
 
-    const methodOwners = new Map()
+    const methodOwners = []
     for (const InteractionClass of interactionClasses) {
         for (const methodName of ["reply", "deferReply", "followUp"]) {
             const owner = findMethodOwner(InteractionClass.prototype, methodName)
-            if (owner) methodOwners.set(`${methodName}:${methodOwners.size}`, { owner, methodName })
+            if (owner) methodOwners.push({ owner, methodName })
         }
     }
 
@@ -134,7 +147,7 @@ function installDiscordInteractionFlagCompatibility(discordModule = discord) {
     // classes. Patch each unique prototype/method pair only once.
     const seenOwners = new WeakMap()
     let patchedMethods = 0
-    for (const { owner, methodName } of methodOwners.values()) {
+    for (const { owner, methodName } of methodOwners) {
         let methods = seenOwners.get(owner)
         if (!methods) {
             methods = new Set()
