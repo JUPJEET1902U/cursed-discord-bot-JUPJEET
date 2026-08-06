@@ -1,21 +1,47 @@
 import fs from 'fs'
 import path from 'path'
+import mongoose from 'mongoose'
+import { createRequire } from 'node:module'
 import type { GuildConfigData } from '../types/index.js'
 
-const CONFIG_FILE = path.resolve(process.cwd(), 'serverConfig.json')
-const ECONOMY_FILE = path.resolve(process.cwd(), 'economy.json')
-
-function loadServerConfig(): Record<string, Partial<GuildConfigData>> {
-  try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
-    }
-  } catch { /* ignore */ }
-  return {}
+const nodeRequire = createRequire(import.meta.url)
+const guildConfigStore = nodeRequire(path.resolve(process.cwd(), 'utils', 'serverConfig.js')) as {
+  getServerConfig: (guildId: string) => { config: Record<string, unknown> }
+  updateGuildConfigAndWait: (
+    guildId: string,
+    updates: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+  refreshMongoCache: () => Promise<void>
+  migrateJsonConfigsToMongo: () => Promise<void>
+  isMongoConnected: () => boolean
 }
 
-function saveServerConfig(data: Record<string, Partial<GuildConfigData>>): void {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2))
+const ECONOMY_FILE = path.resolve(process.cwd(), 'economy.json')
+let guildStoreReadyPromise: Promise<void> | null = null
+
+async function ensureGuildStoreReady(): Promise<void> {
+  if (guildStoreReadyPromise) return guildStoreReadyPromise
+
+  guildStoreReadyPromise = (async () => {
+    if (!guildConfigStore.isMongoConnected()) {
+      const mongoUri = process.env.MONGO_URI
+      if (!mongoUri) throw new Error('MONGO_URI is required for guild configuration storage.')
+      await mongoose.connect(mongoUri)
+    }
+
+    // Load existing MongoDB documents first, import only missing legacy guilds,
+    // then refresh again so API reads and bot reads share the same cache.
+    await guildConfigStore.refreshMongoCache()
+    await guildConfigStore.migrateJsonConfigsToMongo()
+    await guildConfigStore.refreshMongoCache()
+  })()
+
+  try {
+    await guildStoreReadyPromise
+  } catch (error) {
+    guildStoreReadyPromise = null
+    throw error
+  }
 }
 
 function loadEconomy(): Record<string, { coins?: number; xp?: number; level?: number; name?: string; achievements?: string[] }> {
@@ -55,8 +81,8 @@ const DEFAULT_CONFIG: GuildConfigData = {
  * Get the configuration for a guild.
  */
 export async function getGuildConfig(guildId: string): Promise<GuildConfigData> {
-  const data = loadServerConfig()
-  const existing = data[guildId] || {}
+  await ensureGuildStoreReady()
+  const existing = guildConfigStore.getServerConfig(guildId).config as Partial<GuildConfigData>
   return { ...DEFAULT_CONFIG, ...existing, guildId }
 }
 
@@ -67,10 +93,9 @@ export async function updateGuildConfig(
   guildId: string,
   updates: Partial<GuildConfigData>,
 ): Promise<GuildConfigData> {
-  const data = loadServerConfig()
-  if (!data[guildId]) data[guildId] = {}
+  await ensureGuildStoreReady()
 
-  // Merge updates (only allow safe fields)
+  // Preserve the existing dashboard/API allow-list exactly.
   const allowedFields: (keyof GuildConfigData)[] = [
     'antiSpam', 'antiLink', 'antiInvite', 'linkWhitelist',
     'welcomeEnabled', 'welcomeChannelId', 'welcomeMessage',
@@ -79,14 +104,13 @@ export async function updateGuildConfig(
     'aiChannelId',
   ]
 
+  const safeUpdates: Record<string, unknown> = {}
   for (const field of allowedFields) {
-    if (field in updates) {
-      (data[guildId] as Record<string, unknown>)[field] = updates[field]
-    }
+    if (field in updates) safeUpdates[field] = updates[field]
   }
 
-  saveServerConfig(data)
-  return { ...DEFAULT_CONFIG, ...data[guildId], guildId }
+  const stored = await guildConfigStore.updateGuildConfigAndWait(guildId, safeUpdates)
+  return { ...DEFAULT_CONFIG, ...(stored as Partial<GuildConfigData>), guildId }
 }
 
 /**
