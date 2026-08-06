@@ -123,7 +123,7 @@ const guildConfigSchema = new mongoose.Schema({
     welcomeImageUrl:       { type: String, default: null },
     welcomeFooter:         { type: String, default: null },
     welcomeCardEnabled:    { type: Boolean, default: true },
-    welcomeCardTheme:      { type: String, default: "classic", enum: ["classic", "midnight", "neon"] },
+    welcomeCardTheme:      { type: String, default: "classic", enum: ["classic", "modern", "minimal", "glass", "dark", "purple", "neon", "gold", "midnight"] },
     welcomeCardBackground: { type: String, default: null },
     welcomeAccentColor:    { type: String, default: null },
     welcomeMediaUrl:       { type: String, default: null },
