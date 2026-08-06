@@ -1,22 +1,18 @@
 import fs from 'fs'
 import path from 'path'
+import { createRequire } from 'node:module'
 import type { GuildConfigData } from '../types/index.js'
 
-const CONFIG_FILE = path.resolve(process.cwd(), 'serverConfig.json')
+const nodeRequire = createRequire(import.meta.url)
+const guildConfigStore = nodeRequire('../../utils/serverConfig.js') as {
+  getServerConfig: (guildId: string) => { config: Record<string, unknown> }
+  updateGuildConfigAndWait: (
+    guildId: string,
+    updates: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
+}
+
 const ECONOMY_FILE = path.resolve(process.cwd(), 'economy.json')
-
-function loadServerConfig(): Record<string, Partial<GuildConfigData>> {
-  try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
-    }
-  } catch { /* ignore */ }
-  return {}
-}
-
-function saveServerConfig(data: Record<string, Partial<GuildConfigData>>): void {
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2))
-}
 
 function loadEconomy(): Record<string, { coins?: number; xp?: number; level?: number; name?: string; achievements?: string[] }> {
   try {
@@ -55,8 +51,7 @@ const DEFAULT_CONFIG: GuildConfigData = {
  * Get the configuration for a guild.
  */
 export async function getGuildConfig(guildId: string): Promise<GuildConfigData> {
-  const data = loadServerConfig()
-  const existing = data[guildId] || {}
+  const existing = guildConfigStore.getServerConfig(guildId).config as Partial<GuildConfigData>
   return { ...DEFAULT_CONFIG, ...existing, guildId }
 }
 
@@ -67,10 +62,7 @@ export async function updateGuildConfig(
   guildId: string,
   updates: Partial<GuildConfigData>,
 ): Promise<GuildConfigData> {
-  const data = loadServerConfig()
-  if (!data[guildId]) data[guildId] = {}
-
-  // Merge updates (only allow safe fields)
+  // Preserve the existing dashboard/API allow-list exactly.
   const allowedFields: (keyof GuildConfigData)[] = [
     'antiSpam', 'antiLink', 'antiInvite', 'linkWhitelist',
     'welcomeEnabled', 'welcomeChannelId', 'welcomeMessage',
@@ -79,14 +71,13 @@ export async function updateGuildConfig(
     'aiChannelId',
   ]
 
+  const safeUpdates: Record<string, unknown> = {}
   for (const field of allowedFields) {
-    if (field in updates) {
-      (data[guildId] as Record<string, unknown>)[field] = updates[field]
-    }
+    if (field in updates) safeUpdates[field] = updates[field]
   }
 
-  saveServerConfig(data)
-  return { ...DEFAULT_CONFIG, ...data[guildId], guildId }
+  const stored = await guildConfigStore.updateGuildConfigAndWait(guildId, safeUpdates)
+  return { ...DEFAULT_CONFIG, ...(stored as Partial<GuildConfigData>), guildId }
 }
 
 /**
