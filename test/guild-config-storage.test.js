@@ -22,6 +22,10 @@ test("legacy serverConfig.json is import-only for production callers", () => {
 test("TypeScript guild API uses the shared Mongo-backed config facade", () => {
     assert.match(guildApiSource, /createRequire\(import\.meta\.url\)/)
     assert.match(guildApiSource, /path\.resolve\(process\.cwd\(\), 'utils', 'serverConfig\.js'\)/)
+    assert.match(guildApiSource, /ensureGuildStoreReady/)
+    assert.match(guildApiSource, /mongoose\.connect\(mongoUri\)/)
+    assert.match(guildApiSource, /refreshMongoCache/)
+    assert.match(guildApiSource, /migrateJsonConfigsToMongo/)
     assert.match(guildApiSource, /updateGuildConfigAndWait/)
     assert.doesNotMatch(guildApiSource, /const CONFIG_FILE/)
     assert.doesNotMatch(guildApiSource, /function loadServerConfig/)
