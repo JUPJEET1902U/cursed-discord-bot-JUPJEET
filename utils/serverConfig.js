@@ -11,6 +11,13 @@
 process.env.GUILD_CONFIG_MIRROR_JSON = "false"
 
 const GuildConfigStore = require("./GuildConfigStore")
+const persistenceShutdown = require("./persistenceShutdown")
+
+// Existing command APIs remain synchronous. The reliability wrapper records the
+// latest returned guild snapshot so a temporary MongoDB disconnect or Railway
+// SIGTERM cannot silently drop a completed configuration change.
+persistenceShutdown.installGuildConfigQueue(GuildConfigStore)
+persistenceShutdown.installGracefulMongoClose()
 
 function loadConfig() {
     return GuildConfigStore.loadAllGuildConfigs()
