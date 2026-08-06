@@ -3,6 +3,8 @@ const assert = require("node:assert/strict")
 const fs = require("node:fs")
 const path = require("node:path")
 
+process.env.BOT_OWNER_IDS = process.env.BOT_OWNER_IDS || "111111111111111111"
+
 const root = path.resolve(__dirname, "..")
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), "utf8")
 
@@ -11,6 +13,16 @@ const serverSource = read("utils", "serverPremium.js")
 const auditSource = read("docs", "premium-persistence-audit.md")
 const commandSource = read("commands", "premium.js")
 const dashboardSource = read("api", "dashboardPremium.js")
+const premium = require("../utils/premium")
+const serverPremium = require("../utils/serverPremium")
+
+const USER_ID = "222222222222222222"
+const GUILD_ID = "333333333333333333"
+
+test.beforeEach(() => {
+    premium._resetForTests()
+    serverPremium._resetForTests()
+})
 
 test("Premium data uses the existing Mongo collections plus Mongo-backed codes", () => {
     assert.match(premiumSource, /collection:\s*"premiumAccounts"/)
@@ -49,6 +61,42 @@ test("revocation and expiry eligibility rules remain unchanged", () => {
     }
 })
 
+test("expired and revoked user Premium stays inactive", async () => {
+    await premium.grantPremiumUser(USER_ID, {
+        source: "test",
+        expiresAt: new Date(Date.now() - 1_000),
+    })
+    assert.equal(premium.isPremiumUser(USER_ID), false)
+
+    await premium.grantPremiumUser(USER_ID, {
+        source: "test",
+        expiresAt: new Date(Date.now() + 60_000),
+    })
+    assert.equal(premium.isPremiumUser(USER_ID), true)
+
+    await premium.revokePremiumUser(USER_ID)
+    assert.equal(premium.isPremiumUser(USER_ID), false)
+    assert.equal(premium.getPremiumAccount(USER_ID).active, false)
+})
+
+test("expired and revoked direct Server Premium stays inactive", async () => {
+    await serverPremium.grantServerPremium(GUILD_ID, {
+        source: "test",
+        expiresAt: new Date(Date.now() - 1_000),
+    })
+    assert.equal(serverPremium.isServerPremium(GUILD_ID), false)
+
+    await serverPremium.grantServerPremium(GUILD_ID, {
+        source: "test",
+        expiresAt: new Date(Date.now() + 60_000),
+    })
+    assert.equal(serverPremium.isServerPremium(GUILD_ID), true)
+
+    await serverPremium.revokeServerPremium(GUILD_ID)
+    assert.equal(serverPremium.isServerPremium(GUILD_ID), false)
+    assert.equal(serverPremium.getServerPremiumAccount(GUILD_ID).active, false)
+})
+
 test("writes made while MongoDB connects are queued", () => {
     assert.match(premiumSource, /pendingAccountWrites = new Map\(\)/)
     assert.match(premiumSource, /pendingSettingsWrite/)
@@ -67,6 +115,36 @@ test("redemption-code APIs remain synchronous and preserve return shapes", () =>
     assert.match(premiumSource, /return \{ ok: false, reason: "used" \}/)
     assert.match(premiumSource, /return \{ ok: true \}/)
     assert.match(premiumSource, /deleted:\s*true/)
+})
+
+test("redemption codes retain create, redeem, used and deletion behavior", () => {
+    const code = premium.createCode("111111111111111111", "test code")
+    assert.match(code, /^CURSED-[A-F0-9]{8}$/)
+    assert.equal(premium.loadCodes()[code].used, false)
+    assert.deepEqual(premium.useCode(code, USER_ID), { ok: true })
+    assert.deepEqual(premium.useCode(code, USER_ID), { ok: false, reason: "used" })
+    assert.equal(premium.listCodes()[0].usedBy, USER_ID)
+
+    premium.saveCodes({})
+    assert.deepEqual(premium.loadCodes(), {})
+    assert.deepEqual(premium.useCode(code, USER_ID), { ok: false, reason: "invalid" })
+})
+
+test("payment settings normalization and response shape remain unchanged", async () => {
+    const settings = await premium.updatePaymentSettings({
+        enabled: true,
+        currency: "inr",
+        monthlyPrice: "499.00",
+        headline: "CURSED Premium",
+        instructions: "Pay securely.",
+        links: { checkout: "https://example.com/checkout" },
+    }, "111111111111111111")
+
+    assert.equal(settings.enabled, true)
+    assert.equal(settings.currency, "INR")
+    assert.equal(settings.monthlyPrice, "499.00")
+    assert.equal(settings.links.checkout, "https://example.com/checkout")
+    assert.equal(settings.updatedBy, "111111111111111111")
 })
 
 test("plan limits and runtime quota caches remain unchanged", () => {
