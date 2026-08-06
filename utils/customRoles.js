@@ -48,7 +48,7 @@ const customRoleAuditSchema = new mongoose.Schema({
     success: { type: Boolean, default: true },
     reason: { type: String, default: null },
     source: { type: String, enum: ["discord", "dashboard"], default: "discord" },
-    createdAt: { type: Date, default: Date.now, index: true },
+    createdAt: { type: Date, default: Date.now },
 }, {
     collection: "customRoleAudits",
     minimize: false,

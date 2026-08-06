@@ -4,14 +4,15 @@
   "description": "CURSED Discord Bot — AI-powered with full dashboard",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js",
+    "start": "node -r ./utils/runtimeWarningGuards.js index.js",
+    "dev": "node --watch -r ./utils/runtimeWarningGuards.js index.js",
     "api:start": "npx tsx api/server.ts",
     "api:dev": "npx tsx --watch api/server.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:dashboard-api": "node --test test/dashboard-api.test.js",
     "test:premium": "node --test test/premium-plans.test.js",
     "test:welcome": "node --test test/professional-welcome-system.test.js",
+    "test:runtime-warnings": "node --test test/runtime-warning-regressions.test.js",
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build"
   },
