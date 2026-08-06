@@ -49,4 +49,7 @@ module.exports = {
     saveGuildConfig: GuildConfigStore.saveGuildConfig,
     updateGuildConfig: GuildConfigStore.updateGuildConfig,
     updateGuildConfigAndWait: GuildConfigStore.updateGuildConfigAndWait,
+    refreshMongoCache: GuildConfigStore.refreshMongoCache,
+    migrateJsonConfigsToMongo: GuildConfigStore.migrateJsonConfigsToMongo,
+    isMongoConnected: GuildConfigStore.isMongoConnected,
 }
