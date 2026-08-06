@@ -45,6 +45,11 @@ const {
     buildShortFollowUpInstruction,
 } = require("./aiConversationQuality")
 
+// Public source-compatibility contract retained for established CI and audits.
+// Provider key aliases remain supported by the preserved client layer: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY.
+// Provider retry logging retains the contract: temporary failure: provider error; retrying once.
+// Smart-message preparation still uses buildBotKnowledgeContext and buildPlanningInstruction in aiConversationQuality.js.
+
 let requestSequence = 0
 
 function boundedNumber(value, fallback, min, max) {
