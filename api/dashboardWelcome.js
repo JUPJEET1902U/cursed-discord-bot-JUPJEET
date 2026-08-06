@@ -8,7 +8,8 @@ const { isGuildPremium, getGuildPlanLimits } = require("../utils/premium")
 
 const SNOWFLAKE = /^\d{17,20}$/
 const HEX_COLOR = /^#[0-9A-Fa-f]{6}$/
-const THEMES = new Set(["classic", "midnight", "neon"])
+const THEME_LIST = Object.freeze(["classic", "modern", "minimal", "glass", "dark", "purple", "neon", "gold", "midnight"])
+const THEMES = new Set(THEME_LIST)
 const WELCOME_FIELDS = new Set([
     "welcomeEnabled", "welcomeChannelId", "welcomeMessage", "welcomeUseAI",
     "welcomeColor", "welcomeThumbnail", "welcomeImageUrl", "welcomeFooter",
@@ -121,7 +122,7 @@ function validateWelcome(body) {
     if (!isHttpUrl(body.welcomeImageUrl)) errors.welcomeImageUrl = ["Expected a valid http(s) URL."]
     if (body.welcomeFooter !== null && (typeof body.welcomeFooter !== "string" || body.welcomeFooter.length > 2048)) errors.welcomeFooter = ["Footer must be 2048 characters or fewer."]
     if (typeof body.welcomeCardEnabled !== "boolean") errors.welcomeCardEnabled = ["Expected a boolean."]
-    if (!THEMES.has(body.welcomeCardTheme)) errors.welcomeCardTheme = ["Choose classic, midnight, or neon."]
+    if (!THEMES.has(body.welcomeCardTheme)) errors.welcomeCardTheme = ["Choose a supported welcome-card theme."]
     if (!isHttpUrl(body.welcomeCardBackground)) errors.welcomeCardBackground = ["Expected a valid http(s) URL."]
     if (body.welcomeAccentColor !== null && (typeof body.welcomeAccentColor !== "string" || !HEX_COLOR.test(body.welcomeAccentColor))) errors.welcomeAccentColor = ["Expected a six-digit hex color."]
     if (!isHttpUrl(body.welcomeMediaUrl)) errors.welcomeMediaUrl = ["Expected a valid http(s) URL."]
@@ -130,12 +131,13 @@ function validateWelcome(body) {
 
 function planPayload(guild) {
     const limits = getGuildPlanLimits(guild)
+    const premium = isGuildPremium(guild)
     return {
-        plan: isGuildPremium(guild) ? "premium" : "free",
+        plan: premium ? "premium" : "free",
         planLimits: {
             welcomeCard: limits.welcomeCard,
             customBackground: limits.welcomeCustomBackground,
-            themes: limits.welcomeThemes,
+            themes: premium ? [...THEME_LIST] : limits.welcomeThemes,
         },
     }
 }
@@ -224,4 +226,4 @@ function createDashboardWelcomeRouter(getClient) {
     return router
 }
 
-module.exports = { createDashboardWelcomeRouter, validateWelcome }
+module.exports = { createDashboardWelcomeRouter, validateWelcome, THEME_LIST }
