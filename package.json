@@ -13,6 +13,7 @@
     "test:premium": "node --test test/premium-plans.test.js",
     "test:welcome": "node --test test/professional-welcome-system.test.js",
     "test:runtime-warnings": "node --test test/runtime-warning-regressions.test.js",
+    "test:ai-reliability": "node --test test/ai-reliability.test.js",
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build"
   },
