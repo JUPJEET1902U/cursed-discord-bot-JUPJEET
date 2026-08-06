@@ -53,18 +53,19 @@ async function flushGuildConfigWrites() {
     while (pendingGuildConfigs.size > 0) {
         const batch = Array.from(pendingGuildConfigs.entries())
         for (const [guildId] of batch) pendingGuildConfigs.delete(guildId)
+        let failed = false
 
         for (const [guildId, config] of batch) {
             try {
                 await guildConfigStore.updateGuildConfigAndWait(guildId, config)
             } catch (err) {
+                failed = true
                 if (!pendingGuildConfigs.has(guildId)) pendingGuildConfigs.set(guildId, config)
                 console.error(`[GuildConfigStore] queued save failed for ${guildId}: ${err.message}`)
             }
         }
 
-        if (mongoose.connection.readyState !== 1) return false
-        if (batch.length > 0 && pendingGuildConfigs.size === batch.length) return false
+        if (mongoose.connection.readyState !== 1 || failed) return false
     }
 
     try {
