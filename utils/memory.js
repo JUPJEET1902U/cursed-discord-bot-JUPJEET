@@ -286,7 +286,9 @@ function appendUserMemory(guildId, userId, userMsg, botReply, storageLimit) {
     const limit = boundedLimit(storageLimit, defaultLimit, MAX_MEMORY)
     if (limit === 0) {
         delete mem[key]
-        saveMemory(mem)
+        pendingWrites.set(key, DELETE_MEMORY)
+        knownSnapshots.delete(key)
+        flushMemory()
         return
     }
     if (!mem[key]) mem[key] = []
@@ -297,9 +299,11 @@ function appendUserMemory(guildId, userId, userMsg, botReply, storageLimit) {
 }
 
 function clearUserMemory(guildId, userId) {
-    const mem = loadMemory()
-    delete mem[memKey(guildId, userId)]
-    saveMemory(mem)
+    const key = memKey(guildId, userId)
+    delete memoryCache[key]
+    pendingWrites.set(key, DELETE_MEMORY)
+    knownSnapshots.delete(key)
+    flushMemory()
 }
 
 initializeMemoryStore()
