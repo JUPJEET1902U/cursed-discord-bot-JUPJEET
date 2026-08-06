@@ -134,8 +134,15 @@ async function initializePetStore() {
             // Keep the newer local value queued instead of replacing it with the
             // startup database snapshot.
             if (!pendingWrites.has(userId)) {
-                petCache[userId] = mongoData
-                knownSnapshots.set(userId, serialize(mongoData))
+                if (mongoData == null) {
+                    // A null MongoDB value is a tombstone. It blocks stale
+                    // pets.json data while staying invisible to current callers.
+                    delete petCache[userId]
+                    knownSnapshots.delete(userId)
+                } else {
+                    petCache[userId] = mongoData
+                    knownSnapshots.set(userId, serialize(mongoData))
+                }
             }
         }
 
@@ -209,15 +216,18 @@ async function flushPets() {
 
             try {
                 await PetData.bulkWrite(
-                    batch.map(([userId, pet]) => pet === DELETE_PET
-                        ? { deleteOne: { filter: { userId } } }
-                        : {
-                            updateOne: {
-                                filter: { userId },
-                                update: { $set: { userId, data: clone(pet) } },
-                                upsert: true,
+                    batch.map(([userId, pet]) => ({
+                        updateOne: {
+                            filter: { userId },
+                            update: {
+                                $set: {
+                                    userId,
+                                    data: pet === DELETE_PET ? null : clone(pet),
+                                },
                             },
-                        }),
+                            upsert: true,
+                        },
+                    })),
                     { ordered: false }
                 )
             } catch (err) {
