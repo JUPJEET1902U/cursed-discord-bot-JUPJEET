@@ -1,0 +1,40 @@
+name: Owner Network Inspector CI
+
+on:
+  pull_request:
+    paths:
+      - "commands/ownerNetwork.js"
+      - "utils/ownerNetworkInspector.js"
+      - "handlers/commandLoader.js"
+      - "test/owner-network-inspector.test.js"
+      - "package.json"
+      - ".github/workflows/owner-network-inspector.yml"
+  workflow_dispatch:
+
+jobs:
+  owner-network-inspector:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax checks
+        run: |
+          node --check commands/ownerNetwork.js
+          node --check utils/ownerNetworkInspector.js
+          node --check handlers/commandLoader.js
+          node --check test/owner-network-inspector.test.js
+
+      - name: Owner network inspector contracts
+        run: npm run test:owner-network
