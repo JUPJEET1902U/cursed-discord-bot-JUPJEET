@@ -40,14 +40,45 @@ function parseCommand(content) {
     }
 }
 
+function splitDiscordContent(value, maxLength = 1900) {
+    const text = String(value || "")
+    if (text.length <= maxLength) return [text]
+
+    const chunks = []
+    let current = ""
+    for (const line of text.split("\n")) {
+        const addition = `${line}\n`
+        if (addition.length > maxLength) {
+            if (current) {
+                chunks.push(current.trimEnd())
+                current = ""
+            }
+            for (let index = 0; index < line.length; index += maxLength) {
+                chunks.push(line.slice(index, index + maxLength))
+            }
+            continue
+        }
+        if ((current + addition).length > maxLength) {
+            chunks.push(current.trimEnd())
+            current = addition
+        } else {
+            current += addition
+        }
+    }
+    if (current.trim()) chunks.push(current.trimEnd())
+    return chunks.filter(Boolean)
+}
+
 async function sendOwnerDm(message, contents, acknowledgement = "✅ I sent the private CURSED network report to your DMs.") {
     const payloads = Array.isArray(contents) ? contents : [contents]
     try {
-        for (const content of payloads) {
-            await message.author.send({
-                content,
-                allowedMentions: SAFE_MENTIONS,
-            })
+        for (const rawContent of payloads) {
+            for (const content of splitDiscordContent(rawContent)) {
+                await message.author.send({
+                    content,
+                    allowedMentions: SAFE_MENTIONS,
+                })
+            }
         }
         await createSafeMessage(message.channel, acknowledgement)
         return true
@@ -109,7 +140,8 @@ async function handle(message) {
 
     const guild = await resolveGuild(message.client, guildId)
     if (!guild) {
-        await sendOwnerDm(message, `❌ CURSED could not find a server with ID \`${String(guildId).replace(/`/g, "") .slice(0, 30)}\` in its current guild list.`)
+        const safeId = String(guildId).replace(/`/g, "").slice(0, 30)
+        await sendOwnerDm(message, `❌ CURSED could not find a server with ID \`${safeId}\` in its current guild list.`)
         return true
     }
 
@@ -158,6 +190,7 @@ module.exports = {
     handle,
     isBotOwnerId,
     parseCommand,
+    splitDiscordContent,
     usageText,
     OWNER_NETWORK_COMMANDS,
 }
