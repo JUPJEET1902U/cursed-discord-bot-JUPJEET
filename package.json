@@ -14,6 +14,7 @@
     "test:welcome": "node --test test/professional-welcome-system.test.js",
     "test:runtime-warnings": "node --test test/runtime-warning-regressions.test.js",
     "test:ai-reliability": "node --test test/ai-reliability.test.js",
+    "test:owner-network": "node --test test/owner-network-inspector.test.js",
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build"
   },
