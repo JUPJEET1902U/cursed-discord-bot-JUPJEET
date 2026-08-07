@@ -40,11 +40,14 @@ function loadCommands() {
         { name: "gambling",          module: require("../commands/gambling")         },
         { name: "games",             module: require("../commands/games")            },
         { name: "quests",            module: require("../commands/quests")           },
-        { name: "battle",            module: require("../commands/battle")           },
+        { name: "battle",            module: require("../commands/battle")            },
         { name: "pets",              module: require("../commands/pets")             },
         { name: "profiles",          module: require("../commands/profiles")         },
         { name: "leaderboards",      module: require("../commands/leaderboards")     },
         { name: "images",            module: require("../commands/images")           },
+        // Bot-owner-only network inspection takes precedence over the legacy
+        // !botservers alias in admin.js while keeping the old command as a fallback.
+        { name: "owner-network",      module: require("../commands/ownerNetwork")     },
         { name: "admin",             module: require("../commands/admin")            },
         { name: "memory",            module: require("../commands/memory")           },
         { name: "server-insights",   module: require("../commands/serverInsights")   },
