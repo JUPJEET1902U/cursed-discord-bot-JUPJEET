@@ -48,12 +48,12 @@ const { formatError } = require("./utils/errorFormatter")
 const { getGuildPrefix } = require("./utils/prefix")
 const { buildRecommendedInvite } = require("./utils/botPermissions")
 const { startGiveawayScheduler } = require("./utils/giveawayService")
+const { assignJoinRoles } = require("./utils/autoroleAdvanced")
 const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
 const moderationCmd = require("./commands/moderation")
 const { sendWelcome, getWelcome } = require("./utils/welcome")
-const { getAutorole } = require("./utils/autorole")
 
 const RAGE_TRIGGERS = ["randi"]
 const MODERATION_SLASH_COMMANDS = new Set([
@@ -130,16 +130,15 @@ client.on(Events.GuildCreate, async guild => {
 client.on(Events.GuildMemberAdd, async member => {
     const rawConfig = getServerConfig(member.guild.id).config
 
-    const { autoroleId } = getAutorole(member.guild.id)
-    const roleToAdd = autoroleId || process.env.DEFAULT_ROLE_ID || null
     let assignedRoleId = null
-    if (roleToAdd) {
-        try {
-            await member.roles.add(roleToAdd)
-            assignedRoleId = roleToAdd
-        } catch (error) {
-            log.warn(`[${member.guild.id}] Autorole ${roleToAdd} was not assigned: ${error.message}`)
+    try {
+        const roleResult = await assignJoinRoles(member)
+        assignedRoleId = roleResult.assigned[0] || null
+        if (roleResult.failed.length) {
+            log.warn(`[${member.guild.id}] ${roleResult.failed.length} autorole assignment(s) failed for ${member.id}`)
         }
+    } catch (error) {
+        log.warn(`[${member.guild.id}] Autorole processing failed for ${member.id}: ${error.message}`)
     }
 
     if (rawConfig.welcomeEnabled === false) return
@@ -343,8 +342,6 @@ client.on(Events.MessageCreate, async message => {
     const currentUserMsg = `${senderName}: ${sanitizedInput}`
     chatMessages.push({ role: "user", content: currentUserMsg })
 
-    // Do not log message or generated content. Runtime diagnostics only need IDs,
-    // provider health and latency — not user conversations.
     log.debug(`AI request guild=${guildId} channel=${channelId} user=${userId}`)
 
     let safeOutput = null
