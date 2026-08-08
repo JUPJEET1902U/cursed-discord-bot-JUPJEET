@@ -44,6 +44,7 @@ function loadCommands() {
         { name: "system", module: require("../commands/system") },
         { name: "protection-control", module: require("../commands/protectionControl") },
         { name: "autorole-control", module: require("../commands/autoroleControl") },
+        { name: "reaction-roles", module: require("../commands/reactionRoles") },
         { name: "custom-command-admin", module: require("../commands/customCommands") },
         { name: "power-modules", module: require("../commands/powerModules") },
         { name: "power-runtime", module: require("../commands/powerRuntime") },
@@ -129,8 +130,6 @@ async function dispatchCommand(message, commandModules) {
         }
     }
 
-    // Custom commands are deliberately evaluated only after every built-in
-    // module. A server-created command can never shadow CURSED functionality.
     if (commandName) {
         try {
             const { executeCustomCommand } = require("../commands/customCommands")
