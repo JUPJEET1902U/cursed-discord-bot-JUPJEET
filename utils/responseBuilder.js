@@ -10,8 +10,6 @@ const { EmbedBuilder } = require("discord.js")
 const { BRAND } = require("./productSystem")
 
 const COLORS = Object.freeze({
-    // Discord-native, restrained palette. Feature modules can still use an
-    // intentional accent, but status meaning is stable everywhere.
     primary: 0x5865F2,
     success: 0x57F287,
     warning: 0xF0B232,
@@ -28,7 +26,6 @@ const COLORS = Object.freeze({
     memory: 0x1ABC9C,
     premium: 0xF0B232,
     admin: 0x99AAB5,
-    mod: 0x5865F2,
     neutral: 0x2B2D31,
 })
 
@@ -137,6 +134,19 @@ function info(description, { title = "Information", fields = [], footer, timesta
     return resultEmbed("info", { title, description, fields, footer, timestamp })
 }
 
+function featureEmbed(color, footer, title, description, options = {}) {
+    return buildEmbed({
+        title,
+        description,
+        color,
+        fields: options.fields || [],
+        footer: options.footer || footer,
+        timestamp: options.timestamp === true,
+        thumbnail: options.thumbnail || null,
+        author: options.author || null,
+    })
+}
+
 function security(title, description, { fields = [], footer = BRAND.securityFooter, color = COLORS.security } = {}) {
     return buildEmbed({ title, description, color, fields, footer, timestamp: true })
 }
@@ -149,12 +159,36 @@ function economy(title, description, { fields = [], footer = "CURSED • Economy
     return buildEmbed({ title, description, color: COLORS.economy, fields, footer, timestamp })
 }
 
-function fun(title, description, { fields = [], footer = "CURSED" } = {}) {
-    return buildEmbed({ title, description, color: COLORS.fun, fields, footer })
+function gambling(title, description, options = {}) {
+    return featureEmbed(COLORS.gambling, "CURSED • Games", title, description, options)
 }
 
-function profile(title, description, { fields = [], footer = "CURSED • Profile", thumbnail = null } = {}) {
-    return buildEmbed({ title, description, color: COLORS.profile, fields, footer, thumbnail })
+function games(title, description, options = {}) {
+    return featureEmbed(COLORS.games, "CURSED • Games", title, description, options)
+}
+
+function pets(title, description, options = {}) {
+    return featureEmbed(COLORS.pets, "CURSED • Pets", title, description, options)
+}
+
+function fun(title, description, { fields = [], footer = "CURSED", timestamp = false } = {}) {
+    return buildEmbed({ title, description, color: COLORS.fun, fields, footer, timestamp })
+}
+
+function profile(title, description, { fields = [], footer = "CURSED • Profile", thumbnail = null, timestamp = false } = {}) {
+    return buildEmbed({ title, description, color: COLORS.profile, fields, footer, thumbnail, timestamp })
+}
+
+function memory(title, description, options = {}) {
+    return featureEmbed(COLORS.memory, "CURSED • Memory", title, description, options)
+}
+
+function premium(title, description, options = {}) {
+    return featureEmbed(COLORS.premium, "CURSED • Premium", title, description, options)
+}
+
+function admin(title, description, options = {}) {
+    return featureEmbed(COLORS.admin, "CURSED • Server Management", title, description, options)
 }
 
 function statusLine(type, message) {
@@ -205,7 +239,6 @@ async function replyInteraction(interaction, payload, { ephemeral = true } = {})
     if (ephemeral && body.ephemeral === undefined) body.ephemeral = true
 
     if (interaction.deferred) {
-        // editReply cannot accept the ephemeral flag after acknowledgement.
         const { ephemeral: _ephemeral, ...editBody } = body
         return interaction.editReply(editBody)
     }
@@ -230,6 +263,7 @@ module.exports = {
     cleanFields,
     buildEmbed,
     resultEmbed,
+    featureEmbed,
     success,
     error,
     warning,
@@ -237,8 +271,14 @@ module.exports = {
     security,
     moderation,
     economy,
+    gambling,
+    games,
+    pets,
     fun,
     profile,
+    memory,
+    premium,
+    admin,
     statusLine,
     cooldownMessage,
     permissionDenied,
