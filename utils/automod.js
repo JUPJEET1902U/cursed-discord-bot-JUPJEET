@@ -17,6 +17,7 @@ const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiS
 const { handleLevelingMessage } = require("./leveling")
 const { runSecurityMessageShield } = require("./securityMessageShield")
 const { handlePriorityModerationCommand } = require("./priorityModerationCommands")
+const { processManagedAutomationMessage } = require("./managedAutomation")
 const { statusLine } = require("./responseBuilder")
 const premiumCmd = require("../commands/premium")
 
@@ -33,6 +34,12 @@ const CHANNEL_CONTROL_COMMANDS = new Set([
 function queueLeveling(message) {
     handleLevelingMessage(message).catch(error => {
         console.error("Leveling message processing error:", error.message)
+    })
+}
+
+function queueManagedAutomation(message) {
+    processManagedAutomationMessage(message).catch(error => {
+        console.error("Managed automation processing error:", error.message)
     })
 }
 
@@ -84,6 +91,7 @@ async function runAutoMod(message) {
     const userId = author.id
 
     if (member?.permissions.has(PermissionFlagsBits.ManageMessages)) {
+        queueManagedAutomation(message)
         queueLeveling(message)
         return false
     }
@@ -97,6 +105,7 @@ async function runAutoMod(message) {
         isBot: author.bot,
     })
     if (whitelistMatch && phase2.whitelist.exemptFromAutomod) {
+        queueManagedAutomation(message)
         queueLeveling(message)
         return false
     }
@@ -201,6 +210,7 @@ async function runAutoMod(message) {
         }
     }
 
+    queueManagedAutomation(message)
     queueLeveling(message)
     return false
 }
