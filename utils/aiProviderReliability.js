@@ -1,17 +1,15 @@
-const legacy = require("./aiLegacy")
+const {
+    PROVIDERS,
+    GEMINI_MODEL,
+    GROQ_MODEL,
+    OPENROUTER_MODEL,
+} = require("./aiClients")
+const { recordTiming } = require("./runtimeMetrics")
 
 function readNumberEnv(name, fallback, min, max) {
     const parsed = Number(process.env[name])
     if (!Number.isFinite(parsed)) return fallback
     return Math.max(min, Math.min(max, parsed))
-}
-
-function readModelEnv(names, fallback) {
-    for (const name of names) {
-        const value = String(process.env[name] || "").trim()
-        if (value) return value.slice(0, 160)
-    }
-    return fallback
 }
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = readNumberEnv("AI_PROVIDER_TIMEOUT_MS", 25_000, 1_000, 60_000)
@@ -23,16 +21,6 @@ const COOLDOWN_MAX_MS = readNumberEnv("AI_PROVIDER_COOLDOWN_MAX_MS", 300_000, CO
 const TRANSIENT_FAILURE_THRESHOLD = Math.floor(readNumberEnv("AI_PROVIDER_FAILURE_THRESHOLD", 2, 1, 10))
 const MAX_RETRY_AFTER_MS = 10 * 60 * 1000
 const DEFAULT_PROVIDER_ORDER = ["gemini", "groq", "openrouter"]
-
-const GEMINI_MODEL = readModelEnv(["AI_GEMINI_MODEL", "GEMINI_MODEL"], legacy.GEMINI_MODEL || "gemini-2.0-flash")
-const GROQ_MODEL = readModelEnv(["AI_GROQ_MODEL", "GROQ_MODEL"], legacy.GROQ_MODEL || "llama-3.1-8b-instant")
-const OPENROUTER_MODEL = readModelEnv(["AI_OPENROUTER_MODEL", "OPENROUTER_MODEL"], legacy.OPENROUTER_MODEL || "mistralai/mistral-7b-instruct")
-
-const PROVIDERS = {
-    gemini: { client: legacy.gemini, model: GEMINI_MODEL, label: "Gemini" },
-    groq: { client: legacy.groq, model: GROQ_MODEL, label: "Groq" },
-    openrouter: { client: legacy.openrouter, model: OPENROUTER_MODEL, label: "OpenRouter" },
-}
 
 function createProviderStats() {
     return {
@@ -67,7 +55,10 @@ const providerStats = Object.fromEntries(DEFAULT_PROVIDER_ORDER.map(name => [nam
 const providerHealth = Object.fromEntries(DEFAULT_PROVIDER_ORDER.map(name => [name, createProviderHealth()]))
 
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms))
+    return new Promise(resolve => {
+        const timer = setTimeout(resolve, ms)
+        timer.unref?.()
+    })
 }
 
 function withTimeout(promise, ms, controller = null) {
@@ -213,6 +204,7 @@ function recordLatency(providerName, latencyMs) {
     stats.totalLatencyMs += latency
     const attempts = stats.success + stats.attemptFailures
     stats.averageLatencyMs = attempts ? Math.round(stats.totalLatencyMs / attempts) : 0
+    recordTiming(`ai.provider.${providerName}`, latency)
 }
 
 function recordAttemptFailure(providerName, error, nowMs) {
@@ -248,6 +240,7 @@ function getCooldownRemainingMs(providerName, nowMs = Date.now()) {
     const remaining = health.cooldownUntil - nowMs
     if (remaining > 0) return remaining
     health.cooldownUntil = 0
+    // A provider leaving cooldown is treated as a probe candidate, not fully healthy.
     health.consecutiveTransientFailures = Math.max(0, TRANSIENT_FAILURE_THRESHOLD - 1)
     return 0
 }
@@ -306,8 +299,9 @@ async function executeProviderChain(messages, options = {}) {
     const nowFn = typeof options.nowFn === "function" ? options.nowFn : Date.now
     const sleepFn = typeof options.sleepFn === "function" ? options.sleepFn : sleep
     const randomFn = typeof options.randomFn === "function" ? options.randomFn : Math.random
+    const providerOrder = normalizeProviderOrder(options.providerOrder)
 
-    for (const providerName of options.providerOrder || DEFAULT_PROVIDER_ORDER) {
+    for (const providerName of providerOrder) {
         const provider = PROVIDERS[providerName]
         if (!provider?.client) continue
         configuredCount++
@@ -316,7 +310,7 @@ async function executeProviderChain(messages, options = {}) {
         if (cooldownRemaining > 0) {
             cooldownSkipped++
             providerStats[providerName].skippedCooldown++
-            console.warn(`[AI] ${provider.label} cooling down for ${Math.ceil(cooldownRemaining / 1000)}s; using fallback`)
+            console.warn(`[AI] ${provider.label} cooling down; using fallback`)
             continue
         }
 
@@ -336,7 +330,7 @@ async function executeProviderChain(messages, options = {}) {
                 })
                 lastUsed = providerName
                 recordProviderSuccess(providerName, result.latencyMs, nowFn(), fallback)
-                console.log(`[AI] ${provider.label} responded OK in ${result.latencyMs}ms${attempt ? ` after retry ${attempt}` : ""}${fallback ? " via fallback" : ""}`)
+                console.log(`[AI] ${provider.label} responded in ${result.latencyMs}ms${fallback ? " via fallback" : ""}`)
                 return result
             } catch (error) {
                 const failureTime = nowFn()
@@ -350,7 +344,7 @@ async function executeProviderChain(messages, options = {}) {
 
                 if (willRetry) {
                     providerStats[providerName].retries++
-                    console.warn(`[AI] ${provider.label} temporary failure: ${reason}; retrying in ${delayMs}ms`)
+                    console.warn(`[AI] ${provider.label} temporary failure; retrying in ${delayMs}ms`)
                     await sleepFn(delayMs)
                     continue
                 }
