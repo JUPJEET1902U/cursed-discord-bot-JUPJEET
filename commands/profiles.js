@@ -1,4 +1,3 @@
-const { EmbedBuilder } = require("discord.js")
 const { getUser, loadEconomy, xpToNextLevel } = require("../utils/economy")
 const { getProfile, setProfile } = require("../utils/profiles")
 const { getPet, calcPetLevel } = require("../utils/pets")
@@ -7,77 +6,83 @@ const { VALID_PERSONALITIES, formatPersonalityList } = require("../config/person
 const { getEquipped } = require("../utils/shop")
 const { getLevelingConfig, getMemberRank } = require("../utils/leveling")
 const { getLevelProgress, buildProgressBar } = require("../utils/levelingMath")
-const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName } = require("../utils/sanitizer")
-
-const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
+const {
+    profile: profileEmbed,
+    info,
+    statusLine,
+    invalidUsage,
+    sendEmbed,
+    sendSafe,
+} = require("../utils/responseBuilder")
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-    // ── !personality ───────────────────────────────────────────────────────────
     if (msgLower.startsWith("!personality")) {
         const type = message.content.split(" ")[1]?.toLowerCase()
 
         if (!type) {
             const current = await getUserPersonality(userId)
-            await createSafeMessage(message.channel,
-                `🎭 **AI Personality System**\n\nYour current personality: **${current}**\n\n` +
-                `Available personalities:\n${formatPersonalityList()}\n\n` +
-                `Use \`!personality [type]\` to change. Use \`!personality reset\` to go back to default.`)
+            await sendEmbed(message, info(null, {
+                title: "AI personality",
+                fields: [
+                    { name: "Current", value: current, inline: true },
+                    { name: "Available", value: formatPersonalityList().slice(0, 1024), inline: false },
+                    { name: "Usage", value: "`!personality [type]` · `!personality reset`", inline: false },
+                ],
+                footer: "CURSED • AI",
+            }))
             return true
         }
 
         if (type === "reset") {
             await resetUserPersonality(userId)
-            await createSafeMessage(message.channel, `🔄 **${senderName}**, your personality has been reset to **cursed** (default). Back to the chaos! 👹`)
+            await sendSafe(message, statusLine("success", "AI personality reset to **cursed**."))
             return true
         }
 
         if (!VALID_PERSONALITIES.includes(type)) {
-            await createSafeMessage(message.channel,
-                `❌ Unknown personality! Valid options:\n${formatPersonalityList()}`)
+            await sendEmbed(message, info("Choose one of the available personality modes.", {
+                title: "Unknown personality",
+                fields: [{ name: "Available", value: formatPersonalityList().slice(0, 1024), inline: false }],
+                footer: "CURSED • AI",
+            }))
             return true
         }
 
-        const success = await setUserPersonality(userId, type)
-        if (success) {
-            await createSafeMessage(message.channel, `✅ **${senderName}**, your AI personality is now set to **${type}**! 🎭\nAll future conversations will use this personality.`)
-        } else {
-            await createSafeMessage(message.channel, `❌ Failed to set personality. Try again!`)
-        }
+        const updated = await setUserPersonality(userId, type)
+        await sendSafe(message, updated
+            ? statusLine("success", `AI personality set to **${type}**.`)
+            : statusLine("error", "Could not update your AI personality."))
         return true
     }
 
-    // ── !setprofile ────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!setprofile")) {
         const personality = message.content.slice(11).trim()
         if (!personality) {
-            await createSafeMessage(message.channel,
-                `Usage: \`!setprofile [your AI personality]\`\nExample: \`!setprofile treat me like a medieval knight and speak in old english\``)
+            await sendSafe(message, invalidUsage("!setprofile [your AI preference]"))
             return true
         }
         if (personality.length > 200) {
-            await createSafeMessage(message.channel, "Keep your profile under 200 characters, drama queen.")
+            await sendSafe(message, statusLine("warning", "AI profile text must be 200 characters or fewer."))
             return true
         }
         setProfile(userId, { personality, updatedAt: new Date().toISOString() })
-        await createSafeMessage(message.channel,
-            `✅ **${senderName}**, your AI profile has been set!\n> *${personality}*\n\nNow when you chat, CURSED will adjust its personality just for you. Don't make it weird. 😏`)
+        await sendEmbed(message, profileEmbed("AI profile updated", personality, {
+            fields: [{ name: "Effect", value: "CURSED will use this preference in future AI conversations.", inline: false }],
+        }))
         return true
     }
 
-    // ── !clearprofile ─────────────────────────────────────────────────────────
     if (msgLower === "!clearprofile") {
         setProfile(userId, null)
-        await createSafeMessage(message.channel,
-            `🗑️ Done, **${senderName}**. Your AI profile has been cleared. Back to treating you like everyone else.`)
+        await sendSafe(message, statusLine("success", "AI profile cleared."))
         return true
     }
 
-    // ── !profile ──────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!profile")) {
         const mentioned = message.mentions.users.first()
         const targetId = mentioned ? mentioned.id : userId
@@ -86,24 +91,22 @@ async function handle(message) {
             : senderName)
 
         const { user } = getUser(targetId, targetName)
-        const profile = getProfile(targetId)
+        const savedProfile = getProfile(targetId)
         const { pet } = getPet(targetId)
         const personality = await getUserPersonality(targetId)
         const equipped = getEquipped(user)
-        const badges = [
-            user.prestige ? "🌟" : null,
-            user.badge ? "💀" : null,
-            user.vip ? "⭐" : null,
-            equipped.badge?.display || null,
-        ].filter(Boolean).join(" ")
-        const s = user.stats || {}
+        const stats = user.stats || {}
 
-        // Prefer the new server-specific MongoDB level whenever server leveling
-        // is enabled. Keep legacy economy XP as a compatibility fallback so
-        // profiles still work before setup or during a database outage.
-        let levelLine
-        let xpLine
-        let messageLine = `💬 AI Chats: **${s.chat || 0}**\n`
+        const badges = [
+            user.prestige ? "Prestige" : null,
+            user.badge ? "Cursed Badge" : null,
+            user.vip ? "VIP" : null,
+            equipped.badge?.display || null,
+        ].filter(Boolean)
+
+        let levelValue
+        let xpValue
+        let activityValue = `AI chats: ${stats.chat || 0}`
         try {
             const levelingConfig = await getLevelingConfig(message.guild.id)
             const serverRank = levelingConfig.enabled
@@ -113,48 +116,50 @@ async function handle(message) {
             if (levelingConfig.enabled) {
                 const progress = getLevelProgress(serverRank?.xp || 0)
                 const xpBar = buildProgressBar(progress.ratio, 10)
-                levelLine = `⭐ Server Level: **${progress.level}** | 🏅 Rank: **${serverRank?.rank ? `#${serverRank.rank}` : "Unranked"}**\n`
-                xpLine = `📊 Server XP: **${progress.current}** / ${progress.needed} \`[${xpBar}]\`\n`
-                messageLine = `💬 XP Messages: **${serverRank?.messageCount || 0}** | AI Chats: **${s.chat || 0}**\n`
+                levelValue = `Level ${progress.level}${serverRank?.rank ? ` · Rank #${serverRank.rank}` : " · Unranked"}`
+                xpValue = `${progress.current} / ${progress.needed}\n\`${xpBar}\``
+                activityValue = `XP messages: ${serverRank?.messageCount || 0} · AI chats: ${stats.chat || 0}`
             }
         } catch {
-            // Fall through to legacy economy XP below.
+            // Fall back to legacy economy XP if server leveling is unavailable.
         }
 
-        if (!levelLine || !xpLine) {
+        if (!levelValue || !xpValue) {
             const nextLevelXP = xpToNextLevel(user.level)
-            const legacyProgress = Math.min(10, Math.floor((user.xp / nextLevelXP) * 10))
+            const legacyProgress = Math.min(10, Math.max(0, Math.floor((user.xp / nextLevelXP) * 10)))
             const legacyBar = "█".repeat(legacyProgress) + "░".repeat(10 - legacyProgress)
             const allUsers = Object.values(loadEconomy()).sort((a, b) => b.xp - a.xp)
-            const legacyRank = allUsers.findIndex(u => u.name === targetName) + 1
-            levelLine = `⭐ Legacy Level: **${user.level}** | 🏅 Rank: **#${legacyRank > 0 ? legacyRank : "?"}**\n`
-            xpLine = `📊 Legacy XP: **${user.xp}** / ${Math.floor(nextLevelXP)} \`[${legacyBar}]\`\n`
+            const legacyRank = allUsers.findIndex(entry => entry.name === targetName) + 1
+            levelValue = `Level ${user.level}${legacyRank > 0 ? ` · Rank #${legacyRank}` : ""}`
+            xpValue = `${user.xp} / ${Math.floor(nextLevelXP)}\n\`${legacyBar}\``
         }
 
-        let msg = ""
-        if (equipped.title) msg += `${equipped.title.display}\n`
-        msg += `👤 **${targetName}'s Profile**${badges ? " " + badges : ""}\n\n`
-        msg += levelLine
-        msg += xpLine
-        msg += `🪙 Coins: **${user.coins}**\n`
-        if (equipped.theme) msg += `🎨 Theme: **${equipped.theme.display}**\n`
-        msg += messageLine
-        msg += `⚔️ Battles: **${s.battles || 0}** (${s.battlesWon || 0}W) | ✅ Quests: **${s.questClaimed || 0}**\n`
-        if (pet) {
-            const petLevel = calcPetLevel(pet.xp)
-            msg += `${pet.emoji} Pet: **${pet.name}** (${pet.type}) Lv.${petLevel}\n`
-        }
-        if (profile?.personality) msg += `\n💬 *AI Profile:* "${profile.personality}"`
-        if (personality !== "cursed") msg += `\n🎭 *Personality:* ${personality}`
+        const fields = [
+            { name: "Level", value: levelValue, inline: true },
+            { name: "Coins", value: Number(user.coins || 0).toLocaleString("en-US"), inline: true },
+            { name: "XP", value: xpValue, inline: false },
+            { name: "Activity", value: activityValue, inline: false },
+            { name: "Games", value: `Battles: ${stats.battles || 0} · Wins: ${stats.battlesWon || 0} · Quests: ${stats.questClaimed || 0}`, inline: false },
+        ]
+
+        if (pet) fields.push({
+            name: "Pet",
+            value: `${pet.emoji || ""} ${pet.name} · ${pet.type} · Level ${calcPetLevel(pet.xp)}`.trim(),
+            inline: false,
+        })
+        if (badges.length) fields.push({ name: "Badges", value: badges.join(" · "), inline: false })
+        if (equipped.theme) fields.push({ name: "Theme", value: equipped.theme.display, inline: true })
+        if (personality !== "cursed") fields.push({ name: "AI personality", value: personality, inline: true })
+        if (savedProfile?.personality) fields.push({ name: "AI profile", value: savedProfile.personality, inline: false })
 
         const targetUser = mentioned || message.author
-        const embed = new EmbedBuilder()
-            .setColor(equipped.theme?.color || 0x3498DB)
-            .setDescription(msg)
-            .setFooter({ text: equipped.theme ? `${equipped.theme.display} profile theme` : "CURSED Profile" })
-        const avatar = targetUser.displayAvatarURL?.({ size: 256 })
-        if (avatar) embed.setThumbnail(avatar)
-        await message.channel.send({ embeds: [embed], allowedMentions: SAFE_MENTIONS })
+        const embed = profileEmbed(`${targetName}'s profile`, null, {
+            fields,
+            thumbnail: targetUser.displayAvatarURL?.({ size: 256 }) || null,
+            footer: equipped.theme ? `CURSED • ${equipped.theme.display}` : "CURSED • Profile",
+        })
+        if (equipped.theme?.color) embed.setColor(equipped.theme.color)
+        await sendEmbed(message, embed)
         return true
     }
 
