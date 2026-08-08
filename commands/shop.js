@@ -1,10 +1,8 @@
 /**
- * commands/shop.js
- * Interactive CURSED Black Market, inventory, usable items, and cosmetics.
+ * Interactive CURSED shop, inventory, usable items, and cosmetics.
  */
 
 const {
-    EmbedBuilder,
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
@@ -13,7 +11,6 @@ const {
 const { getUser } = require("../utils/economy")
 const {
     CATEGORY_META,
-    CATALOG,
     dateKey,
     getItem,
     getCategoryItems,
@@ -26,9 +23,14 @@ const {
 } = require("../utils/shop")
 const { sanitizeName } = require("../utils/sanitizer")
 const logger = require("../utils/logger")
+const {
+    economy: economyEmbed,
+    statusLine,
+    invalidUsage,
+    SAFE_MENTIONS,
+} = require("../utils/responseBuilder")
 
 const log = logger.child("Shop")
-const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
 const PAGE_SIZE = 4
 const SESSION_MS = 180_000
 const SHOP_COLOR = 0x7C3AED
@@ -47,25 +49,33 @@ function ownedLabel(user, item) {
 function itemPrice(user, item) {
     const offer = getOffer(user, item)
     if (!offer.available) return { text: "Unavailable", offer }
-    const discount = offer.dailyOffer ? ` • ${offer.discount}% OFF` : ""
-    return { text: `${offer.price.toLocaleString()} coins${discount}`, offer }
+    return {
+        text: `${offer.price.toLocaleString()} coins${offer.dailyOffer ? ` · ${offer.discount}% daily discount` : ""}`,
+        offer,
+    }
 }
 
 function categoryItems(category) {
     return getCategoryItems(category)
 }
 
+function cleanResultMessage(message) {
+    return String(message || "")
+        .replace(/^[✅❌💸✨🧹🔄📜🍖💊🏋️🪙🛡️💥🎲]+\s*/u, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
+}
+
 function detailText(user, item) {
     const price = itemPrice(user, item)
     const status = ownedLabel(user, item)
     const lines = [
-        `${item.emoji} **${item.name}**`,
-        `*${item.rarity} • ${item.kind === "cosmetic" ? `${item.slot} cosmetic` : item.kind}*`,
+        `**${item.name}** · ${item.rarity}`,
         item.description,
-        `💰 **Price:** ${price.text}`,
+        `Price: **${price.text}**`,
     ]
-    if (status) lines.push(`🎒 **Status:** ${status}`)
-    if (!price.offer.available) lines.push(`🚫 ${price.offer.reason}`)
+    if (status) lines.push(`Status: ${status}`)
+    if (!price.offer.available) lines.push(price.offer.reason)
     if (item.kind === "consumable") lines.push(`Use after purchase with \`!use ${item.id}\`.`)
     if (item.kind === "cosmetic") lines.push(`Equip after purchase with \`!equip ${item.id}\`.`)
     return lines.join("\n")
@@ -82,36 +92,27 @@ function shopEmbed(message, state) {
     if (!pageItems.some(item => item.id === state.selectedId)) state.selectedId = pageItems[0]?.id || null
     const selected = pageItems.find(item => item.id === state.selectedId) || pageItems[0] || null
 
-    const embed = new EmbedBuilder()
-        .setColor(selected?.color || SHOP_COLOR)
-        .setTitle("☠️ CURSED • Black Market")
-        .setDescription(
-            `**${meta.emoji} ${meta.name}**\n${meta.description}\n\n` +
-            `🪙 **Balance:** ${(user.coins || 0).toLocaleString()} coins\n` +
-            `🗓️ **Rotation:** ${dateKey()} UTC`
-        )
-        .setFooter({ text: `Page ${state.page + 1}/${totalPages} • Daily offers refresh at 00:00 UTC • Session lasts 3 minutes` })
-        .setTimestamp()
-
+    const fields = [
+        { name: "Balance", value: `${Number(user.coins || 0).toLocaleString()} coins`, inline: true },
+        { name: "Rotation", value: `${dateKey()} UTC`, inline: true },
+    ]
     for (const item of pageItems) {
         const price = itemPrice(user, item)
-        const selectedMark = item.id === state.selectedId ? "▸ " : ""
         const status = ownedLabel(user, item)
-        embed.addFields({
-            name: `${selectedMark}${item.emoji} ${item.name} • ${item.rarity}`,
-            value: `${item.description}\n💰 **${price.text}**${status ? ` • 🎒 ${status}` : ""}\nID: \`${item.id}\``,
+        fields.push({
+            name: `${item.id === state.selectedId ? "Selected · " : ""}${item.name} · ${item.rarity}`,
+            value: `${item.description}\n**${price.text}**${status ? ` · ${status}` : ""}\nID: \`${item.id}\``,
             inline: false,
         })
     }
+    if (selected) fields.push({ name: "Selected item", value: detailText(user, selected), inline: false })
 
-    if (selected) {
-        embed.addFields({
-            name: "🛒 Selected Item",
-            value: detailText(user, selected),
-            inline: false,
-        })
-    }
-
+    const embed = economyEmbed("CURSED Shop", `${meta.name}\n${meta.description}`, {
+        fields,
+        footer: `CURSED • Shop • Page ${state.page + 1}/${totalPages}`,
+        timestamp: true,
+    })
+    embed.setColor(selected?.color || SHOP_COLOR)
     const icon = message.client.user?.displayAvatarURL({ size: 256 })
     if (icon) embed.setThumbnail(icon)
     return { embed, items: pageItems, totalPages }
@@ -122,62 +123,60 @@ function inventoryEmbed(message) {
     const { user } = getUser(message.author.id, name)
     const view = getInventoryView(user)
     const consumables = view.consumables.length
-        ? view.consumables.map(({ item, quantity }) => `${item.emoji} **${item.name}** ×${quantity} — \`!use ${item.id}\``).join("\n")
-        : "No consumables yet."
+        ? view.consumables.map(({ item, quantity }) => `**${item.name}** ×${quantity} · \`!use ${item.id}\``).join("\n")
+        : "None"
     const cosmetics = view.cosmetics.length
-        ? view.cosmetics.map(item => `${item.emoji} **${item.name}** — ${item.slot}`).join("\n")
-        : "No cosmetics yet."
+        ? view.cosmetics.map(item => `**${item.name}** · ${item.slot}`).join("\n")
+        : "None"
     const equipped = [
-        view.equipped.title ? `🏷️ Title: **${view.equipped.title.display}**` : "🏷️ Title: None",
-        view.equipped.theme ? `🎨 Theme: **${view.equipped.theme.display}**` : "🎨 Theme: None",
-        view.equipped.badge ? `🎖️ Badge: **${view.equipped.badge.display}**` : "🎖️ Badge: None",
+        `Title: ${view.equipped.title?.display || "None"}`,
+        `Theme: ${view.equipped.theme?.display || "None"}`,
+        `Badge: ${view.equipped.badge?.display || "None"}`,
     ].join("\n")
     const active = [
-        (user.roastShield || 0) > 0 ? `🛡️ Roast Shield: **${user.roastShield} uses**` : null,
-        (user.xpBoost || 0) > 0 ? `💥 XP Booster: **${user.xpBoost} uses**` : null,
-        (user.dailyBoost || 0) > 0 ? `🎲 Daily Booster: **${user.dailyBoost} ready**` : null,
-    ].filter(Boolean).join("\n") || "No active boosts."
+        (user.roastShield || 0) > 0 ? `Roast Shield · ${user.roastShield} uses` : null,
+        (user.xpBoost || 0) > 0 ? `XP Booster · ${user.xpBoost} uses` : null,
+        (user.dailyBoost || 0) > 0 ? `Daily Booster · ${user.dailyBoost} ready` : null,
+    ].filter(Boolean).join("\n") || "None"
 
-    return new EmbedBuilder()
-        .setColor(view.equipped.theme?.color || SHOP_COLOR)
-        .setTitle(`🎒 ${name}'s Black Market Inventory`)
-        .setDescription(`🪙 **Balance:** ${(user.coins || 0).toLocaleString()} coins`)
-        .addFields(
-            { name: "⚡ Active Boosts", value: active, inline: false },
-            { name: "🧰 Consumables", value: consumables, inline: false },
-            { name: "🎨 Cosmetics Owned", value: cosmetics, inline: false },
-            { name: "✨ Equipped", value: equipped, inline: false },
-        )
-        .setFooter({ text: "Use !shop to buy • !shop help for commands • !use item • !equip item • !unequip slot" })
+    const embed = economyEmbed(`${name}'s inventory`, null, {
+        fields: [
+            { name: "Balance", value: `${Number(user.coins || 0).toLocaleString()} coins`, inline: true },
+            { name: "Active boosts", value: active, inline: false },
+            { name: "Consumables", value: consumables, inline: false },
+            { name: "Cosmetics", value: cosmetics, inline: false },
+            { name: "Equipped", value: equipped, inline: false },
+        ],
+        footer: "CURSED • Shop",
+        timestamp: false,
+    })
+    embed.setColor(view.equipped.theme?.color || SHOP_COLOR)
+    return embed
 }
 
 function guideEmbed() {
-    return new EmbedBuilder()
-        .setColor(SHOP_COLOR)
-        .setTitle("📖 CURSED Black Market Commands")
-        .setDescription(
-            "`!shop` — Open the interactive Black Market\n" +
-            "`!shop [category or item]` — Open a specific section or item\n" +
-            "`!blackmarket` — Open today's rotating deals\n" +
-            "`!buy [item] [quantity]` — Buy directly by item ID\n" +
-            "`!inventory` / `!inv` — View boosts, items, and cosmetics\n" +
-            "`!use [item]` — Use a consumable\n" +
-            "`!equip [cosmetic]` — Equip an owned cosmetic\n" +
-            "`!unequip [title|theme|badge|all]` — Remove equipped cosmetics\n\n" +
-            "**Categories:** `featured`, `boosts`, `utility`, `pets`, `cosmetics`, `permanent`"
-        )
-        .setFooter({ text: "Item IDs are shown inside !shop and !inventory." })
+    return economyEmbed("Shop commands", "Browse, purchase, use, and equip account items.", {
+        fields: [
+            { name: "Browse", value: "`!shop` · `!shop [category or item]` · `!blackmarket`", inline: false },
+            { name: "Purchase", value: "`!buy [item] [quantity]`", inline: false },
+            { name: "Inventory", value: "`!inventory` · `!inv`", inline: false },
+            { name: "Use", value: "`!use [item]`", inline: false },
+            { name: "Cosmetics", value: "`!equip [cosmetic]` · `!unequip [title|theme|badge|all]`", inline: false },
+            { name: "Categories", value: "featured · boosts · utility · pets · cosmetics · permanent", inline: false },
+        ],
+        footer: "CURSED • Shop",
+        timestamp: false,
+    })
 }
 
 function categoryRow(selected) {
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
             .setCustomId("shop_category")
-            .setPlaceholder("Choose a Black Market category")
+            .setPlaceholder("Choose a category")
             .addOptions(Object.entries(CATEGORY_META).map(([key, meta]) => ({
                 label: meta.name,
                 description: meta.description.slice(0, 100),
-                emoji: meta.emoji,
                 value: key,
                 default: key === selected,
             })))
@@ -189,11 +188,10 @@ function itemRow(items, selectedId) {
     return new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
             .setCustomId("shop_item")
-            .setPlaceholder("Select an item for details")
+            .setPlaceholder("Select an item")
             .addOptions(items.map(item => ({
                 label: item.name.slice(0, 100),
-                description: `${item.rarity} • ${item.price.toLocaleString()} base coins`.slice(0, 100),
-                emoji: item.emoji,
+                description: `${item.rarity} · ${item.price.toLocaleString()} base coins`.slice(0, 100),
                 value: item.id,
                 default: item.id === selectedId,
             })))
@@ -202,29 +200,10 @@ function itemRow(items, selectedId) {
 
 function navRow(state, totalPages) {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId("shop_prev")
-            .setLabel("Prev")
-            .setEmoji("◀️")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(state.page <= 0),
-        new ButtonBuilder()
-            .setCustomId("shop_buy")
-            .setLabel("Buy Selected")
-            .setEmoji("🛒")
-            .setStyle(ButtonStyle.Success)
-            .setDisabled(!state.selectedId),
-        new ButtonBuilder()
-            .setCustomId("shop_inventory")
-            .setLabel("Inventory")
-            .setEmoji("🎒")
-            .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-            .setCustomId("shop_next")
-            .setLabel("Next")
-            .setEmoji("▶️")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(state.page >= totalPages - 1),
+        new ButtonBuilder().setCustomId("shop_prev").setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(state.page <= 0),
+        new ButtonBuilder().setCustomId("shop_buy").setLabel("Buy selected").setStyle(ButtonStyle.Success).setDisabled(!state.selectedId),
+        new ButtonBuilder().setCustomId("shop_inventory").setLabel("Inventory").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("shop_next").setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(state.page >= totalPages - 1),
     )
 }
 
@@ -244,8 +223,12 @@ function parseItemAndQuantity(text) {
     return { item: parts.join(" "), quantity }
 }
 
-function simpleResult(message, result) {
-    return message.channel.send({ content: result.message, allowedMentions: SAFE_MENTIONS })
+function resultContent(result) {
+    return statusLine(result.ok ? "success" : "error", cleanResultMessage(result.message))
+}
+
+async function simpleResult(message, result) {
+    return message.channel.send({ content: resultContent(result), allowedMentions: SAFE_MENTIONS })
 }
 
 async function openShop(message, requested = "") {
@@ -263,9 +246,9 @@ async function openShop(message, requested = "") {
     let sent
     try {
         sent = await message.channel.send(render(message, state))
-    } catch (err) {
-        log.error(`Failed to send Black Market: ${err.message}`)
-        await message.channel.send({ content: "❌ The Black Market could not open. Try again.", allowedMentions: SAFE_MENTIONS }).catch(() => {})
+    } catch (error) {
+        log.error(`Failed to open shop: ${error.message}`)
+        await message.channel.send({ content: statusLine("error", "The shop could not open. Try again."), allowedMentions: SAFE_MENTIONS }).catch(() => {})
         return
     }
 
@@ -273,7 +256,7 @@ async function openShop(message, requested = "") {
     collector.on("collect", async interaction => {
         try {
             if (interaction.user.id !== message.author.id) {
-                await interaction.reply({ content: "Run `!shop` to open your own Black Market.", ephemeral: true, allowedMentions: SAFE_MENTIONS }).catch(() => {})
+                await interaction.reply({ content: "Run `!shop` to open your own session.", ephemeral: true, allowedMentions: SAFE_MENTIONS }).catch(() => {})
                 return
             }
 
@@ -298,7 +281,7 @@ async function openShop(message, requested = "") {
             }
             if (id === "shop_buy") {
                 const result = buyItem(message.author.id, userName(message), state.selectedId, 1)
-                await interaction.reply({ content: result.message, ephemeral: true, allowedMentions: SAFE_MENTIONS })
+                await interaction.reply({ content: resultContent(result), ephemeral: true, allowedMentions: SAFE_MENTIONS })
                 await sent.edit(render(message, state)).catch(() => {})
                 return
             }
@@ -308,10 +291,10 @@ async function openShop(message, requested = "") {
             if (id === "shop_next") state.page += 1
             state.selectedId = null
             await sent.edit(render(message, state))
-        } catch (err) {
-            log.error(`Black Market interaction failed: ${err.message}`, { stack: err.stack })
+        } catch (error) {
+            log.error(`Shop interaction failed: ${error.message}`, { stack: error.stack })
             if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ content: "❌ That Black Market action failed.", ephemeral: true, allowedMentions: SAFE_MENTIONS }).catch(() => {})
+                await interaction.reply({ content: statusLine("error", "That shop action failed safely."), ephemeral: true, allowedMentions: SAFE_MENTIONS }).catch(() => {})
             }
         }
     })
@@ -342,7 +325,7 @@ async function handle(message) {
     if (isBuy) {
         const args = content.slice(4).trim()
         if (!args) {
-            await message.channel.send({ content: "Usage: `!buy [item] [quantity]`\nExample: `!buy petfood 2`", allowedMentions: SAFE_MENTIONS })
+            await message.channel.send({ content: invalidUsage("!buy [item] [quantity]"), allowedMentions: SAFE_MENTIONS })
             return true
         }
         const parsed = parseItemAndQuantity(args)
@@ -353,7 +336,7 @@ async function handle(message) {
     if (isUse) {
         const item = content.slice(4).trim()
         if (!item) {
-            await message.channel.send({ content: "Usage: `!use [item]`\nExample: `!use questreroll`", allowedMentions: SAFE_MENTIONS })
+            await message.channel.send({ content: invalidUsage("!use [item]"), allowedMentions: SAFE_MENTIONS })
             return true
         }
         await simpleResult(message, useItem(userId, name, item))
@@ -363,7 +346,7 @@ async function handle(message) {
     if (isEquip) {
         const item = content.slice(6).trim()
         if (!item) {
-            await message.channel.send({ content: "Usage: `!equip [cosmetic]`\nExample: `!equip voidtitle`", allowedMentions: SAFE_MENTIONS })
+            await message.channel.send({ content: invalidUsage("!equip [cosmetic]"), allowedMentions: SAFE_MENTIONS })
             return true
         }
         await simpleResult(message, equipItem(userId, name, item))
