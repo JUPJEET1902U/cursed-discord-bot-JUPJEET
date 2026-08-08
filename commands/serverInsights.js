@@ -1,15 +1,10 @@
 /**
- * Live server information and opt-in activity-tracking administration.
- *
- * This PR intentionally does not expose historical reports yet. It establishes
- * accurate daily data so the next PR can build leaderboards, growth reports,
- * visual cards, and scheduled summaries without fabricating history.
+ * Live server information and opt-in activity tracking administration.
  */
 
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
-    EmbedBuilder,
     ChannelType,
 } = require("discord.js")
 const moderation = require("./moderation")
@@ -22,57 +17,36 @@ const {
 } = require("../utils/activityTracker")
 const { humanizeEnum } = require("../utils/activityStatsHelpers")
 const logger = require("../utils/logger")
+const {
+    admin: adminEmbed,
+    info,
+    statusLine,
+    replyInteraction,
+    SAFE_MENTIONS,
+} = require("../utils/responseBuilder")
+
 const log = logger.child("ServerInsights")
 
 const serverCommand = new SlashCommandBuilder()
     .setName("server")
     .setDescription("View live information about this Discord server")
-    .addSubcommand(sub => sub
-        .setName("info")
-        .setDescription("Show a detailed live server overview"))
-    .addSubcommand(sub => sub
-        .setName("icon")
-        .setDescription("Show the server icon in full resolution"))
-    .addSubcommand(sub => sub
-        .setName("banner")
-        .setDescription("Show the server banner in full resolution"))
+    .addSubcommand(sub => sub.setName("info").setDescription("Show a detailed live server overview"))
+    .addSubcommand(sub => sub.setName("icon").setDescription("Show the server icon in full resolution"))
+    .addSubcommand(sub => sub.setName("banner").setDescription("Show the server banner in full resolution"))
 
 const statsCommand = new SlashCommandBuilder()
     .setName("stats")
     .setDescription("Configure CURSED server activity tracking")
-    .addSubcommand(sub => sub
-        .setName("setup")
-        .setDescription("Enable privacy-safe daily activity tracking"))
-    .addSubcommand(sub => sub
-        .setName("status")
-        .setDescription("Show the activity-tracking configuration"))
-    .addSubcommand(sub => sub
-        .setName("enable")
-        .setDescription("Resume activity tracking without deleting data"))
-    .addSubcommand(sub => sub
-        .setName("disable")
-        .setDescription("Pause new activity tracking without deleting data"))
-    .addSubcommand(sub => sub
-        .setName("exclude")
-        .setDescription("Exclude a channel from new detailed statistics")
-        .addChannelOption(option => option
-            .setName("channel")
-            .setDescription("Channel to exclude")
-            .setRequired(true)))
-    .addSubcommand(sub => sub
-        .setName("include")
-        .setDescription("Include a previously excluded channel")
-        .addChannelOption(option => option
-            .setName("channel")
-            .setDescription("Channel to include")
-            .setRequired(true)))
-    .addSubcommand(sub => sub
-        .setName("reset")
-        .setDescription("Permanently delete all tracked activity for this server")
-        .addBooleanOption(option => option
-            .setName("confirm")
-            .setDescription("Confirm permanent deletion")
-            .setRequired(true)))
+    .addSubcommand(sub => sub.setName("setup").setDescription("Enable privacy-safe daily activity tracking"))
+    .addSubcommand(sub => sub.setName("status").setDescription("Show the activity-tracking configuration"))
+    .addSubcommand(sub => sub.setName("enable").setDescription("Resume activity tracking without deleting data"))
+    .addSubcommand(sub => sub.setName("disable").setDescription("Pause new activity tracking without deleting data"))
+    .addSubcommand(sub => sub.setName("exclude").setDescription("Exclude a channel from new detailed statistics")
+        .addChannelOption(option => option.setName("channel").setDescription("Channel to exclude").setRequired(true)))
+    .addSubcommand(sub => sub.setName("include").setDescription("Include a previously excluded channel")
+        .addChannelOption(option => option.setName("channel").setDescription("Channel to include").setRequired(true)))
+    .addSubcommand(sub => sub.setName("reset").setDescription("Permanently delete all tracked activity for this server")
+        .addBooleanOption(option => option.setName("confirm").setDescription("Confirm permanent deletion").setRequired(true)))
 
 function discordTimestamp(date, style = "F") {
     const value = date instanceof Date ? date : new Date(date)
@@ -101,18 +75,13 @@ function buildChannelCounts(guild) {
     let categories = 0
     let forums = 0
     let stages = 0
-
     for (const channel of guild.channels.cache.values()) {
         if (channel.type === ChannelType.GuildCategory) categories++
         else if (channel.type === ChannelType.GuildVoice) voice++
         else if (channel.type === ChannelType.GuildStageVoice) stages++
         else if (channel.type === ChannelType.GuildForum || channel.type === ChannelType.GuildMedia) forums++
-        else if (
-            channel.type === ChannelType.GuildText ||
-            channel.type === ChannelType.GuildAnnouncement
-        ) text++
+        else if ([ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) text++
     }
-
     return { text, voice, categories, forums, stages }
 }
 
@@ -120,8 +89,7 @@ function buildMemberBreakdown(guild) {
     const cached = guild.members.cache
     const humans = cached.filter(member => !member.user.bot).size
     const bots = cached.filter(member => member.user.bot).size
-    const complete = cached.size >= guild.memberCount
-    return { humans, bots, cached: cached.size, complete }
+    return { humans, bots, cached: cached.size, complete: cached.size >= guild.memberCount }
 }
 
 async function buildServerInfoEmbed(guild) {
@@ -132,63 +100,29 @@ async function buildServerInfoEmbed(guild) {
     const banner = guild.bannerURL({ extension: "png", size: 1024 })
     const splash = guild.splashURL({ extension: "png", size: 1024 })
     const roles = Math.max(0, guild.roles.cache.size - 1)
-    const community = guild.features.includes("COMMUNITY") ? "Enabled" : "Disabled"
-    const memberDetails = members.complete
-        ? `**Total:** ${guild.memberCount.toLocaleString()}\n**Humans:** ${members.humans.toLocaleString()}\n**Bots:** ${members.bots.toLocaleString()}`
-        : `**Total:** ${guild.memberCount.toLocaleString()}\n**Cached humans:** ${members.humans.toLocaleString()}\n**Cached bots:** ${members.bots.toLocaleString()}`
 
-    const embed = new EmbedBuilder()
-        .setColor(0x7C3AED)
-        .setTitle(`🏰 ${safeText(guild.name)} — Server Information`)
-        .setDescription(safeText(guild.description, "Live Discord information for this server."))
-        .addFields(
-            { name: "👑 Owner", value: owner ? `${owner.user.tag}\n<@${owner.id}>` : `<@${guild.ownerId}>`, inline: true },
-            { name: "🆔 Server ID", value: `\`${guild.id}\``, inline: true },
-            { name: "🌐 Locale", value: safeText(guild.preferredLocale), inline: true },
-            { name: "👥 Members", value: memberDetails, inline: true },
+    const embed = adminEmbed("Server information", safeText(guild.description, "Live Discord information for this server."), {
+        fields: [
+            { name: "Server", value: `${safeText(guild.name)}\nID: \`${guild.id}\``, inline: true },
+            { name: "Owner", value: owner ? `${owner.user.tag}\n<@${owner.id}>` : `<@${guild.ownerId}>`, inline: true },
+            { name: "Locale", value: safeText(guild.preferredLocale), inline: true },
             {
-                name: "💬 Channels",
-                value: `**Text:** ${channels.text}\n**Voice:** ${channels.voice}\n**Categories:** ${channels.categories}\n**Forums/Media:** ${channels.forums}\n**Stages:** ${channels.stages}`,
-                inline: true,
-            },
-            {
-                name: "🎨 Community",
-                value: `**Roles:** ${roles}\n**Emojis:** ${guild.emojis.cache.size}\n**Stickers:** ${guild.stickers.cache.size}\n**Community:** ${community}`,
-                inline: true,
-            },
-            {
-                name: "🚀 Boosts",
-                value: `**Level:** ${guild.premiumTier}\n**Boosts:** ${guild.premiumSubscriptionCount || 0}`,
-                inline: true,
-            },
-            {
-                name: "🛡️ Security",
-                value: `**Verification:** ${verificationLabel(guild.verificationLevel)}\n**MFA:** ${guild.mfaLevel ? "Required" : "Not required"}\n**Explicit filter:** ${explicitFilterLabel(guild.explicitContentFilter)}`,
-                inline: true,
-            },
-            {
-                name: "💤 AFK",
-                value: guild.afkChannel
-                    ? `${guild.afkChannel}\n${Math.floor(guild.afkTimeout / 60)} minute timeout`
-                    : "Not configured",
-                inline: true,
-            },
-            {
-                name: "📅 Created",
-                value: `${discordTimestamp(guild.createdAt, "F")}\n${discordTimestamp(guild.createdAt, "R")}`,
+                name: "Members",
+                value: members.complete
+                    ? `${guild.memberCount.toLocaleString()} total · ${members.humans.toLocaleString()} humans · ${members.bots.toLocaleString()} bots`
+                    : `${guild.memberCount.toLocaleString()} total · ${members.cached.toLocaleString()} cached`,
                 inline: false,
             },
-            {
-                name: "🤖 CURSED joined",
-                value: guild.members.me?.joinedAt
-                    ? `${discordTimestamp(guild.members.me.joinedAt, "F")}\n${discordTimestamp(guild.members.me.joinedAt, "R")}`
-                    : "Unknown",
-                inline: false,
-            },
-        )
-        .setFooter({ text: "Live Discord data • Detailed activity tracking is opt-in with /stats setup" })
-        .setTimestamp()
-
+            { name: "Channels", value: `${channels.text} text · ${channels.voice} voice · ${channels.categories} categories · ${channels.forums} forums/media · ${channels.stages} stages`, inline: false },
+            { name: "Community", value: `${roles} roles · ${guild.emojis.cache.size} emojis · ${guild.stickers.cache.size} stickers · ${guild.features.includes("COMMUNITY") ? "Community enabled" : "Community disabled"}`, inline: false },
+            { name: "Boosts", value: `Tier ${guild.premiumTier} · ${guild.premiumSubscriptionCount || 0} boosts`, inline: true },
+            { name: "Security", value: `Verification: ${verificationLabel(guild.verificationLevel)}\nMFA: ${guild.mfaLevel ? "Required" : "Not required"}\nContent filter: ${explicitFilterLabel(guild.explicitContentFilter)}`, inline: true },
+            { name: "Created", value: `${discordTimestamp(guild.createdAt, "F")} · ${discordTimestamp(guild.createdAt, "R")}`, inline: false },
+            { name: "CURSED joined", value: guild.members.me?.joinedAt ? `${discordTimestamp(guild.members.me.joinedAt, "F")} · ${discordTimestamp(guild.members.me.joinedAt, "R")}` : "Unknown", inline: false },
+        ],
+        footer: "CURSED • Server Management",
+        timestamp: true,
+    })
     if (icon) embed.setThumbnail(icon)
     if (banner || splash) embed.setImage(banner || splash)
     return embed
@@ -196,18 +130,14 @@ async function buildServerInfoEmbed(guild) {
 
 function assertManageGuild(interaction) {
     if (!interaction.inGuild() || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-        const error = new Error("You need the Manage Server permission to configure statistics.")
+        const error = new Error("You need Manage Server to configure statistics.")
         error.code = "MISSING_PERMISSION"
         throw error
     }
 }
 
-async function replyError(interaction, message) {
-    const payload = { content: `❌ ${message}`, allowedMentions: { parse: [] } }
-    if (interaction.deferred || interaction.replied) {
-        return interaction.editReply({ ...payload, embeds: [] }).catch(() => {})
-    }
-    return interaction.reply({ ...payload, ephemeral: true }).catch(() => {})
+function replyError(interaction, message) {
+    return replyInteraction(interaction, { content: statusLine("error", message) }, { ephemeral: true }).catch(() => {})
 }
 
 async function handleServerInteraction(interaction) {
@@ -219,12 +149,10 @@ async function handleServerInteraction(interaction) {
 
     const subcommand = interaction.options.getSubcommand()
     const guild = interaction.guild
-
     try {
         if (subcommand === "info") {
             await interaction.deferReply()
-            const embed = await buildServerInfoEmbed(guild)
-            await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } })
+            await interaction.editReply({ embeds: [await buildServerInfoEmbed(guild)], allowedMentions: SAFE_MENTIONS })
             return true
         }
 
@@ -236,24 +164,22 @@ async function handleServerInteraction(interaction) {
             await replyError(interaction, `This server does not have a ${isIcon ? "server icon" : "banner"}.`)
             return true
         }
-
-        const embed = new EmbedBuilder()
-            .setColor(0x7C3AED)
-            .setTitle(`${isIcon ? "🖼️ Server Icon" : "🌌 Server Banner"} — ${safeText(guild.name)}`)
-            .setImage(url)
-            .setDescription(`[Open full-resolution image](${url})`)
-        await interaction.reply({ embeds: [embed], allowedMentions: { parse: [] } })
+        const embed = info(`[Open full-resolution image](${url})`, {
+            title: `${isIcon ? "Server icon" : "Server banner"} • ${safeText(guild.name)}`,
+            footer: "CURSED • Server Management",
+        })
+        embed.setImage(url)
+        await interaction.reply({ embeds: [embed], allowedMentions: SAFE_MENTIONS })
         return true
-    } catch (err) {
-        log.error(`Server command failed: ${err.message}`, { guildId: interaction.guildId, stack: err.stack })
-        await replyError(interaction, "CURSED could not load that server information.")
+    } catch (error) {
+        log.error(`Server command failed: ${error.message}`, { guildId: interaction.guildId })
+        await replyError(interaction, "Server information could not be loaded.")
         return true
     }
 }
 
 async function handleStatsInteraction(interaction) {
     if (!interaction.isChatInputCommand() || interaction.commandName !== "stats") return false
-
     try {
         assertManageGuild(interaction)
         const guildId = interaction.guildId
@@ -261,14 +187,9 @@ async function handleStatsInteraction(interaction) {
 
         if (subcommand === "setup") {
             const config = await setupStats(guildId)
-            await interaction.reply({
-                content:
-                    "✅ **Server activity tracking is enabled.**\n" +
-                    "CURSED stores only IDs, dates, and numerical counts—never message content, attachments, links, or voice audio.\n" +
-                    `Tracking started: ${discordTimestamp(config.trackingStartedAt, "F")}`,
-                ephemeral: true,
-                allowedMentions: { parse: [] },
-            })
+            await replyInteraction(interaction, {
+                content: statusLine("success", `Activity tracking enabled. CURSED stores IDs, dates and numerical counts only — never message content, attachments, links or voice audio. Tracking started ${discordTimestamp(config.trackingStartedAt, "R")}.`),
+            }, { ephemeral: true })
             return true
         }
 
@@ -277,27 +198,29 @@ async function handleStatsInteraction(interaction) {
             const excluded = config.excludedChannelIds.length
                 ? config.excludedChannelIds.map(id => `<#${id}>`).join(", ").slice(0, 1000)
                 : "None"
-            const embed = new EmbedBuilder()
-                .setColor(config.enabled ? 0x22C55E : 0x6B7280)
-                .setTitle("📊 Server Activity Tracking")
-                .addFields(
+            const embed = adminEmbed("Activity tracking", null, {
+                fields: [
                     { name: "Status", value: config.enabled ? "Enabled" : "Disabled", inline: true },
                     { name: "Bots", value: config.excludeBots ? "Excluded" : "Included", inline: true },
                     { name: "Tracking since", value: config.trackingStartedAt ? discordTimestamp(config.trackingStartedAt, "F") : "Not started", inline: false },
                     { name: "Excluded channels", value: excluded, inline: false },
-                    { name: "Stored data", value: "IDs, UTC dates, and numerical activity counts only. No message content or voice audio.", inline: false },
-                )
-            await interaction.reply({ embeds: [embed], ephemeral: true, allowedMentions: { parse: [] } })
+                    { name: "Stored data", value: "IDs, UTC dates and numerical activity counts only. No message content or voice audio.", inline: false },
+                ],
+                footer: "CURSED • Server Management",
+            })
+            embed.setColor(config.enabled ? 0x57F287 : 0x99AAB5)
+            await interaction.reply({ embeds: [embed], ephemeral: true, allowedMentions: SAFE_MENTIONS })
             return true
         }
 
         if (subcommand === "enable" || subcommand === "disable") {
             const enabled = subcommand === "enable"
             const config = await setStatsEnabled(guildId, enabled)
-            await interaction.reply({
-                content: `${enabled ? "✅" : "⏸️"} Activity tracking is now **${enabled ? "enabled" : "disabled"}**.${enabled ? ` Tracking from ${discordTimestamp(config.trackingStartedAt, "F")}.` : " Existing data was preserved."}`,
-                ephemeral: true,
-            })
+            await replyInteraction(interaction, {
+                content: statusLine("success", enabled
+                    ? `Activity tracking enabled${config.trackingStartedAt ? ` · tracking since ${discordTimestamp(config.trackingStartedAt, "R")}` : ""}.`
+                    : "Activity tracking disabled. Existing data was preserved."),
+            }, { ephemeral: true })
             return true
         }
 
@@ -306,34 +229,26 @@ async function handleStatsInteraction(interaction) {
             if (channel.guildId !== guildId) throw new Error("That channel does not belong to this server.")
             const excluded = subcommand === "exclude"
             await setChannelExcluded(guildId, channel.id, excluded)
-            await interaction.reply({
-                content: `${excluded ? "🚫" : "✅"} ${channel} is now **${excluded ? "excluded from" : "included in"}** new detailed statistics.`,
-                ephemeral: true,
-                allowedMentions: { parse: [] },
-            })
+            await replyInteraction(interaction, {
+                content: statusLine("success", `${channel} is now ${excluded ? "excluded from" : "included in"} new detailed statistics.`),
+            }, { ephemeral: true })
             return true
         }
 
         if (subcommand === "reset") {
-            const confirmed = interaction.options.getBoolean("confirm", true)
-            if (!confirmed) {
-                await interaction.reply({ content: "Reset cancelled. No statistics were deleted.", ephemeral: true })
+            if (!interaction.options.getBoolean("confirm", true)) {
+                await replyInteraction(interaction, { content: "Reset cancelled. No statistics were deleted." }, { ephemeral: true })
                 return true
             }
             await interaction.deferReply({ ephemeral: true })
             await resetGuildStats(guildId, { includeLifetime: true })
-            await interaction.editReply({
-                content: "🗑️ All CURSED activity statistics for this server were permanently deleted. Tracking is now disabled.",
-                allowedMentions: { parse: [] },
-            })
+            await interaction.editReply({ content: statusLine("success", "All CURSED activity statistics for this server were deleted and tracking was disabled."), allowedMentions: SAFE_MENTIONS })
             return true
         }
-
         return false
-    } catch (err) {
-        log.error(`Stats configuration failed: ${err.message}`, { guildId: interaction.guildId, stack: err.stack })
-        const safeMessage = err.code === "MISSING_PERMISSION" ? err.message : "CURSED could not update the statistics configuration."
-        await replyError(interaction, safeMessage)
+    } catch (error) {
+        log.error(`Stats configuration failed: ${error.message}`, { guildId: interaction.guildId })
+        await replyError(interaction, error.code === "MISSING_PERMISSION" ? error.message : "Statistics configuration could not be updated.")
         return true
     }
 }
@@ -343,26 +258,17 @@ async function handle() {
 }
 
 for (const command of [serverCommand, statsCommand]) {
-    if (!moderation.commands.some(existing => existing.name === command.name)) {
-        moderation.commands.push(command)
-    }
+    if (!moderation.commands.some(existing => existing.name === command.name)) moderation.commands.push(command)
 }
 
 if (!moderation.__serverInsightsPatched) {
     const originalHandleInteraction = moderation.handleInteraction
     moderation.handleInteraction = async function patchedServerInsightsInteraction(interaction) {
-        if (interaction.isChatInputCommand() && interaction.commandName === "server") {
-            return handleServerInteraction(interaction)
-        }
-        if (interaction.isChatInputCommand() && interaction.commandName === "stats") {
-            return handleStatsInteraction(interaction)
-        }
+        if (interaction.isChatInputCommand() && interaction.commandName === "server") return handleServerInteraction(interaction)
+        if (interaction.isChatInputCommand() && interaction.commandName === "stats") return handleStatsInteraction(interaction)
         return originalHandleInteraction(interaction)
     }
-    Object.defineProperty(moderation, "__serverInsightsPatched", {
-        value: true,
-        enumerable: false,
-    })
+    Object.defineProperty(moderation, "__serverInsightsPatched", { value: true, enumerable: false })
 }
 
 module.exports = {
