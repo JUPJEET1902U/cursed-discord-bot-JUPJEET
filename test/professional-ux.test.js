@@ -55,7 +55,10 @@ test("security commands keep their features while using consistent naming", () =
 test("moderation logs use clean field labels instead of emoji-heavy labels", () => {
     assert.doesNotMatch(modlogSource, /ACTION_EMOJIS/)
     assert.match(modlogSource, /`Moderation • \$\{actionLabel\(normalizedAction\)\}`/)
-    for (const field of ["User", "Target ID", "Moderator", "Reason", "Details", "Evidence"]) {
-        assert.match(modlogSource, new RegExp(`name: "${field}"`))
-    }
+    assert.match(modlogSource, /\? "Channel" : "User"/)
+    assert.match(modlogSource, /name: "Target ID"/)
+    assert.match(modlogSource, /\? "Moderator" : "Source"/)
+    assert.match(modlogSource, /name: "Reason"/)
+    assert.match(modlogSource, /name: "Details"/)
+    assert.match(modlogSource, /name: "Evidence"/)
 })
