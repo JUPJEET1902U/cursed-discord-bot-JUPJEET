@@ -1,12 +1,18 @@
 const {
     AttachmentBuilder,
-    EmbedBuilder,
     PermissionFlagsBits,
     SlashCommandBuilder,
 } = require("discord.js")
 const { getModerationConfig, isModerator } = require("../utils/moderationConfig")
 const { getSecurityPhase3Config } = require("../utils/securityPhase3Config")
-const { COLORS, statusLine } = require("../utils/responseBuilder")
+const {
+    COLORS,
+    security: securityEmbed,
+    statusLine,
+    permissionDenied,
+    commandDisabled,
+    replyInteraction,
+} = require("../utils/responseBuilder")
 const {
     createSecuritySnapshot,
     listSecuritySnapshots,
@@ -86,56 +92,57 @@ function actor(interaction) {
     return { id: interaction.user.id, tag: interaction.user.tag || interaction.user.username }
 }
 
-async function safeReply(interaction, payload) {
-    const body = { allowedMentions: { parse: [] }, ephemeral: true, ...payload }
-    return interaction.replied || interaction.deferred ? interaction.followUp(body) : interaction.reply(body)
+function safeReply(interaction, payload) {
+    return replyInteraction(interaction, payload, { ephemeral: true })
 }
 
 async function guard(interaction, { ownerOnly = false } = {}) {
     if (!interaction.inGuild() || !interaction.isChatInputCommand()) return { ok: false, handled: false }
     const moderation = getModerationConfig(interaction.guildId)
     if (!moderation.moderationCommandsEnabled) {
-        await safeReply(interaction, { content: statusLine("error", "Moderation is disabled in this server.") })
+        await safeReply(interaction, { content: commandDisabled() })
         return { ok: false, handled: true }
     }
     if (!isModerator(interaction.member, moderation) || !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-        await safeReply(interaction, { content: statusLine("error", "You need moderation access and Manage Server to use this command.") })
+        await safeReply(interaction, { content: permissionDenied("moderation access and Manage Server") })
         return { ok: false, handled: true }
     }
     if (ownerOnly && interaction.user.id !== interaction.guild.ownerId) {
-        await safeReply(interaction, { content: statusLine("error", "Only the server owner can perform this action.") })
+        await safeReply(interaction, { content: permissionDenied("server owner") })
         return { ok: false, handled: true }
     }
     return { ok: true, handled: true, config: getSecurityPhase3Config(interaction.guildId) }
 }
 
 function snapshotsEmbed(guild, snapshots) {
-    const embed = new EmbedBuilder()
-        .setColor(COLORS.primary)
-        .setTitle("Security snapshots")
-        .setDescription(snapshots.length ? "Recent recovery points for this server." : "No security snapshots are available yet.")
-        .setFooter({ text: `CURSED • ${guild.name}` })
-        .setTimestamp()
-    if (snapshots.length) embed.addFields(snapshots.slice(0, 10).map(snapshot => ({
-        name: snapshot.name,
-        value: `ID: \`${snapshot.id}\`\n${snapshot.roleCount} roles • ${snapshot.channelCount} channels • ${snapshot.status}`,
-        inline: false,
-    })))
-    return embed
+    return securityEmbed(
+        "Security snapshots",
+        snapshots.length ? "Recent recovery points for this server." : "No security snapshots are available yet.",
+        {
+            color: COLORS.primary,
+            footer: `CURSED • ${guild.name}`,
+            fields: snapshots.slice(0, 10).map(snapshot => ({
+                name: snapshot.name,
+                value: `ID: \`${snapshot.id}\`\n${snapshot.roleCount} roles · ${snapshot.channelCount} channels · ${snapshot.status}`,
+                inline: false,
+            })),
+        }
+    )
 }
 
 function approvalsEmbed(approvals) {
-    const embed = new EmbedBuilder()
-        .setColor(COLORS.primary)
-        .setTitle("Bot approvals")
-        .setDescription(approvals.length ? "Recent temporary bot approvals." : "No bot approvals are available.")
-        .setFooter({ text: "CURSED • Server Protection" })
-        .setTimestamp()
-    if (approvals.length) embed.addFields(approvals.slice(0, 10).map(item => ({
-        name: `${item.active ? "Active" : "Used or expired"} • ${item.botId}`,
-        value: `Approval ID: \`${item.id}\`\nExpires: <t:${Math.floor(new Date(item.expiresAt).getTime() / 1000)}:R>${item.note ? `\n${item.note}` : ""}`,
-    })))
-    return embed
+    return securityEmbed(
+        "Bot approvals",
+        approvals.length ? "Recent temporary bot approvals." : "No bot approvals are available.",
+        {
+            color: COLORS.primary,
+            fields: approvals.slice(0, 10).map(item => ({
+                name: `${item.active ? "Active" : "Used or expired"} · ${item.botId}`,
+                value: `Approval ID: \`${item.id}\`\nExpires: <t:${Math.floor(new Date(item.expiresAt).getTime() / 1000)}:R>${item.note ? `\n${item.note}` : ""}`,
+                inline: false,
+            })),
+        }
+    )
 }
 
 async function handleBackup(interaction, subcommand, config) {
@@ -144,6 +151,7 @@ async function handleBackup(interaction, subcommand, config) {
         await safeReply(interaction, { embeds: [snapshotsEmbed(interaction.guild, snapshots)] })
         return true
     }
+
     if (subcommand === "create") {
         await interaction.deferReply({ ephemeral: true })
         const result = await createSecuritySnapshot(interaction.guild, {
@@ -152,10 +160,11 @@ async function handleBackup(interaction, subcommand, config) {
             retentionCount: config.backup.retentionCount,
         })
         await safeReply(interaction, { content: result.ok
-            ? statusLine("success", `Snapshot created • **${result.snapshot.name}** • ID: \`${result.snapshot.id}\``)
+            ? statusLine("success", `Snapshot created: **${result.snapshot.name}** · ID \`${result.snapshot.id}\`.`)
             : statusLine("error", result.error) })
         return true
     }
+
     const ownerGuard = await guard(interaction, { ownerOnly: true })
     if (!ownerGuard.ok) return ownerGuard.handled
     await interaction.deferReply({ ephemeral: true })
@@ -169,7 +178,7 @@ async function handleBackup(interaction, subcommand, config) {
         }
     )
     await safeReply(interaction, { content: result.ok
-        ? statusLine("success", `Recovery complete • ${result.rolesCreated} roles and ${result.channelsCreated} channels recreated.${result.errors.length ? ` ${result.errors.length} item(s) could not be restored.` : ""}`)
+        ? statusLine("success", `Recovery complete: ${result.rolesCreated} roles and ${result.channelsCreated} channels recreated${result.errors.length ? ` · ${result.errors.length} item(s) could not be restored` : ""}.`)
         : statusLine("error", result.error || "Recovery failed safely.") })
     return true
 }
@@ -181,11 +190,13 @@ async function handleApproval(interaction, subcommand, config) {
         await safeReply(interaction, { content: statusLine("error", "Bot approvals are disabled in Server Protection settings.") })
         return true
     }
+
     if (subcommand === "list") {
         const approvals = await listBotApprovals(interaction.guildId)
         await safeReply(interaction, { embeds: [approvalsEmbed(approvals)] })
         return true
     }
+
     if (subcommand === "add") {
         const result = await approveBot(interaction.guildId, interaction.options.getString("bot_id", true), {
             actor: actor(interaction),
@@ -197,6 +208,7 @@ async function handleApproval(interaction, subcommand, config) {
             : statusLine("error", result.error) })
         return true
     }
+
     const result = await revokeBotApproval(interaction.guildId, interaction.options.getString("approval_id", true))
     await safeReply(interaction, { content: result.ok ? statusLine("success", "Bot approval revoked.") : statusLine("error", result.error) })
     return true
@@ -210,12 +222,14 @@ async function handleIncident(interaction, subcommand, config) {
             : statusLine("success", "Incident mode is not active.") })
         return true
     }
+
     const ownerGuard = await guard(interaction, { ownerOnly: true })
     if (!ownerGuard.ok) return ownerGuard.handled
     if (!config.incidentMode.enabled) {
         await safeReply(interaction, { content: statusLine("error", "Incident mode is disabled in Server Protection settings.") })
         return true
     }
+
     await interaction.deferReply({ ephemeral: true })
     const active = subcommand === "enable"
     const result = await setIncidentMode(interaction.guild, active, config, {
@@ -231,18 +245,26 @@ async function handleIncident(interaction, subcommand, config) {
     return true
 }
 
+function auditRecommendationText(audit) {
+    if (audit.recommendations.length) return audit.recommendations.slice(0, 8).map(item => `• ${item}`).join("\n")
+    if (audit.issues.length) return "Resolve the issues listed above before considering Server Protection fully configured."
+    return "No immediate changes are recommended."
+}
+
 async function handleAudit(interaction, config) {
     await interaction.deferReply({ ephemeral: true })
     const audit = await runSecurityHealthAudit(interaction.guild, config)
-    const embed = new EmbedBuilder()
-        .setColor(audit.score >= 80 ? COLORS.success : audit.score >= 60 ? COLORS.warning : COLORS.error)
-        .setTitle(`Security health • ${audit.score}/100 (${audit.grade})`)
-        .addFields(
-            { name: "Issues", value: audit.issues.length ? audit.issues.slice(0, 8).map(item => `• ${item}`).join("\n") : "No critical issues found." },
-            { name: "Recommendations", value: audit.recommendations.length ? audit.recommendations.slice(0, 8).map(item => `• ${item}`).join("\n") : "Current configuration is strong." },
-        )
-        .setFooter({ text: "CURSED • Server Protection" })
-        .setTimestamp()
+    const embed = securityEmbed(
+        `Security health • ${audit.score}/100 (${audit.grade})`,
+        null,
+        {
+            color: audit.score >= 80 ? COLORS.success : audit.score >= 60 ? COLORS.warning : COLORS.error,
+            fields: [
+                { name: "Issues", value: audit.issues.length ? audit.issues.slice(0, 8).map(item => `• ${item}`).join("\n") : "No critical issues found.", inline: false },
+                { name: "Recommendations", value: auditRecommendationText(audit), inline: false },
+            ],
+        }
+    )
     await safeReply(interaction, { embeds: [embed] })
     return true
 }
@@ -262,7 +284,7 @@ async function handleReport(interaction, config) {
     const content = format === "json" ? JSON.stringify(result.report, null, 2) : result.html
     const filename = `cursed-security-report-${Date.now()}.${format === "json" ? "json" : "html"}`
     await safeReply(interaction, {
-        content: statusLine("success", `Security report generated • ${result.report.incidentCount} incident(s).`),
+        content: statusLine("success", `Security report generated · ${result.report.incidentCount} incident(s).`),
         files: [new AttachmentBuilder(Buffer.from(content, "utf8"), { name: filename })],
     })
     return true
@@ -282,4 +304,9 @@ async function handleInteraction(interaction) {
     return false
 }
 
-module.exports = { commands, handleInteraction, COMMAND_NAMES }
+module.exports = {
+    commands,
+    handleInteraction,
+    COMMAND_NAMES,
+    auditRecommendationText,
+}
