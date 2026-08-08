@@ -1,19 +1,23 @@
 /**
- * Auto-moderation filters: anti-link, anti-invite, anti-spam.
+ * Auto-moderation pipeline: priority moderation, Message Shield, anti-invite,
+ * anti-link and legacy anti-spam fallback.
  *
- * Call `runAutoMod(message)` from the MessageCreate handler.
- * Returns true if the message was actioned (deleted / user muted) so the
- * caller can skip further processing.
+ * Reboot rule: one message should not be punished twice by overlapping spam
+ * engines. When Message Shield is enabled it owns rapid/repeated spam handling;
+ * the legacy anti-spam switch remains available as a fallback for servers that
+ * have not enabled Message Shield.
  */
 
 const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./serverConfig")
 const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config")
+const { getSecurityPhase3Config } = require("./securityPhase3Config")
 const { logAction } = require("./modlog")
 const { recordMessage, markMuted, isMuted, MUTE_DURATION_MS } = require("./antiSpam")
 const { handleLevelingMessage } = require("./leveling")
 const { runSecurityMessageShield } = require("./securityMessageShield")
 const { handlePriorityModerationCommand } = require("./priorityModerationCommands")
+const { statusLine } = require("./responseBuilder")
 const premiumCmd = require("../commands/premium")
 
 const LINK_REGEX = /https?:\/\/\S+|www\.\S+\.\S+/gi
@@ -27,8 +31,8 @@ const CHANNEL_CONTROL_COMMANDS = new Set([
 ])
 
 function queueLeveling(message) {
-    handleLevelingMessage(message).catch(err => {
-        console.error("Leveling message processing error:", err.message)
+    handleLevelingMessage(message).catch(error => {
+        console.error("Leveling message processing error:", error.message)
     })
 }
 
@@ -37,32 +41,43 @@ function canManageMessages(guild) {
 }
 
 async function safeDelete(message) {
-    try { await message.delete() } catch { /* ignore */ }
+    try {
+        await message.delete()
+        return true
+    } catch {
+        return false
+    }
+}
+
+async function safeDm(user, content) {
+    try {
+        await user.send(content)
+        return true
+    } catch {
+        return false
+    }
 }
 
 async function runAutoMod(message) {
     if (!message.guild) return false
 
-    // Staff moderation must remain available in ticket and other restricted
-    // channels. Only the small, permission-checked moderation prefix set is
-    // routed here; normal commands and AI still obey the channel allow-list.
-    const priorityModerationHandled = await handlePriorityModerationCommand(message).catch(err => {
-        console.error("Priority moderation command error:", err.message)
+    const priorityModerationHandled = await handlePriorityModerationCommand(message).catch(error => {
+        console.error("Priority moderation command error:", error.message)
         return false
     })
     if (priorityModerationHandled) return true
 
-    const securityActioned = await runSecurityMessageShield(message).catch(err => {
-        console.error("Security message shield error:", err.message)
+    const securityConfig = getSecurityPhase3Config(message.guild.id)
+    const messageShieldEnabled = securityConfig.enabled && securityConfig.messageShield.enabled
+    const securityActioned = await runSecurityMessageShield(message).catch(error => {
+        console.error("Security Message Shield error:", error.message)
         return false
     })
     if (securityActioned) return true
     if (message.author.bot) return false
 
     const normalizedContent = message.content.toLowerCase().trim()
-    if (CHANNEL_CONTROL_COMMANDS.has(normalizedContent)) {
-        return premiumCmd.handle(message)
-    }
+    if (CHANNEL_CONTROL_COMMANDS.has(normalizedContent)) return premiumCmd.handle(message)
 
     const { guild, member, author, content } = message
     const guildId = guild.id
@@ -93,12 +108,7 @@ async function runAutoMod(message) {
         INVITE_REGEX.lastIndex = 0
         if (INVITE_REGEX.test(content)) {
             if (canManageMessages(guild)) await safeDelete(message)
-            try {
-                await author.send(
-                    `🚫 **Invite links are not allowed** in **${guild.name}**. Your message was removed.`
-                ).catch(() => {})
-            } catch { /* DMs disabled */ }
-
+            await safeDm(author, `Your message in **${guild.name}** was removed because Discord invite links are not allowed.`)
             await logAction(guild, {
                 action: "ANTI_INVITE",
                 target,
@@ -111,15 +121,17 @@ async function runAutoMod(message) {
     }
 
     if (config.antiLink) {
-        const whitelist = config.linkWhitelist || []
+        const whitelist = Array.isArray(config.linkWhitelist) ? config.linkWhitelist : []
         LINK_REGEX.lastIndex = 0
         const matches = content.match(LINK_REGEX) || []
-
         const blockedLinks = matches.filter(link => {
             try {
                 const url = link.startsWith("http") ? link : `https://${link}`
-                const hostname = new URL(url).hostname.replace(/^www\./, "")
-                return !whitelist.some(allowed => hostname === allowed || hostname.endsWith(`.${allowed}`))
+                const hostname = new URL(url).hostname.replace(/^www\./, "").toLowerCase()
+                return !whitelist.some(allowedValue => {
+                    const allowed = String(allowedValue || "").toLowerCase().replace(/^www\./, "").trim()
+                    return allowed && (hostname === allowed || hostname.endsWith(`.${allowed}`))
+                })
             } catch {
                 return true
             }
@@ -127,16 +139,11 @@ async function runAutoMod(message) {
 
         if (blockedLinks.length > 0) {
             if (canManageMessages(guild)) await safeDelete(message)
-            try {
-                await author.send(
-                    `🔗 **Links are not allowed** in **${guild.name}**. Your message was removed.`
-                ).catch(() => {})
-            } catch { /* DMs disabled */ }
-
+            await safeDm(author, `Your message in **${guild.name}** was removed because links are restricted in this server.`)
             await logAction(guild, {
                 action: "ANTI_LINK",
                 target,
-                reason: "Posted a link",
+                reason: "Posted a restricted link",
                 extra: `Channel: <#${message.channel.id}>\nLinks: ${blockedLinks.slice(0, 3).join(", ")}`,
                 metadata: { channelId: message.channel.id, messageId: message.id, blockedLinks: blockedLinks.slice(0, 10) },
             })
@@ -144,23 +151,27 @@ async function runAutoMod(message) {
         }
     }
 
-    if (config.antiSpam) {
+    // Message Shield already owns spam-rate/repetition decisions when enabled.
+    // This prevents two independent engines from timing out the same member.
+    if (config.antiSpam && !messageShieldEnabled) {
         if (isMuted(guildId, userId)) {
             if (canManageMessages(guild)) await safeDelete(message)
             return true
         }
 
-        const { spam } = recordMessage(guildId, userId)
+        const { spam, count, threshold, windowMs } = recordMessage(guildId, userId)
         if (spam) {
             const muteDurationSec = MUTE_DURATION_MS / 1000
             if (canManageMessages(guild)) await safeDelete(message)
 
             const canTimeout = guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers) ?? false
-            if (canTimeout && member) {
+            let timedOut = false
+            if (canTimeout && member?.moderatable !== false) {
                 try {
-                    await member.timeout(MUTE_DURATION_MS, "Anti-spam: rapid message flood")
-                } catch (err) {
-                    console.error("Anti-spam timeout error:", err.message)
+                    await member.timeout(MUTE_DURATION_MS, "AutoMod: rapid message spam")
+                    timedOut = true
+                } catch (error) {
+                    console.error("Anti-spam timeout error:", error.message)
                 }
             }
 
@@ -168,24 +179,23 @@ async function runAutoMod(message) {
                 await logAction(guild, {
                     action: "UNMUTE",
                     target,
-                    reason: `Anti-spam timeout expired (${muteDurationSec}s)`,
+                    reason: `AutoMod timeout expired (${muteDurationSec}s)`,
                     source: "system",
                 })
             })
 
-            try {
-                await message.channel.send(
-                    `🚫 <@${userId}> has been muted for **${muteDurationSec} seconds** for spamming.`
-                ).catch(() => {})
-            } catch { /* ignore */ }
+            await message.channel.send({
+                content: statusLine("warning", `<@${userId}> was ${timedOut ? "timed out" : "rate-limited"} for rapid spam.`),
+                allowedMentions: { parse: [], users: [userId], roles: [], repliedUser: false },
+            }).catch(() => {})
 
             await logAction(guild, {
                 action: "ANTI_SPAM",
                 target,
                 reason: "Rapid message spam detected",
-                extra: `Muted for **${muteDurationSec} seconds**`,
-                durationMs: MUTE_DURATION_MS,
-                metadata: { channelId: message.channel.id, messageId: message.id },
+                extra: `${count}/${threshold} messages in ${Math.round(windowMs / 1000)}s. Response: ${timedOut ? `${muteDurationSec}s timeout` : "message removal"}.`,
+                durationMs: timedOut ? MUTE_DURATION_MS : null,
+                metadata: { channelId: message.channel.id, messageId: message.id, count, threshold, windowMs, timedOut },
             })
             return true
         }
