@@ -1,19 +1,20 @@
 /**
- * utils/responseBuilder.js
- * Shared presentation primitives for CURSED.
+ * Professional presentation primitives for CURSED.
  *
- * This module intentionally contains presentation only. It must never own
- * permissions, persistence, moderation decisions, cooldown state, or command
- * execution. Keeping those concerns separate lets the bot look consistent
- * without changing how any feature behaves.
+ * Presentation only. Permissions, persistence, moderation decisions, cooldowns
+ * and feature behavior belong elsewhere. Every serious CURSED system should be
+ * able to produce predictable output through this module.
  */
 
 const { EmbedBuilder } = require("discord.js")
+const { BRAND } = require("./productSystem")
 
 const COLORS = Object.freeze({
+    // Discord-native, restrained palette. Feature modules can still use an
+    // intentional accent, but status meaning is stable everywhere.
     primary: 0x5865F2,
     success: 0x57F287,
-    warning: 0xFEE75C,
+    warning: 0xF0B232,
     error: 0xED4245,
     info: 0x5865F2,
     security: 0xED4245,
@@ -31,8 +32,16 @@ const COLORS = Object.freeze({
     neutral: 0x2B2D31,
 })
 
-const FOOTER_TEXT = "CURSED"
+const FOOTER_TEXT = BRAND.name
 const SAFE_MENTIONS = Object.freeze({ parse: [], users: [], roles: [], repliedUser: false })
+const STATUS_ICONS = Object.freeze({
+    success: "✅",
+    error: "❌",
+    warning: "⚠️",
+    cooldown: "⏳",
+    security: "🛡️",
+    lock: "🔒",
+})
 
 function cleanText(value, max = 4000) {
     return String(value ?? "").trim().slice(0, max)
@@ -63,6 +72,7 @@ function buildEmbed({
     footer = FOOTER_TEXT,
     timestamp = false,
     thumbnail = null,
+    author = null,
 } = {}) {
     const embed = new EmbedBuilder().setColor(color)
     const safeTitle = cleanTitle(title)
@@ -74,55 +84,81 @@ function buildEmbed({
     if (safeFields.length) embed.addFields(safeFields)
     if (footer) embed.setFooter({ text: cleanText(footer, 2048) || FOOTER_TEXT })
     if (thumbnail) embed.setThumbnail(String(thumbnail))
+    if (author?.name) embed.setAuthor({ name: cleanText(author.name, 256), iconURL: author.iconURL || undefined })
     if (timestamp) embed.setTimestamp()
     return embed
 }
 
+function resultEmbed(state, {
+    title,
+    description,
+    fields = [],
+    footer,
+    timestamp = true,
+} = {}) {
+    const normalized = ["success", "warning", "error", "security", "info"].includes(state) ? state : "info"
+    const titles = {
+        success: "Success",
+        warning: "Attention required",
+        error: "Action failed",
+        security: "Server protection",
+        info: "Information",
+    }
+    const colors = {
+        success: COLORS.success,
+        warning: COLORS.warning,
+        error: COLORS.error,
+        security: COLORS.security,
+        info: COLORS.info,
+    }
+    return buildEmbed({
+        title: title || titles[normalized],
+        description,
+        color: colors[normalized],
+        fields,
+        footer,
+        timestamp,
+    })
+}
+
 function success(description, { title = "Success", fields = [], footer } = {}) {
-    return buildEmbed({ title, description, color: COLORS.success, fields, footer, timestamp: true })
+    return resultEmbed("success", { title, description, fields, footer })
 }
 
 function error(description, { title = "Action failed", fields = [], footer } = {}) {
-    return buildEmbed({ title, description, color: COLORS.error, fields, footer, timestamp: true })
+    return resultEmbed("error", { title, description, fields, footer })
 }
 
-function warning(description, { title = "Warning", fields = [], footer } = {}) {
-    return buildEmbed({ title, description, color: COLORS.warning, fields, footer, timestamp: true })
+function warning(description, { title = "Attention required", fields = [], footer } = {}) {
+    return resultEmbed("warning", { title, description, fields, footer })
 }
 
 function info(description, { title = "Information", fields = [], footer, timestamp = false } = {}) {
-    return buildEmbed({ title, description, color: COLORS.info, fields, footer, timestamp })
+    return resultEmbed("info", { title, description, fields, footer, timestamp })
 }
 
-function security(title, description, { fields = [], footer = "CURSED • Server Protection", color = COLORS.security } = {}) {
+function security(title, description, { fields = [], footer = BRAND.securityFooter, color = COLORS.security } = {}) {
     return buildEmbed({ title, description, color, fields, footer, timestamp: true })
 }
 
-function moderation(title, description, { fields = [], footer = "CURSED • Moderation", color = COLORS.moderation } = {}) {
+function moderation(title, description, { fields = [], footer = BRAND.moderationFooter, color = COLORS.moderation } = {}) {
     return buildEmbed({ title, description, color, fields, footer, timestamp: true })
 }
 
-function economy(title, description, { fields = [], footer } = {}) {
-    return buildEmbed({ title, description, color: COLORS.economy, fields, footer, timestamp: true })
+function economy(title, description, { fields = [], footer = "CURSED • Economy", timestamp = true } = {}) {
+    return buildEmbed({ title, description, color: COLORS.economy, fields, footer, timestamp })
 }
 
-function fun(title, description, { fields = [], footer } = {}) {
+function fun(title, description, { fields = [], footer = "CURSED" } = {}) {
     return buildEmbed({ title, description, color: COLORS.fun, fields, footer })
 }
 
-function profile(title, description, { fields = [], footer } = {}) {
-    return buildEmbed({ title, description, color: COLORS.profile, fields, footer })
+function profile(title, description, { fields = [], footer = "CURSED • Profile", thumbnail = null } = {}) {
+    return buildEmbed({ title, description, color: COLORS.profile, fields, footer, thumbnail })
 }
 
 function statusLine(type, message) {
-    const icons = {
-        success: "✅",
-        error: "❌",
-        warning: "⚠️",
-        cooldown: "⏳",
-        security: "🛡️",
-    }
-    const icon = icons[type] || ""
+    const icon = STATUS_ICONS[type] || ""
     const text = cleanText(message, 1900)
     return [icon, text].filter(Boolean).join(" ")
 }
@@ -135,7 +171,46 @@ function cooldownMessage(name, seconds, command = "") {
 }
 
 function permissionDenied(permission = "Administrator") {
-    return statusLine("error", `Missing permission. You need **${cleanText(permission, 120)}** to use this command.`)
+    return statusLine("error", `Missing permission: **${cleanText(permission, 120)}**.`)
+}
+
+function botPermissionMissing(permission) {
+    return statusLine("error", `I need **${cleanText(permission, 120)}** to do that.`)
+}
+
+function commandDisabled() {
+    return statusLine("error", "This command is disabled in this server.")
+}
+
+function invalidUsage(usage) {
+    return statusLine("warning", `Usage: \`${cleanText(usage, 240)}\``)
+}
+
+function caseSuffix(caseRecord) {
+    return caseRecord?.caseNumber ? ` • Case #${caseRecord.caseNumber}` : ""
+}
+
+function safePayload(payload = {}) {
+    if (typeof payload === "string") {
+        return { content: cleanText(payload, 2000), allowedMentions: SAFE_MENTIONS }
+    }
+    return {
+        ...payload,
+        allowedMentions: { ...SAFE_MENTIONS, ...(payload.allowedMentions || {}) },
+    }
+}
+
+async function replyInteraction(interaction, payload, { ephemeral = true } = {}) {
+    const body = safePayload(typeof payload === "string" ? { content: payload } : payload)
+    if (ephemeral && body.ephemeral === undefined) body.ephemeral = true
+
+    if (interaction.deferred) {
+        // editReply cannot accept the ephemeral flag after acknowledgement.
+        const { ephemeral: _ephemeral, ...editBody } = body
+        return interaction.editReply(editBody)
+    }
+    if (interaction.replied) return interaction.followUp(body)
+    return interaction.reply(body)
 }
 
 async function sendEmbed(message, embed) {
@@ -150,9 +225,11 @@ module.exports = {
     COLORS,
     FOOTER_TEXT,
     SAFE_MENTIONS,
+    STATUS_ICONS,
     cleanText,
     cleanFields,
     buildEmbed,
+    resultEmbed,
     success,
     error,
     warning,
@@ -165,6 +242,12 @@ module.exports = {
     statusLine,
     cooldownMessage,
     permissionDenied,
+    botPermissionMissing,
+    commandDisabled,
+    invalidUsage,
+    caseSuffix,
+    safePayload,
+    replyInteraction,
     sendEmbed,
     sendSafe,
 }
