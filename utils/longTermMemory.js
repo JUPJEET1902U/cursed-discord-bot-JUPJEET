@@ -49,6 +49,59 @@ try {
 }
 
 const memoryFallback = new Map()
+const fallbackLastAccess = new Map()
+
+const MAX_FALLBACK_USERS = 1000
+const FALLBACK_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
+const CENTRALIZED_CLEANUP_INTERVAL_MS = 15 * 60 * 1000 // 15 minutes
+
+async function syncFallbackToMongo() {
+    if (!isMongoConnected() || memoryFallback.size === 0) return
+    for (const [userId, list] of memoryFallback.entries()) {
+        const unsaved = list.filter(item => item._unsaved)
+        if (!unsaved.length) continue
+        for (const entry of unsaved) {
+            try {
+                const { _unsaved, ...cleanEntry } = entry
+                await new MemoryModel(cleanEntry).save()
+                entry._unsaved = false
+            } catch (err) {
+                log.error(`Failed to sync fallback memory for ${userId}: ${err.message}`)
+            }
+        }
+    }
+}
+
+function runLongTermMemoryCleanup() {
+    const now = Date.now()
+    if (isMongoConnected()) {
+        syncFallbackToMongo().catch(err => log.error(`Fallback sync error: ${err.message}`))
+
+        for (const [userId, lastAccess] of fallbackLastAccess.entries()) {
+            const list = memoryFallback.get(userId) || []
+            const hasUnsaved = list.some(item => item._unsaved)
+            if (!hasUnsaved && now - lastAccess > FALLBACK_TTL_MS) {
+                memoryFallback.delete(userId)
+                fallbackLastAccess.delete(userId)
+            }
+        }
+
+        if (memoryFallback.size > MAX_FALLBACK_USERS) {
+            const sorted = Array.from(fallbackLastAccess.entries())
+                .filter(([userId]) => !(memoryFallback.get(userId) || []).some(item => item._unsaved))
+                .sort((a, b) => a[1] - b[1])
+            const excess = memoryFallback.size - MAX_FALLBACK_USERS
+            for (let i = 0; i < Math.min(excess, sorted.length); i++) {
+                const userId = sorted[i][0]
+                memoryFallback.delete(userId)
+                fallbackLastAccess.delete(userId)
+            }
+        }
+    }
+}
+
+const cleanupInterval = setInterval(runLongTermMemoryCleanup, CENTRALIZED_CLEANUP_INTERVAL_MS)
+cleanupInterval.unref?.()
 
 function isMongoConnected() {
     return mongoose.connection.readyState === 1
@@ -59,9 +112,11 @@ function activeQuery(userId) {
 }
 
 async function getUserLongTermMemories(userId, options = {}) {
+    fallbackLastAccess.set(userId, Date.now())
     const includeInactive = options.includeInactive === true
     if (isMongoConnected()) {
         try {
+            syncFallbackToMongo().catch(() => {})
             const query = includeInactive ? { userId } : activeQuery(userId)
             return await MemoryModel.find(query)
                 .sort({ importance: -1, lastConfirmedAt: -1, extractedAt: -1 })
@@ -194,6 +249,7 @@ async function addLongTermMemory(userId, memory) {
         nearDuplicate.memoryKey = entry.memoryKey
         nearDuplicate.lastConfirmedAt = entry.lastConfirmedAt
         nearDuplicate.active = true
+        nearDuplicate._unsaved = true
     } else {
         for (const existing of active) {
             if (existing.memoryKey === entry.memoryKey) {
@@ -202,6 +258,7 @@ async function addLongTermMemory(userId, memory) {
                 entry.source = "correction"
             }
         }
+        entry._unsaved = true
         list.push(entry)
         if (list.length > 100) list.splice(0, list.length - 100)
     }

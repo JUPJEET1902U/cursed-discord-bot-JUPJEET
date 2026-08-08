@@ -61,6 +61,88 @@ let initialized = false
 let flushPromise = null
 let retryTimer = null
 
+// Cache & Snapshot Lifecycle Constants
+const MAX_SNAPSHOT_CACHE_SIZE = 1000
+const SNAPSHOT_TTL_MS = 30 * 60 * 1000 // 30 minutes
+const MAX_ECONOMY_CACHE_SIZE = 1000
+const ECONOMY_CACHE_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
+const HIGH_QUEUE_PRESSURE_THRESHOLD = 100
+const CENTRALIZED_CLEANUP_INTERVAL_MS = 15 * 60 * 1000 // 15 minutes
+
+const cacheLastAccess = new Map()
+const snapshotLastAccess = new Map()
+let backoffDelayMs = 5000
+const MAX_BACKOFF_DELAY_MS = 60000
+
+for (const userId of Object.keys(economyCache)) {
+    cacheLastAccess.set(userId, Date.now())
+    snapshotLastAccess.set(userId, Date.now())
+}
+
+function updateSnapshot(userId, user) {
+    knownSnapshots.set(userId, serialize(user))
+    snapshotLastAccess.set(userId, Date.now())
+}
+
+function getSnapshot(userId) {
+    if (knownSnapshots.has(userId)) {
+        snapshotLastAccess.set(userId, Date.now())
+        return knownSnapshots.get(userId)
+    }
+    return undefined
+}
+
+function deleteSnapshot(userId) {
+    knownSnapshots.delete(userId)
+    snapshotLastAccess.delete(userId)
+}
+
+function runCentralizedCacheCleanup() {
+    const now = Date.now()
+
+    // 1. Snapshot eviction (safe derived data)
+    for (const [userId, lastAccess] of snapshotLastAccess.entries()) {
+        if (now - lastAccess > SNAPSHOT_TTL_MS) {
+            deleteSnapshot(userId)
+        }
+    }
+    if (knownSnapshots.size > MAX_SNAPSHOT_CACHE_SIZE) {
+        const sorted = Array.from(snapshotLastAccess.entries()).sort((a, b) => a[1] - b[1])
+        const toEvict = sorted.slice(0, knownSnapshots.size - MAX_SNAPSHOT_CACHE_SIZE)
+        for (const [userId] of toEvict) {
+            deleteSnapshot(userId)
+        }
+    }
+
+    // 2. Economy cache eviction (ONLY if persisted and Mongo initialized)
+    if (initialized || isMongoConnected()) {
+        for (const [userId, lastAccess] of cacheLastAccess.entries()) {
+            if (!pendingWrites.has(userId) && now - lastAccess > ECONOMY_CACHE_TTL_MS) {
+                delete economyCache[userId]
+                cacheLastAccess.delete(userId)
+            }
+        }
+        if (Object.keys(economyCache).length > MAX_ECONOMY_CACHE_SIZE) {
+            const sorted = Array.from(cacheLastAccess.entries())
+                .filter(([userId]) => !pendingWrites.has(userId))
+                .sort((a, b) => a[1] - b[1])
+            const excess = Object.keys(economyCache).length - MAX_ECONOMY_CACHE_SIZE
+            for (let i = 0; i < Math.min(excess, sorted.length); i++) {
+                const userId = sorted[i][0]
+                delete economyCache[userId]
+                cacheLastAccess.delete(userId)
+            }
+        }
+    }
+}
+
+const cleanupInterval = setInterval(runCentralizedCacheCleanup, CENTRALIZED_CLEANUP_INTERVAL_MS)
+cleanupInterval.unref?.()
+
+function isMongoConnected() {
+    return mongoose.connection.readyState === 1
+}
+
 async function ensureMongoConnected() {
     if (mongoose.connection.readyState === 1) return true
     if (!process.env.MONGO_URI) return false
@@ -105,10 +187,16 @@ function scheduleRetry() {
     retryTimer = setTimeout(() => {
         retryTimer = null
         initializeEconomyStore()
-            .then(ok => { if (ok) return flushEconomy() })
+            .then(ok => {
+                if (ok) {
+                    backoffDelayMs = 5000
+                    return flushEconomy()
+                }
+            })
             .catch(err => console.error("Economy MongoDB retry error:", err.message))
-    }, 30000)
+    }, backoffDelayMs)
     retryTimer.unref?.()
+    backoffDelayMs = Math.min(MAX_BACKOFF_DELAY_MS, backoffDelayMs * 2)
 }
 
 async function initializeEconomyStore() {
@@ -146,12 +234,10 @@ async function initializeEconomyStore() {
         for (const record of records) {
             const userId = record.userId
             const mongoData = clone(record.data || {})
-            // A command may have changed the in-memory copy while MongoDB was
-            // connecting. In that case, keep the newer local state queued for
-            // persistence instead of overwriting it with the startup snapshot.
             if (!pendingWrites.has(userId)) {
                 economyCache[userId] = mongoData
-                knownSnapshots.set(userId, serialize(mongoData))
+                updateSnapshot(userId, mongoData)
+                cacheLastAccess.set(userId, Date.now())
             }
         }
 
@@ -176,14 +262,21 @@ function loadEconomy() {
 }
 
 function collectChangedUsers(data) {
-    for (const [userId, user] of Object.entries(data || economyCache)) {
+    const source = data || economyCache
+    for (const [userId, user] of Object.entries(source)) {
         if (!user || typeof user !== "object") continue
+        cacheLastAccess.set(userId, Date.now())
 
         const snapshot = serialize(user)
-        if (snapshot !== knownSnapshots.get(userId)) {
+        if (snapshot !== getSnapshot(userId)) {
             pendingWrites.set(userId, clone(user))
-            knownSnapshots.set(userId, snapshot)
+            updateSnapshot(userId, snapshot)
         }
+    }
+
+    if (pendingWrites.size >= HIGH_QUEUE_PRESSURE_THRESHOLD) {
+        console.warn(`[Economy] High pending writes queue pressure: ${pendingWrites.size} items queued`)
+        flushEconomy().catch(err => console.error("Economy high pressure flush error:", err.message))
     }
 }
 

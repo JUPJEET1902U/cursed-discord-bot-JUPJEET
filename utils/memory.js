@@ -56,6 +56,88 @@ let initialized = false
 let flushPromise = null
 let retryTimer = null
 
+// Cache & Snapshot Lifecycle Constants
+const MAX_SNAPSHOT_CACHE_SIZE = 1000
+const SNAPSHOT_TTL_MS = 30 * 60 * 1000 // 30 minutes
+const MAX_MEMORY_CACHE_SIZE = 1000
+const MEMORY_CACHE_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
+const HIGH_QUEUE_PRESSURE_THRESHOLD = 100
+const CENTRALIZED_CLEANUP_INTERVAL_MS = 15 * 60 * 1000 // 15 minutes
+
+const cacheLastAccess = new Map()
+const snapshotLastAccess = new Map()
+let backoffDelayMs = 5000
+const MAX_BACKOFF_DELAY_MS = 60000
+
+for (const key of Object.keys(memoryCache)) {
+    cacheLastAccess.set(key, Date.now())
+    snapshotLastAccess.set(key, Date.now())
+}
+
+function updateSnapshot(key, history) {
+    knownSnapshots.set(key, serialize(history))
+    snapshotLastAccess.set(key, Date.now())
+}
+
+function getSnapshot(key) {
+    if (knownSnapshots.has(key)) {
+        snapshotLastAccess.set(key, Date.now())
+        return knownSnapshots.get(key)
+    }
+    return undefined
+}
+
+function deleteSnapshot(key) {
+    knownSnapshots.delete(key)
+    snapshotLastAccess.delete(key)
+}
+
+function runCentralizedCacheCleanup() {
+    const now = Date.now()
+
+    // 1. Snapshot eviction (safe derived data)
+    for (const [key, lastAccess] of snapshotLastAccess.entries()) {
+        if (now - lastAccess > SNAPSHOT_TTL_MS) {
+            deleteSnapshot(key)
+        }
+    }
+    if (knownSnapshots.size > MAX_SNAPSHOT_CACHE_SIZE) {
+        const sorted = Array.from(snapshotLastAccess.entries()).sort((a, b) => a[1] - b[1])
+        const toEvict = sorted.slice(0, knownSnapshots.size - MAX_SNAPSHOT_CACHE_SIZE)
+        for (const [key] of toEvict) {
+            deleteSnapshot(key)
+        }
+    }
+
+    // 2. Memory cache eviction (ONLY if persisted and Mongo initialized)
+    if (initialized || isMongoConnected()) {
+        for (const [key, lastAccess] of cacheLastAccess.entries()) {
+            if (!pendingWrites.has(key) && now - lastAccess > MEMORY_CACHE_TTL_MS) {
+                delete memoryCache[key]
+                cacheLastAccess.delete(key)
+            }
+        }
+        if (Object.keys(memoryCache).length > MAX_MEMORY_CACHE_SIZE) {
+            const sorted = Array.from(cacheLastAccess.entries())
+                .filter(([key]) => !pendingWrites.has(key))
+                .sort((a, b) => a[1] - b[1])
+            const excess = Object.keys(memoryCache).length - MAX_MEMORY_CACHE_SIZE
+            for (let i = 0; i < Math.min(excess, sorted.length); i++) {
+                const key = sorted[i][0]
+                delete memoryCache[key]
+                cacheLastAccess.delete(key)
+            }
+        }
+    }
+}
+
+const cleanupInterval = setInterval(runCentralizedCacheCleanup, CENTRALIZED_CLEANUP_INTERVAL_MS)
+cleanupInterval.unref?.()
+
+function isMongoConnected() {
+    return mongoose.connection.readyState === 1
+}
+
 async function ensureMongoConnected() {
     if (mongoose.connection.readyState === 1) return true
     if (!process.env.MONGO_URI) return false
@@ -100,10 +182,16 @@ function scheduleRetry() {
     retryTimer = setTimeout(() => {
         retryTimer = null
         initializeMemoryStore()
-            .then(ok => { if (ok) return flushMemory() })
+            .then(ok => {
+                if (ok) {
+                    backoffDelayMs = 5000
+                    return flushMemory()
+                }
+            })
             .catch(err => console.error("Short-term memory MongoDB retry error:", err.message))
-    }, 30000)
+    }, backoffDelayMs)
     retryTimer.unref?.()
+    backoffDelayMs = Math.min(MAX_BACKOFF_DELAY_MS, backoffDelayMs * 2)
 }
 
 async function initializeMemoryStore() {
@@ -141,19 +229,15 @@ async function initializeMemoryStore() {
         for (const record of records) {
             const key = record.memoryKey
             const mongoMessages = clone(record.messages)
-            // A chat or !clearmemory command may update the cache while MongoDB
-            // is connecting. Keep that newer local operation queued instead of
-            // replacing it with an older startup snapshot.
             if (!pendingWrites.has(key)) {
                 if (Array.isArray(mongoMessages) && mongoMessages.length > 0) {
                     memoryCache[key] = mongoMessages
-                    knownSnapshots.set(key, serialize(mongoMessages))
+                    updateSnapshot(key, mongoMessages)
+                    cacheLastAccess.set(key, Date.now())
                 } else {
-                    // An empty MongoDB history is a tombstone. It keeps stale
-                    // memory.json data from being reinserted on a later restart
-                    // while remaining invisible to all existing memory callers.
                     delete memoryCache[key]
-                    knownSnapshots.delete(key)
+                    cacheLastAccess.delete(key)
+                    deleteSnapshot(key)
                 }
             }
         }
@@ -183,21 +267,32 @@ function collectChangedMemory(mem) {
     const sourceKeys = new Set(Object.keys(source))
 
     for (const [key, history] of Object.entries(source)) {
-        if (source !== memoryCache) memoryCache[key] = clone(history)
+        if (source !== memoryCache) {
+            memoryCache[key] = clone(history)
+            cacheLastAccess.set(key, Date.now())
+        } else {
+            cacheLastAccess.set(key, Date.now())
+        }
 
         const snapshot = serialize(history)
-        if (snapshot !== knownSnapshots.get(key)) {
+        if (snapshot !== getSnapshot(key)) {
             pendingWrites.set(key, clone(history))
-            knownSnapshots.set(key, snapshot)
+            updateSnapshot(key, snapshot)
         }
     }
 
     for (const key of Array.from(knownSnapshots.keys())) {
         if (!sourceKeys.has(key)) {
             delete memoryCache[key]
+            cacheLastAccess.delete(key)
             pendingWrites.set(key, DELETE_MEMORY)
-            knownSnapshots.delete(key)
+            deleteSnapshot(key)
         }
+    }
+
+    if (pendingWrites.size >= HIGH_QUEUE_PRESSURE_THRESHOLD) {
+        console.warn(`[Memory] High pending writes queue pressure: ${pendingWrites.size} items queued`)
+        flushMemory().catch(err => console.error("Memory high pressure flush error:", err.message))
     }
 }
 
@@ -228,18 +323,22 @@ async function flushMemory() {
 
             try {
                 await ShortTermMemory.bulkWrite(
-                    batch.map(([memoryKey, messages]) => ({
-                        updateOne: {
-                            filter: { memoryKey },
-                            update: {
-                                $set: {
-                                    memoryKey,
-                                    messages: messages === DELETE_MEMORY ? [] : clone(messages),
+                    batch.map(([memoryKey, messages]) => (
+                        messages === DELETE_MEMORY
+                            ? { deleteOne: { filter: { memoryKey } } }
+                            : {
+                                updateOne: {
+                                    filter: { memoryKey },
+                                    update: {
+                                        $set: {
+                                            memoryKey,
+                                            messages: clone(messages),
+                                        },
+                                    },
+                                    upsert: true,
                                 },
-                            },
-                            upsert: true,
-                        },
-                    })),
+                            }
+                    )),
                     { ordered: false }
                 )
             } catch (err) {
