@@ -5,6 +5,7 @@ const { getModerationConfig } = require("./moderationConfig")
 const { getSecurityPhase3Config } = require("./securityPhase3Config")
 const { getWelcome } = require("./welcome")
 const { getAutorole } = require("./autorole")
+const { getAdvancedAutorole } = require("./autoroleAdvanced")
 const { getTicketConfig } = require("./ticketConfig")
 const { getGuildPrefix } = require("./prefix")
 const { getStatus: getAIStatus } = require("./ai")
@@ -57,6 +58,26 @@ async function optionalAsync(load, fallback) {
     }
 }
 
+async function getPowerModuleCounts(guildId) {
+    if (mongoose.connection.readyState !== 1) {
+        return { responders: 0, reactions: 0, customCommands: 0, giveaways: 0, reactionRolePanels: 0 }
+    }
+    const [responders, reactions, customCommands, giveaways, reactionRolePanels] = await Promise.all([
+        optionalAsync(() => require("./automationStore").listResponderRules(guildId), []),
+        optionalAsync(() => require("./automationStore").listReactionRules(guildId), []),
+        optionalAsync(() => require("./customCommandStore").listCustomCommands(guildId), []),
+        optionalAsync(() => require("./giveawayService").listGiveaways(guildId, { activeOnly: true, limit: 50 }), []),
+        optionalAsync(() => require("./reactionRoleService").listPanels(guildId), []),
+    ])
+    return {
+        responders: responders.length,
+        reactions: reactions.length,
+        customCommands: customCommands.length,
+        giveaways: giveaways.length,
+        reactionRolePanels: reactionRolePanels.length,
+    }
+}
+
 async function getSystemStates(guildId, permissionReport) {
     const raw = getServerConfig(guildId).config
     const control = normalizeControlConfig(raw)
@@ -64,9 +85,10 @@ async function getSystemStates(guildId, permissionReport) {
     const security = getSecurityPhase3Config(guildId)
     const welcome = getWelcome(guildId)
     const autorole = getAutorole(guildId)
+    const advancedAutorole = getAdvancedAutorole(guildId)
     const tickets = getTicketConfig(guildId)
 
-    const [leveling, stats] = await Promise.all([
+    const [leveling, stats, power] = await Promise.all([
         optionalAsync(
             () => require("./leveling").getLevelingConfig(guildId, { fresh: true }),
             { enabled: false, levelUpChannelId: null }
@@ -75,6 +97,7 @@ async function getSystemStates(guildId, permissionReport) {
             () => require("./activityTracker").getStatsConfig(guildId, { fresh: true }),
             { enabled: false }
         ),
+        getPowerModuleCounts(guildId),
     ])
 
     const ai = providerState()
@@ -107,9 +130,33 @@ async function getSystemStates(guildId, permissionReport) {
     else if (!permissionReport.protection.missingLabels.includes("Manage Channels")) systems.push(state("Tickets", STATE.READY, "Enabled"))
     else systems.push(state("Tickets", STATE.ATTENTION, "Manage Channels is required"))
 
-    if (!autorole.autoroleId) systems.push(state("Autorole", STATE.DISABLED, "Not configured"))
-    else if (!permissionReport.protection.missingLabels.includes("Manage Roles")) systems.push(state("Autorole", STATE.READY, "Configured"))
-    else systems.push(state("Autorole", STATE.ATTENTION, "Manage Roles is required"))
+    const autoroleCount = new Set([
+        autorole.autoroleId,
+        ...advancedAutorole.humanRoleIds,
+        ...advancedAutorole.botRoleIds,
+    ].filter(Boolean)).size
+    if (!advancedAutorole.enabled || !autoroleCount) systems.push(state("Autorole", STATE.DISABLED, autoroleCount ? "Disabled; role sets preserved" : "Not configured"))
+    else if (permissionReport.protection.missingLabels.includes("Manage Roles")) systems.push(state("Autorole", STATE.ATTENTION, "Manage Roles is required"))
+    else systems.push(state("Autorole", STATE.READY, `${autoroleCount} configured role${autoroleCount === 1 ? "" : "s"}`))
+
+    const automationCount = power.responders + power.reactions + power.customCommands
+    systems.push(state(
+        "Automation",
+        automationCount ? STATE.READY : STATE.DISABLED,
+        automationCount
+            ? `${power.responders} responders · ${power.reactions} reactions · ${power.customCommands} custom commands`
+            : "No rules configured"
+    ))
+
+    if (power.reactionRolePanels && permissionReport.protection.missingLabels.includes("Manage Roles")) {
+        systems.push(state("Reaction roles", STATE.ATTENTION, "Manage Roles is required"))
+    } else {
+        systems.push(state(
+            "Community tools",
+            power.reactionRolePanels || power.giveaways ? STATE.READY : STATE.DISABLED,
+            `${power.reactionRolePanels} role panels · ${power.giveaways} active giveaways`
+        ))
+    }
 
     if (!leveling.enabled) systems.push(state("Leveling", STATE.DISABLED, "Not enabled"))
     else if (!leveling.levelUpChannelId) systems.push(state("Leveling", STATE.ATTENTION, "Enabled without a level-up channel"))
@@ -117,7 +164,7 @@ async function getSystemStates(guildId, permissionReport) {
 
     systems.push(state("Activity statistics", stats.enabled ? STATE.READY : STATE.DISABLED, stats.enabled ? "Privacy-safe tracking enabled" : "Not enabled"))
 
-    return { systems, ai, control, moderation, security, welcome, autorole, tickets, leveling, stats }
+    return { systems, ai, control, moderation, security, welcome, autorole, advancedAutorole, tickets, leveling, stats, power }
 }
 
 function recommendations({ channelReport, permissionReport, systems, ai }) {
@@ -180,6 +227,7 @@ async function buildGuildHealth(guild, channel) {
         channelReport,
         systems: systemState.systems,
         ai: systemState.ai,
+        power: systemState.power,
         recommendations: issues,
     }
 }
@@ -193,6 +241,7 @@ module.exports = {
     STATE,
     mongoState,
     providerState,
+    getPowerModuleCounts,
     getSystemStates,
     recommendations,
     buildGuildHealth,
