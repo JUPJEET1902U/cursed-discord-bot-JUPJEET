@@ -7,6 +7,7 @@ const { getEquipped } = require("../utils/shop")
 const { getLevelingConfig, getMemberRank } = require("../utils/leveling")
 const { getLevelProgress, buildProgressBar } = require("../utils/levelingMath")
 const { sanitizeName } = require("../utils/sanitizer")
+const { getGuildPrefix } = require("../utils/prefix")
 const {
     profile: profileEmbed,
     info,
@@ -20,6 +21,7 @@ async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
+    const prefix = message.guild ? getGuildPrefix(message.guild.id) : "c!"
 
     if (msgLower.startsWith("!personality")) {
         const type = message.content.split(" ")[1]?.toLowerCase()
@@ -31,7 +33,7 @@ async function handle(message) {
                 fields: [
                     { name: "Current", value: current, inline: true },
                     { name: "Available", value: formatPersonalityList().slice(0, 1024), inline: false },
-                    { name: "Usage", value: "`!personality [type]` · `!personality reset`", inline: false },
+                    { name: "Usage", value: `\`${prefix}personality <type>\` · \`${prefix}personality reset\``, inline: false },
                 ],
                 footer: "CURSED • AI",
             }))
@@ -47,7 +49,10 @@ async function handle(message) {
         if (!VALID_PERSONALITIES.includes(type)) {
             await sendEmbed(message, info("Choose one of the available personality modes.", {
                 title: "Unknown personality",
-                fields: [{ name: "Available", value: formatPersonalityList().slice(0, 1024), inline: false }],
+                fields: [
+                    { name: "Available", value: formatPersonalityList().slice(0, 1024), inline: false },
+                    { name: "Usage", value: `\`${prefix}personality <type>\``, inline: false },
+                ],
                 footer: "CURSED • AI",
             }))
             return true
@@ -63,7 +68,7 @@ async function handle(message) {
     if (msgLower.startsWith("!setprofile")) {
         const personality = message.content.slice(11).trim()
         if (!personality) {
-            await sendSafe(message, invalidUsage("!setprofile [your AI preference]"))
+            await sendSafe(message, invalidUsage(`${prefix}setprofile <your AI preference>`))
             return true
         }
         if (personality.length > 200) {
