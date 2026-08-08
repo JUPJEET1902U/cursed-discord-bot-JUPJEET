@@ -1,53 +1,75 @@
 /**
- * commands/economy-advanced.js
- * Advanced economy features: work, crime, heist, invest, business, factory, bank (Phase 6)
+ * Advanced economy: work, crime, heist, investments, banking, businesses and factories.
  */
 
-const { getUser, saveEconomy, addXP, incrementStat, updateQuestProgress } = require("../utils/economy")
+const { getUser, saveEconomy, addXP, incrementStat } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
-const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName } = require("../utils/sanitizer")
-const logger = require("../utils/logger")
-const log = logger.child("EconomyAdvanced")
+const {
+    economy: economyEmbed,
+    statusLine,
+    cooldownMessage,
+    invalidUsage,
+    sendEmbed,
+    sendSafe,
+} = require("../utils/responseBuilder")
 
 const WORK_JOBS = [
-    { name: "Software Developer", emoji: "💻", min: 80,  max: 200 },
-    { name: "Pizza Delivery",     emoji: "🍕", min: 40,  max: 100 },
-    { name: "Street Performer",   emoji: "🎸", min: 20,  max: 150 },
-    { name: "Meme Creator",       emoji: "😂", min: 50,  max: 180 },
-    { name: "Discord Moderator",  emoji: "🛡️", min: 10,  max: 50  },
-    { name: "Crypto Trader",      emoji: "📈", min: 0,   max: 300 },
-    { name: "Twitch Streamer",    emoji: "🎮", min: 30,  max: 250 },
-    { name: "Bot Developer",      emoji: "🤖", min: 100, max: 220 },
+    { name: "Software Developer", min: 80, max: 200 },
+    { name: "Pizza Delivery", min: 40, max: 100 },
+    { name: "Street Performer", min: 20, max: 150 },
+    { name: "Meme Creator", min: 50, max: 180 },
+    { name: "Discord Moderator", min: 10, max: 50 },
+    { name: "Crypto Trader", min: 0, max: 300 },
+    { name: "Twitch Streamer", min: 30, max: 250 },
+    { name: "Bot Developer", min: 100, max: 220 },
 ]
 
 const CRIME_OUTCOMES = [
-    { name: "pickpocketing",    successRate: 0.6, reward: [50, 150],  penalty: [30, 80]  },
-    { name: "hacking",          successRate: 0.4, reward: [100, 300], penalty: [50, 150] },
-    { name: "art forgery",      successRate: 0.5, reward: [80, 200],  penalty: [40, 100] },
-    { name: "smuggling memes",  successRate: 0.7, reward: [40, 120],  penalty: [20, 60]  },
-    { name: "casino cheating",  successRate: 0.35,reward: [150, 400], penalty: [80, 200] },
+    { name: "pickpocketing", successRate: 0.6, reward: [50, 150], penalty: [30, 80] },
+    { name: "hacking", successRate: 0.4, reward: [100, 300], penalty: [50, 150] },
+    { name: "art forgery", successRate: 0.5, reward: [80, 200], penalty: [40, 100] },
+    { name: "smuggling memes", successRate: 0.7, reward: [40, 120], penalty: [20, 60] },
+    { name: "casino cheating", successRate: 0.35, reward: [150, 400], penalty: [80, 200] },
 ]
+
+function formatCoins(value) {
+    return Math.max(0, Number(value) || 0).toLocaleString("en-US")
+}
+
+function randomBetween([min, max]) {
+    return Math.floor(Math.random() * (max - min + 1)) + min
+}
+
+function remainingText(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0))
+    const hours = Math.floor(total / 3600)
+    const minutes = Math.floor((total % 3600) / 60)
+    const secs = total % 60
+    if (hours) return `${hours}h ${minutes}m`
+    if (minutes) return `${minutes}m ${secs}s`
+    return `${secs}s`
+}
+
+function economyResult(title, fields, description = null) {
+    return economyEmbed(title, description, { fields })
+}
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-    // ── !work ──────────────────────────────────────────────────────────────────
     if (msgLower === "!work") {
-        const cd = checkCooldown(userId, "work", 60 * 60 * 1000) // 1 hour
+        const cd = checkCooldown(userId, "work", 60 * 60 * 1000)
         if (!cd.ok) {
-            const mins = Math.floor(cd.remaining / 60)
-            const secs = cd.remaining % 60
-            await createSafeMessage(message.channel, `⏳ **${senderName}**, you're still recovering from work! Come back in **${mins}m ${secs}s**.`)
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!work"))
             return true
         }
 
         const job = WORK_JOBS[Math.floor(Math.random() * WORK_JOBS.length)]
-        const earned = Math.floor(Math.random() * (job.max - job.min + 1)) + job.min
+        const earned = randomBetween([job.min, job.max])
         const xpEarned = Math.floor(earned / 10)
-
         const { data, user } = getUser(userId, senderName)
         user.coins += earned
         user.stats = user.stats || {}
@@ -56,108 +78,106 @@ async function handle(message) {
         addXP(userId, senderName, xpEarned)
         incrementStat(userId, senderName, "work")
 
-        await createSafeMessage(message.channel,
-            `${job.emoji} **${senderName}** worked as a **${job.name}** and earned **${earned} coins**! (+${xpEarned} XP)\n` +
-            `💰 Balance: **${user.coins} coins** | Come back in 1 hour for more work.`)
+        await sendEmbed(message, economyResult("Work complete", [
+            { name: "Job", value: job.name, inline: true },
+            { name: "Coins", value: `+${earned}`, inline: true },
+            { name: "XP", value: `+${xpEarned}`, inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !crime ─────────────────────────────────────────────────────────────────
     if (msgLower === "!crime") {
-        const cd = checkCooldown(userId, "crime", 30 * 60 * 1000) // 30 min
+        const cd = checkCooldown(userId, "crime", 30 * 60 * 1000)
         if (!cd.ok) {
-            await createSafeMessage(message.channel, `⏳ Lay low for **${Math.floor(cd.remaining / 60)}m** — the cops are still looking for you.`)
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!crime"))
             return true
         }
 
         const crime = CRIME_OUTCOMES[Math.floor(Math.random() * CRIME_OUTCOMES.length)]
         const success = Math.random() < crime.successRate
         const { data, user } = getUser(userId, senderName)
+        user.stats = user.stats || {}
 
+        let delta
         if (success) {
-            const reward = Math.floor(Math.random() * (crime.reward[1] - crime.reward[0] + 1)) + crime.reward[0]
-            user.coins += reward
-            user.stats = user.stats || {}
+            delta = randomBetween(crime.reward)
+            user.coins += delta
             user.stats.crimeSuccess = (user.stats.crimeSuccess || 0) + 1
-            saveEconomy(data)
-            await createSafeMessage(message.channel,
-                `🦹 **${senderName}** attempted **${crime.name}** and got away with it!\n` +
-                `💰 Earned **${reward} coins**! Balance: **${user.coins}**\n*The police are none the wiser... for now.*`)
         } else {
-            const penalty = Math.floor(Math.random() * (crime.penalty[1] - crime.penalty[0] + 1)) + crime.penalty[0]
-            const actualPenalty = Math.min(penalty, user.coins)
-            user.coins = Math.max(0, user.coins - actualPenalty)
-            user.stats = user.stats || {}
+            const penalty = randomBetween(crime.penalty)
+            delta = -Math.min(penalty, user.coins)
+            user.coins = Math.max(0, user.coins + delta)
             user.stats.crimeFail = (user.stats.crimeFail || 0) + 1
-            saveEconomy(data)
-            await createSafeMessage(message.channel,
-                `🚔 **${senderName}** tried **${crime.name}** and got CAUGHT!\n` +
-                `💸 Fined **${actualPenalty} coins**! Balance: **${user.coins}**\n*Maybe stick to honest work next time.*`)
         }
+        saveEconomy(data)
+
+        await sendEmbed(message, economyResult("Crime result", [
+            { name: "Attempt", value: crime.name, inline: true },
+            { name: "Outcome", value: success ? "Success" : "Caught", inline: true },
+            { name: "Coins", value: `${delta >= 0 ? "+" : ""}${delta}`, inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !heist ─────────────────────────────────────────────────────────────────
     if (msgLower === "!heist") {
-        const cd = checkCooldown(userId, "heist", 2 * 60 * 60 * 1000) // 2 hours
+        const cd = checkCooldown(userId, "heist", 2 * 60 * 60 * 1000)
         if (!cd.ok) {
-            await createSafeMessage(message.channel, `⏳ The vault needs time to restock. Wait **${Math.floor(cd.remaining / 60)}m**.`)
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!heist"))
             return true
         }
 
         const { data, user } = getUser(userId, senderName)
-        const minBet = 50
-        if (user.coins < minBet) {
-            await createSafeMessage(message.channel, `💸 You need at least **${minBet} coins** to fund a heist. Go earn some first!`)
+        const minBalance = 50
+        if (user.coins < minBalance) {
+            await sendSafe(message, statusLine("error", `You need at least **${minBalance} coins** to start a heist.`))
             return true
         }
 
-        const heistCost = Math.floor(user.coins * 0.1) // 10% of balance as entry fee
-        const successRate = 0.45
-        const success = Math.random() < successRate
-
+        const cost = Math.floor(user.coins * 0.1)
+        const success = Math.random() < 0.45
+        user.stats = user.stats || {}
+        let reward = 0
+        let multiplier = null
         if (success) {
-            const multiplier = 2 + Math.random() * 3 // 2x to 5x
-            const reward = Math.floor(heistCost * multiplier)
-            user.coins = user.coins - heistCost + reward
-            user.stats = user.stats || {}
+            multiplier = 2 + Math.random() * 3
+            reward = Math.floor(cost * multiplier)
+            user.coins = user.coins - cost + reward
             user.stats.heistSuccess = (user.stats.heistSuccess || 0) + 1
-            saveEconomy(data)
-            await createSafeMessage(message.channel,
-                `🏦 **HEIST SUCCESS!** **${senderName}** and the crew cracked the vault!\n` +
-                `💰 Invested **${heistCost}** → Earned **${reward} coins** (${multiplier.toFixed(1)}x)!\n` +
-                `Balance: **${user.coins} coins** 🎉`)
         } else {
-            user.coins = Math.max(0, user.coins - heistCost)
-            user.stats = user.stats || {}
+            user.coins = Math.max(0, user.coins - cost)
             user.stats.heistFail = (user.stats.heistFail || 0) + 1
-            saveEconomy(data)
-            await createSafeMessage(message.channel,
-                `🚨 **HEIST FAILED!** The alarm went off and **${senderName}** barely escaped!\n` +
-                `💸 Lost **${heistCost} coins** in the chaos. Balance: **${user.coins}**\n*The crew is not happy.*`)
         }
+        saveEconomy(data)
+
+        await sendEmbed(message, economyResult("Heist result", [
+            { name: "Outcome", value: success ? "Success" : "Failed", inline: true },
+            { name: "Entry cost", value: `${cost} coins`, inline: true },
+            { name: "Return", value: success ? `${reward} coins · ${multiplier.toFixed(1)}×` : "0 coins", inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !invest ────────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!invest")) {
-        const parts = message.content.split(" ")
-        const amount = parseInt(parts[1])
+        const amount = parseInt(message.content.split(" ")[1], 10)
         if (!amount || amount < 10) {
-            await createSafeMessage(message.channel, `📈 Usage: \`!invest [amount]\` (min 10 coins)\nInvestments mature in 6 hours with 20-80% returns (or losses).`)
+            await sendSafe(message, invalidUsage("!invest [amount]"))
             return true
         }
 
         const { data, user } = getUser(userId, senderName)
         if (user.coins < amount) {
-            await createSafeMessage(message.channel, `💸 You only have **${user.coins} coins**. Can't invest what you don't have!`)
+            await sendSafe(message, statusLine("error", `Insufficient balance. You have **${formatCoins(user.coins)} coins**.`))
             return true
         }
-
-        // Check if already has active investment
         if (user.investment && user.investment.maturesAt > Date.now()) {
-            const remaining = Math.ceil((user.investment.maturesAt - Date.now()) / 1000 / 60)
-            await createSafeMessage(message.channel, `📊 You already have an active investment of **${user.investment.amount} coins** maturing in **${remaining}m**. Use \`!collect\` when ready!`)
+            const seconds = Math.ceil((user.investment.maturesAt - Date.now()) / 1000)
+            await sendEmbed(message, economyResult("Active investment", [
+                { name: "Principal", value: `${formatCoins(user.investment.amount)} coins`, inline: true },
+                { name: "Matures in", value: remainingText(seconds), inline: true },
+            ], "Use `!collect` when the investment matures."))
             return true
         }
 
@@ -165,256 +185,327 @@ async function handle(message) {
         user.investment = {
             amount,
             investedAt: Date.now(),
-            maturesAt: Date.now() + 6 * 60 * 60 * 1000, // 6 hours
-            multiplier: 0.8 + Math.random() * 0.8, // 0.8x to 1.6x
+            maturesAt: Date.now() + 6 * 60 * 60 * 1000,
+            multiplier: 0.8 + Math.random() * 0.8,
         }
         saveEconomy(data)
-
-        await createSafeMessage(message.channel,
-            `📈 **${senderName}** invested **${amount} coins**!\n` +
-            `⏰ Your investment matures in **6 hours**. Use \`!collect\` to claim returns.\n` +
-            `*Market conditions may vary. CURSED is not a licensed financial advisor.*`)
+        await sendEmbed(message, economyResult("Investment opened", [
+            { name: "Principal", value: `${formatCoins(amount)} coins`, inline: true },
+            { name: "Maturity", value: "6 hours", inline: true },
+            { name: "Possible return", value: "0.8× to 1.6×", inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ], "This is an in-bot game mechanic, not a real financial product."))
         return true
     }
 
-    // ── !collect ───────────────────────────────────────────────────────────────
     if (msgLower === "!collect") {
         const { data, user } = getUser(userId, senderName)
-
         if (!user.investment) {
-            await createSafeMessage(message.channel, `📊 You don't have any active investments. Use \`!invest [amount]\` to start one!`)
+            await sendSafe(message, statusLine("warning", "You do not have an active investment. Use `!invest [amount]` to start one."))
             return true
         }
-
         if (user.investment.maturesAt > Date.now()) {
-            const remaining = Math.ceil((user.investment.maturesAt - Date.now()) / 1000 / 60)
-            await createSafeMessage(message.channel, `⏳ Your investment isn't ready yet! **${remaining}m** remaining.`)
+            const seconds = Math.ceil((user.investment.maturesAt - Date.now()) / 1000)
+            await sendSafe(message, statusLine("cooldown", `Investment matures in **${remainingText(seconds)}**.`))
             return true
         }
 
-        const returns = Math.floor(user.investment.amount * user.investment.multiplier)
-        const profit = returns - user.investment.amount
+        const principal = user.investment.amount
+        const returns = Math.floor(principal * user.investment.multiplier)
+        const profit = returns - principal
         user.coins += returns
         user.stats = user.stats || {}
         user.stats.investmentsClaimed = (user.stats.investmentsClaimed || 0) + 1
         delete user.investment
         saveEconomy(data)
 
-        const profitText = profit >= 0 ? `+${profit}` : `${profit}`
-        await createSafeMessage(message.channel,
-            `📊 **Investment Matured!** **${senderName}** collected **${returns} coins** (${profitText} profit)!\n` +
-            `💰 Balance: **${user.coins} coins**`)
+        await sendEmbed(message, economyResult("Investment collected", [
+            { name: "Principal", value: `${formatCoins(principal)} coins`, inline: true },
+            { name: "Returned", value: `${formatCoins(returns)} coins`, inline: true },
+            { name: "Profit / loss", value: `${profit >= 0 ? "+" : ""}${profit} coins`, inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !bank ──────────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!bank")) {
         const parts = message.content.split(" ")
         const action = parts[1]?.toLowerCase()
-        const amount = parseInt(parts[2])
-
+        const amount = parseInt(parts[2], 10)
         const { data, user } = getUser(userId, senderName)
         user.bank = user.bank || 0
 
         if (!action || action === "balance") {
-            await createSafeMessage(message.channel,
-                `🏦 **${senderName}'s Bank**\n\n` +
-                `💰 Wallet: **${user.coins} coins**\n` +
-                `🏦 Bank: **${user.bank} coins**\n` +
-                `📊 Total: **${user.coins + user.bank} coins**\n\n` +
-                `Use \`!bank deposit [amount]\` or \`!bank withdraw [amount]\``)
+            await sendEmbed(message, economyResult(`${senderName}'s bank`, [
+                { name: "Wallet", value: `${formatCoins(user.coins)} coins`, inline: true },
+                { name: "Bank", value: `${formatCoins(user.bank)} coins`, inline: true },
+                { name: "Total", value: `${formatCoins(user.coins + user.bank)} coins`, inline: true },
+            ], "Use `!bank deposit [amount]` or `!bank withdraw [amount]`."))
             return true
         }
 
         if (action === "deposit") {
-            if (!amount || amount < 1) { await createSafeMessage(message.channel, "Usage: `!bank deposit [amount]`"); return true }
-            if (user.coins < amount) { await createSafeMessage(message.channel, `💸 You only have **${user.coins} coins** in your wallet!`); return true }
+            if (!amount || amount < 1) {
+                await sendSafe(message, invalidUsage("!bank deposit [amount]"))
+                return true
+            }
+            if (user.coins < amount) {
+                await sendSafe(message, statusLine("error", `Wallet balance is **${formatCoins(user.coins)} coins**.`))
+                return true
+            }
             user.coins -= amount
             user.bank += amount
             saveEconomy(data)
-            await createSafeMessage(message.channel, `🏦 Deposited **${amount} coins** into the bank!\n💰 Wallet: **${user.coins}** | 🏦 Bank: **${user.bank}**`)
+            await sendEmbed(message, economyResult("Bank deposit", [
+                { name: "Deposited", value: `${formatCoins(amount)} coins`, inline: true },
+                { name: "Wallet", value: `${formatCoins(user.coins)} coins`, inline: true },
+                { name: "Bank", value: `${formatCoins(user.bank)} coins`, inline: true },
+            ]))
             return true
         }
 
         if (action === "withdraw") {
-            if (!amount || amount < 1) { await createSafeMessage(message.channel, "Usage: `!bank withdraw [amount]`"); return true }
-            if (user.bank < amount) { await createSafeMessage(message.channel, `🏦 You only have **${user.bank} coins** in the bank!`); return true }
+            if (!amount || amount < 1) {
+                await sendSafe(message, invalidUsage("!bank withdraw [amount]"))
+                return true
+            }
+            if (user.bank < amount) {
+                await sendSafe(message, statusLine("error", `Bank balance is **${formatCoins(user.bank)} coins**.`))
+                return true
+            }
             user.bank -= amount
             user.coins += amount
             saveEconomy(data)
-            await createSafeMessage(message.channel, `💰 Withdrew **${amount} coins** from the bank!\n💰 Wallet: **${user.coins}** | 🏦 Bank: **${user.bank}**`)
+            await sendEmbed(message, economyResult("Bank withdrawal", [
+                { name: "Withdrawn", value: `${formatCoins(amount)} coins`, inline: true },
+                { name: "Wallet", value: `${formatCoins(user.coins)} coins`, inline: true },
+                { name: "Bank", value: `${formatCoins(user.bank)} coins`, inline: true },
+            ]))
             return true
         }
 
-        await createSafeMessage(message.channel, `🏦 Usage: \`!bank\` | \`!bank deposit [amount]\` | \`!bank withdraw [amount]\``)
+        await sendSafe(message, invalidUsage("!bank [deposit|withdraw] [amount]"))
         return true
     }
 
-    // ── !interest ──────────────────────────────────────────────────────────────
     if (msgLower === "!interest") {
-        const cd = checkCooldown(userId, "interest", 24 * 60 * 60 * 1000) // 24 hours
+        const cd = checkCooldown(userId, "interest", 24 * 60 * 60 * 1000)
         if (!cd.ok) {
-            await createSafeMessage(message.channel, `⏳ Interest is paid daily. Come back in **${Math.floor(cd.remaining / 3600)}h**.`)
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!interest"))
             return true
         }
 
         const { data, user } = getUser(userId, senderName)
         user.bank = user.bank || 0
-
         if (user.bank < 100) {
-            await createSafeMessage(message.channel, `🏦 You need at least **100 coins** in the bank to earn interest. Deposit more!`)
+            await sendSafe(message, statusLine("warning", "Keep at least **100 coins** in the bank to claim daily interest."))
             return true
         }
 
-        const interestRate = 0.02 // 2% daily
-        const interest = Math.floor(user.bank * interestRate)
+        const balanceBefore = user.bank
+        const interest = Math.floor(balanceBefore * 0.02)
         user.bank += interest
         saveEconomy(data)
-
-        await createSafeMessage(message.channel,
-            `💹 **Daily Interest Earned!** **${senderName}** earned **${interest} coins** (2% of ${user.bank - interest})!\n` +
-            `🏦 Bank Balance: **${user.bank} coins**`)
+        await sendEmbed(message, economyResult("Daily bank interest", [
+            { name: "Rate", value: "2%", inline: true },
+            { name: "Interest", value: `+${formatCoins(interest)} coins`, inline: true },
+            { name: "Bank balance", value: `${formatCoins(user.bank)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !business ──────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!business")) {
-        const parts = message.content.split(" ")
-        const action = parts[1]?.toLowerCase()
+        const action = message.content.split(" ")[1]?.toLowerCase()
         const { data, user } = getUser(userId, senderName)
 
         if (!action || action === "status") {
             if (!user.business) {
-                await createSafeMessage(message.channel,
-                    `🏢 **Business System**\n\nYou don't own a business yet!\n` +
-                    `Use \`!business start\` to invest **500 coins** and start earning passive income.\n` +
-                    `Use \`!business collect\` to collect earnings every 12 hours.`)
-            } else {
-                const nextCollect = user.business.lastCollect + 12 * 60 * 60 * 1000
-                const ready = Date.now() >= nextCollect
-                const remaining = ready ? 0 : Math.ceil((nextCollect - Date.now()) / 1000 / 60)
-                await createSafeMessage(message.channel,
-                    `🏢 **${senderName}'s Business: ${user.business.name}**\n\n` +
-                    `📊 Level: **${user.business.level}** | Total Earned: **${user.business.totalEarned} coins**\n` +
-                    `${ready ? "✅ Ready to collect!" : `⏳ Next collection in **${remaining}m**`}\n` +
-                    `Use \`!business collect\` to claim earnings | \`!business upgrade\` to level up`)
+                await sendEmbed(message, economyResult("Business", [
+                    { name: "Status", value: "Not owned", inline: true },
+                    { name: "Start cost", value: "500 coins", inline: true },
+                    { name: "Command", value: "`!business start`", inline: false },
+                ], "Businesses generate collectible income every 12 hours."))
+                return true
             }
+            const nextCollect = user.business.lastCollect + 12 * 60 * 60 * 1000
+            const ready = Date.now() >= nextCollect
+            const remainingSeconds = ready ? 0 : Math.ceil((nextCollect - Date.now()) / 1000)
+            await sendEmbed(message, economyResult(user.business.name, [
+                { name: "Level", value: String(user.business.level), inline: true },
+                { name: "Total earned", value: `${formatCoins(user.business.totalEarned)} coins`, inline: true },
+                { name: "Collection", value: ready ? "Ready" : remainingText(remainingSeconds), inline: true },
+            ], "Use `!business collect` or `!business upgrade`."))
             return true
         }
 
         if (action === "start") {
-            if (user.business) { await createSafeMessage(message.channel, `🏢 You already own **${user.business.name}**!`); return true }
+            if (user.business) {
+                await sendSafe(message, statusLine("warning", `You already own **${user.business.name}**.`))
+                return true
+            }
             const cost = 500
-            if (user.coins < cost) { await createSafeMessage(message.channel, `💸 Starting a business costs **${cost} coins**. You have **${user.coins}**.`); return true }
-            const bizNames = ["Cursed Café", "Meme Factory", "Chaos Corp", "Shadow Enterprises", "Void Industries"]
+            if (user.coins < cost) {
+                await sendSafe(message, statusLine("error", `Starting a business costs **${cost} coins**. You have **${formatCoins(user.coins)}**.`))
+                return true
+            }
+            const names = ["Cursed Café", "Meme Factory", "Chaos Corp", "Shadow Enterprises", "Void Industries"]
             user.coins -= cost
             user.business = {
-                name: bizNames[Math.floor(Math.random() * bizNames.length)],
+                name: names[Math.floor(Math.random() * names.length)],
                 level: 1,
                 lastCollect: Date.now(),
                 totalEarned: 0,
             }
             saveEconomy(data)
-            await createSafeMessage(message.channel, `🏢 **${senderName}** started **${user.business.name}**! Collect earnings every 12 hours with \`!business collect\`.`)
+            await sendEmbed(message, economyResult("Business started", [
+                { name: "Business", value: user.business.name, inline: true },
+                { name: "Cost", value: `${cost} coins`, inline: true },
+                { name: "Collection interval", value: "12 hours", inline: true },
+            ]))
             return true
         }
 
         if (action === "collect") {
-            if (!user.business) { await createSafeMessage(message.channel, `🏢 You don't have a business! Use \`!business start\`.`); return true }
-            const nextCollect = user.business.lastCollect + 12 * 60 * 60 * 1000
-            if (Date.now() < nextCollect) {
-                const remaining = Math.ceil((nextCollect - Date.now()) / 1000 / 60)
-                await createSafeMessage(message.channel, `⏳ Your business needs **${remaining}m** more to generate earnings.`)
+            if (!user.business) {
+                await sendSafe(message, statusLine("warning", "Start a business first with `!business start`."))
                 return true
             }
-            const baseEarning = 50 * user.business.level
-            const earned = Math.floor(baseEarning + Math.random() * baseEarning)
+            const nextCollect = user.business.lastCollect + 12 * 60 * 60 * 1000
+            if (Date.now() < nextCollect) {
+                await sendSafe(message, statusLine("cooldown", `Business income is ready in **${remainingText(Math.ceil((nextCollect - Date.now()) / 1000))}**.`))
+                return true
+            }
+            const base = 50 * user.business.level
+            const earned = Math.floor(base + Math.random() * base)
             user.coins += earned
             user.business.lastCollect = Date.now()
             user.business.totalEarned += earned
             saveEconomy(data)
-            await createSafeMessage(message.channel, `🏢 **${senderName}** collected **${earned} coins** from **${user.business.name}**!\n💰 Balance: **${user.coins}**`)
+            await sendEmbed(message, economyResult("Business income", [
+                { name: "Business", value: user.business.name, inline: true },
+                { name: "Collected", value: `+${earned} coins`, inline: true },
+                { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+            ]))
             return true
         }
 
         if (action === "upgrade") {
-            if (!user.business) { await createSafeMessage(message.channel, `🏢 You don't have a business! Use \`!business start\`.`); return true }
+            if (!user.business) {
+                await sendSafe(message, statusLine("warning", "Start a business first with `!business start`."))
+                return true
+            }
             const upgradeCost = user.business.level * 300
-            if (user.coins < upgradeCost) { await createSafeMessage(message.channel, `💸 Upgrading to level ${user.business.level + 1} costs **${upgradeCost} coins**. You have **${user.coins}**.`); return true }
+            if (user.coins < upgradeCost) {
+                await sendSafe(message, statusLine("error", `Upgrade cost is **${upgradeCost} coins**. You have **${formatCoins(user.coins)}**.`))
+                return true
+            }
             user.coins -= upgradeCost
             user.business.level++
             saveEconomy(data)
-            await createSafeMessage(message.channel, `📈 **${user.business.name}** upgraded to **Level ${user.business.level}**! Earnings increased!`)
+            await sendEmbed(message, economyResult("Business upgraded", [
+                { name: "Business", value: user.business.name, inline: true },
+                { name: "Level", value: String(user.business.level), inline: true },
+                { name: "Cost", value: `${upgradeCost} coins`, inline: true },
+            ]))
             return true
         }
 
+        await sendSafe(message, invalidUsage("!business [status|start|collect|upgrade]"))
         return true
     }
 
-    // ── !factory ───────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!factory")) {
-        const parts = message.content.split(" ")
-        const action = parts[1]?.toLowerCase()
+        const action = message.content.split(" ")[1]?.toLowerCase()
         const { data, user } = getUser(userId, senderName)
 
         if (!action || action === "status") {
             if (!user.factory) {
-                await createSafeMessage(message.channel,
-                    `🏭 **Factory System**\n\nNo factory yet! Use \`!factory build\` (cost: 1000 coins) to build one.\n` +
-                    `Factories produce items every 8 hours that you can sell with \`!factory sell\`.`)
-            } else {
-                const nextProd = user.factory.lastProduced + 8 * 60 * 60 * 1000
-                const ready = Date.now() >= nextProd
-                const remaining = ready ? 0 : Math.ceil((nextProd - Date.now()) / 1000 / 60)
-                await createSafeMessage(message.channel,
-                    `🏭 **${senderName}'s Factory** (Level ${user.factory.level})\n\n` +
-                    `📦 Stock: **${user.factory.stock} units**\n` +
-                    `${ready ? "✅ Production ready! Use `!factory produce`" : `⏳ Next production in **${remaining}m**`}\n` +
-                    `Use \`!factory sell\` to sell stock for coins.`)
+                await sendEmbed(message, economyResult("Factory", [
+                    { name: "Status", value: "Not owned", inline: true },
+                    { name: "Build cost", value: "1,000 coins", inline: true },
+                    { name: "Command", value: "`!factory build`", inline: false },
+                ], "Factories produce sellable stock every 8 hours."))
+                return true
             }
+            const nextProduction = user.factory.lastProduced + 8 * 60 * 60 * 1000
+            const ready = Date.now() >= nextProduction
+            await sendEmbed(message, economyResult(`${senderName}'s factory`, [
+                { name: "Level", value: String(user.factory.level), inline: true },
+                { name: "Stock", value: `${user.factory.stock} units`, inline: true },
+                { name: "Production", value: ready ? "Ready" : remainingText(Math.ceil((nextProduction - Date.now()) / 1000)), inline: true },
+                { name: "Total sold", value: `${user.factory.totalSold || 0} units`, inline: true },
+            ], "Use `!factory produce` and `!factory sell`."))
             return true
         }
 
         if (action === "build") {
-            if (user.factory) { await createSafeMessage(message.channel, `🏭 You already have a factory!`); return true }
+            if (user.factory) {
+                await sendSafe(message, statusLine("warning", "You already own a factory."))
+                return true
+            }
             const cost = 1000
-            if (user.coins < cost) { await createSafeMessage(message.channel, `💸 Building a factory costs **${cost} coins**. You have **${user.coins}**.`); return true }
+            if (user.coins < cost) {
+                await sendSafe(message, statusLine("error", `Building a factory costs **${cost} coins**. You have **${formatCoins(user.coins)}**.`))
+                return true
+            }
             user.coins -= cost
             user.factory = { level: 1, stock: 0, lastProduced: 0, totalSold: 0 }
             saveEconomy(data)
-            await createSafeMessage(message.channel, `🏭 **${senderName}** built a factory! Use \`!factory produce\` every 8 hours and \`!factory sell\` to earn coins.`)
+            await sendEmbed(message, economyResult("Factory built", [
+                { name: "Level", value: "1", inline: true },
+                { name: "Cost", value: `${cost} coins`, inline: true },
+                { name: "Production interval", value: "8 hours", inline: true },
+            ]))
             return true
         }
 
         if (action === "produce") {
-            if (!user.factory) { await createSafeMessage(message.channel, `🏭 Build a factory first with \`!factory build\`!`); return true }
-            const nextProd = user.factory.lastProduced + 8 * 60 * 60 * 1000
-            if (Date.now() < nextProd) {
-                const remaining = Math.ceil((nextProd - Date.now()) / 1000 / 60)
-                await createSafeMessage(message.channel, `⏳ Factory is still running. **${remaining}m** until production completes.`)
+            if (!user.factory) {
+                await sendSafe(message, statusLine("warning", "Build a factory first with `!factory build`."))
+                return true
+            }
+            const nextProduction = user.factory.lastProduced + 8 * 60 * 60 * 1000
+            if (Date.now() < nextProduction) {
+                await sendSafe(message, statusLine("cooldown", `Production completes in **${remainingText(Math.ceil((nextProduction - Date.now()) / 1000))}**.`))
                 return true
             }
             const produced = 5 * user.factory.level + Math.floor(Math.random() * 5)
             user.factory.stock += produced
             user.factory.lastProduced = Date.now()
             saveEconomy(data)
-            await createSafeMessage(message.channel, `🏭 Factory produced **${produced} units**! Total stock: **${user.factory.stock}**. Use \`!factory sell\` to cash out.`)
+            await sendEmbed(message, economyResult("Factory production", [
+                { name: "Produced", value: `${produced} units`, inline: true },
+                { name: "Stock", value: `${user.factory.stock} units`, inline: true },
+            ]))
             return true
         }
 
         if (action === "sell") {
-            if (!user.factory) { await createSafeMessage(message.channel, `🏭 Build a factory first!`); return true }
-            if (user.factory.stock <= 0) { await createSafeMessage(message.channel, `📦 No stock to sell! Use \`!factory produce\` first.`); return true }
+            if (!user.factory) {
+                await sendSafe(message, statusLine("warning", "Build a factory first with `!factory build`."))
+                return true
+            }
+            if (user.factory.stock <= 0) {
+                await sendSafe(message, statusLine("warning", "No factory stock is available. Use `!factory produce` first."))
+                return true
+            }
+            const stock = user.factory.stock
             const pricePerUnit = 15 + user.factory.level * 5
-            const earned = user.factory.stock * pricePerUnit
+            const earned = stock * pricePerUnit
             user.coins += earned
-            user.factory.totalSold += user.factory.stock
+            user.factory.totalSold += stock
             user.factory.stock = 0
             saveEconomy(data)
-            await createSafeMessage(message.channel, `💰 Sold all factory stock for **${earned} coins**! Balance: **${user.coins}**`)
+            await sendEmbed(message, economyResult("Factory sale", [
+                { name: "Units sold", value: String(stock), inline: true },
+                { name: "Price per unit", value: `${pricePerUnit} coins`, inline: true },
+                { name: "Earned", value: `+${earned} coins`, inline: true },
+                { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+            ]))
             return true
         }
 
+        await sendSafe(message, invalidUsage("!factory [status|build|produce|sell]"))
         return true
     }
 
