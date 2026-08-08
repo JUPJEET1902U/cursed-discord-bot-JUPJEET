@@ -42,6 +42,7 @@ function loadCommands() {
         { name: "help", module: require("../commands/help") },
         { name: "system", module: require("../commands/system") },
         { name: "power-modules", module: require("../commands/powerModules") },
+        { name: "power-runtime", module: require("../commands/powerRuntime") },
         { name: "premium", module: require("../commands/premium") },
         { name: "fun", module: require("../commands/fun") },
         { name: "shop", module: require("../commands/shop") },
