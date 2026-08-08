@@ -26,6 +26,7 @@ const { recordTiming } = require("../utils/runtimeMetrics")
 
 require("../commands/helpCatalog")
 require("../commands/prefixCommandCatalog")
+require("../commands/systemCatalog")
 require("../commands/imageGenerationCatalog")
 require("../commands/birthdayCatalog")
 require("../commands/customRoleCatalog")
@@ -38,6 +39,7 @@ function loadCommands() {
         { name: "tickets", module: require("../commands/ticketsPrefix") },
         { name: "birthdays", module: require("../commands/birthdays") },
         { name: "help", module: require("../commands/help") },
+        { name: "system", module: require("../commands/system") },
         { name: "premium", module: require("../commands/premium") },
         { name: "fun", module: require("../commands/fun") },
         { name: "shop", module: require("../commands/shop") },
