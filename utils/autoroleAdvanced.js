@@ -67,9 +67,10 @@ function getJoinRoleIds(member) {
     const typeIds = member.user?.bot ? advanced.botRoleIds : advanced.humanRoleIds
     const ids = [...typeIds]
 
-    // Preserve the legacy one-role behavior. Existing guilds keep working while
-    // administrators can progressively move to separate human/bot role sets.
+    // Preserve existing single-role behavior while servers migrate to distinct
+    // human/bot sets. DEFAULT_ROLE_ID remains a final fallback exactly as before.
     if (raw.autoroleId && !ids.includes(String(raw.autoroleId))) ids.unshift(String(raw.autoroleId))
+    if (!ids.length && process.env.DEFAULT_ROLE_ID) ids.push(String(process.env.DEFAULT_ROLE_ID))
     return uniqueIds(ids)
 }
 
