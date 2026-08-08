@@ -3,61 +3,35 @@
  * A moderation case is persisted even when no log channel is configured.
  */
 
-const { EmbedBuilder } = require("discord.js")
+const { buildEmbed, COLORS } = require("./responseBuilder")
 const { createCase } = require("./moderationCases")
 
 const ACTION_COLORS = {
-    WARN: 0xFFAA00,
-    CLEAR_WARNINGS: 0x99AABB,
-    TIMEOUT: 0xFF6600,
-    MUTE: 0xFF6600,
-    UNTIMEOUT: 0x00CC88,
-    UNMUTE: 0x00CC88,
-    KICK: 0xFF4444,
-    BAN: 0xCC0000,
-    UNBAN: 0x00AA88,
-    TEMPBAN: 0xCC5500,
-    SOFTBAN: 0xCC7700,
-    PURGE: 0x5865F2,
-    LOCK: 0x9922CC,
-    UNLOCK: 0x22AA88,
-    SLOWMODE: 0x5865F2,
-    NICKNAME: 0x3498DB,
-    NOTE: 0x95A5A6,
+    WARN: COLORS.warning,
+    CLEAR_WARNINGS: COLORS.admin,
+    TIMEOUT: 0xF0B232,
+    MUTE: 0xF0B232,
+    UNTIMEOUT: COLORS.success,
+    UNMUTE: COLORS.success,
+    KICK: COLORS.error,
+    BAN: 0x992D22,
+    UNBAN: COLORS.success,
+    TEMPBAN: 0xD9822B,
+    SOFTBAN: 0xD9822B,
+    PURGE: COLORS.moderation,
+    LOCK: 0x9B59B6,
+    UNLOCK: COLORS.success,
+    SLOWMODE: COLORS.moderation,
+    NICKNAME: COLORS.info,
+    NOTE: COLORS.admin,
     QUARANTINE: 0xE67E22,
-    UNQUARANTINE: 0x2ECC71,
-    LOCKDOWN_ENABLE: 0xC0392B,
-    LOCKDOWN_DISABLE: 0x27AE60,
-    ANTI_LINK: 0xAA44FF,
-    ANTI_INVITE: 0xDD44AA,
-    ANTI_SPAM: 0xFF8800,
-}
-
-const ACTION_EMOJIS = {
-    WARN: "⚠️",
-    CLEAR_WARNINGS: "🧹",
-    TIMEOUT: "🔇",
-    MUTE: "🔇",
-    UNTIMEOUT: "🔊",
-    UNMUTE: "🔊",
-    KICK: "👢",
-    BAN: "🔨",
-    UNBAN: "🕊️",
-    TEMPBAN: "⏳",
-    SOFTBAN: "🧹",
-    PURGE: "🧹",
-    LOCK: "🔒",
-    UNLOCK: "🔓",
-    SLOWMODE: "🐢",
-    NICKNAME: "🏷️",
-    NOTE: "📝",
-    QUARANTINE: "🛡️",
-    UNQUARANTINE: "✅",
-    LOCKDOWN_ENABLE: "🚨",
-    LOCKDOWN_DISABLE: "🔓",
-    ANTI_LINK: "🔗",
-    ANTI_INVITE: "📨",
-    ANTI_SPAM: "🚫",
+    UNQUARANTINE: COLORS.success,
+    LOCKDOWN_ENABLE: COLORS.error,
+    LOCKDOWN_DISABLE: COLORS.success,
+    ANTI_LINK: 0x9B59B6,
+    ANTI_INVITE: 0xC45AA0,
+    ANTI_SPAM: 0xE67E22,
+    MESSAGE_SHIELD: COLORS.security,
 }
 
 let _client = null
@@ -71,8 +45,6 @@ function setClient(client) {
         console.error("Activity tracking listener setup error:", err.message)
     }
 
-    // Phase 2 is isolated behind a guarded bootstrap. Any setup failure is logged
-    // without affecting existing AI, economy, welcome, leveling, or moderation.
     try {
         const { initializeModerationPhase2 } = require("./moderationPhase2Bootstrap")
         initializeModerationPhase2(client)
@@ -80,8 +52,6 @@ function setClient(client) {
         console.error("Moderation Phase 2 setup error:", err.message)
     }
 
-    // Phase 3 is a second additive and isolated bootstrap. It never replaces
-    // Phase 1/2 handlers, and a setup failure cannot stop unrelated CURSED features.
     try {
         const { initializeSecurityPhase3 } = require("./securityPhase3Bootstrap")
         initializeSecurityPhase3(client)
@@ -89,8 +59,6 @@ function setClient(client) {
         console.error("Moderation Phase 3 setup error:", err.message)
     }
 
-    // Tickets are additive and isolated. Setup or scheduler failures are logged
-    // without stopping AI, economy, moderation, welcome, or other CURSED systems.
     try {
         const { initializeTicketSystem } = require("./ticketBootstrap")
         initializeTicketSystem(client)
@@ -112,6 +80,13 @@ function inferDurationMs(extra) {
 
 function isAutoAction(action, moderator, source) {
     return source === "automod" || (!moderator && String(action).startsWith("ANTI_"))
+}
+
+function actionLabel(action) {
+    return String(action || "NOTE")
+        .toLowerCase()
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, character => character.toUpperCase())
 }
 
 async function logAction(guild, {
@@ -163,40 +138,33 @@ async function logAction(guild, {
     const channel = guild.channels.cache.get(channelId)
     if (!channel || !channel.isTextBased()) return { caseRecord, logged: false }
 
-    const color = ACTION_COLORS[normalizedAction] ?? 0x99AABB
-    const emoji = ACTION_EMOJIS[normalizedAction] ?? "🛡️"
-    const label = normalizedAction.replace(/_/g, " ")
     const targetType = metadata?.targetType === "channel" ? "channel" : "user"
     const targetDisplay = targetType === "channel"
         ? `<#${target.id}> (${target.tag || "Unknown channel"})`
-        : `<@${target.id}> (${target.tag || "Unknown"})`
+        : `<@${target.id}> (${target.tag || "Unknown user"})`
 
-    const embed = new EmbedBuilder()
-        .setColor(color)
-        .setTitle(`${emoji} ${label}`)
-        .addFields(
-            { name: targetType === "channel" ? "📢 Channel" : "👤 User", value: targetDisplay, inline: true },
-            { name: "🆔 Target ID", value: String(target.id), inline: true },
-        )
-        .setTimestamp()
+    const fields = [
+        { name: targetType === "channel" ? "Channel" : "User", value: targetDisplay, inline: true },
+        { name: "Target ID", value: String(target.id), inline: true },
+    ]
 
-    if (caseRecord) {
-        embed.addFields({ name: "📁 Case", value: `#${caseRecord.caseNumber}`, inline: true })
-    }
+    if (caseRecord) fields.push({ name: "Case", value: `#${caseRecord.caseNumber}`, inline: true })
+    fields.push({
+        name: moderator ? "Moderator" : "Source",
+        value: moderator ? `<@${moderator.id}> (${moderator.tag || "Unknown"})` : "AutoMod",
+        inline: true,
+    })
+    if (reason) fields.push({ name: "Reason", value: String(reason).slice(0, 1024), inline: false })
+    if (extra) fields.push({ name: "Details", value: String(extra).slice(0, 1024), inline: false })
+    if (evidenceUrl) fields.push({ name: "Evidence", value: String(evidenceUrl).slice(0, 1024), inline: false })
 
-    if (moderator) {
-        embed.addFields({
-            name: "🛡️ Moderator",
-            value: `<@${moderator.id}> (${moderator.tag || "Unknown"})`,
-            inline: true,
-        })
-    } else {
-        embed.addFields({ name: "🤖 Action by", value: "Auto-Moderation", inline: true })
-    }
-
-    if (reason) embed.addFields({ name: "📝 Reason", value: String(reason).slice(0, 1024), inline: false })
-    if (extra) embed.addFields({ name: "ℹ️ Details", value: String(extra).slice(0, 1024), inline: false })
-    if (evidenceUrl) embed.addFields({ name: "🔎 Evidence", value: String(evidenceUrl).slice(0, 1024), inline: false })
+    const embed = buildEmbed({
+        title: `Moderation • ${actionLabel(normalizedAction)}`,
+        color: ACTION_COLORS[normalizedAction] ?? COLORS.admin,
+        fields,
+        footer: "CURSED • Moderation",
+        timestamp: true,
+    })
 
     try {
         await channel.send({ embeds: [embed], allowedMentions: { parse: [] } })
