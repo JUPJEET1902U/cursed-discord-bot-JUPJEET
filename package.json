@@ -1,14 +1,15 @@
 {
   "name": "cursed-bot",
   "version": "2.0.0",
-  "description": "CURSED Discord Bot — AI-powered with full dashboard",
+  "description": "CURSED — AI-powered server protection and community management for Discord",
   "main": "index.js",
   "scripts": {
     "start": "node -r ./utils/runtimeWarningGuards.js index.js",
     "dev": "node --watch -r ./utils/runtimeWarningGuards.js index.js",
     "api:start": "npx tsx api/server.ts",
     "api:dev": "npx tsx --watch api/server.ts",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "echo \"Use a focused test script such as npm run test:reboot\" && exit 1",
+    "test:reboot": "node --test test/reboot-foundation.test.js test/professional-ux.test.js test/ai-reliability.test.js test/memory-cache-hardening.test.js test/short-term-memory-mongodb.test.js test/economy-mongodb.test.js test/professional-welcome-system.test.js test/runtime-warning-regressions.test.js",
     "test:dashboard-api": "node --test test/dashboard-api.test.js",
     "test:premium": "node --test test/premium-plans.test.js",
     "test:welcome": "node --test test/professional-welcome-system.test.js",
@@ -18,7 +19,7 @@
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build"
   },
-  "keywords": ["discord", "bot", "ai", "cursed"],
+  "keywords": ["discord", "bot", "ai", "security", "moderation", "community"],
   "author": "",
   "license": "ISC",
   "dependencies": {
