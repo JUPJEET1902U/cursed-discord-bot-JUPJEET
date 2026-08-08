@@ -54,6 +54,11 @@ jobs:
           node --check commands/help.js
           node --check commands/system.js
           node --check commands/systemCatalog.js
+          node --check commands/powerModules.js
+          node --check commands/powerRuntime.js
+          node --check commands/powerCatalog.js
+          node --check commands/protectionControl.js
+          node --check commands/protectionCatalog.js
           node --check commands/moderation.js
           node --check commands/moderationAdvanced.js
           node --check commands/securitySuite.js
@@ -76,6 +81,9 @@ jobs:
           node --check utils/runtimeMetrics.js
           node --check utils/botPermissions.js
           node --check utils/systemHealth.js
+          node --check utils/automationStore.js
+          node --check utils/managedAutomation.js
+          node --check utils/giveawayService.js
           node --check utils/auditLogResolver.js
           node --check utils/antiRaidRisk.js
           node --check utils/antiSpam.js
@@ -96,6 +104,9 @@ jobs:
 
       - name: System doctor tests
         run: node --test test/reboot-system-doctor.test.js
+
+      - name: Power module tests
+        run: node --test test/reboot-power-modules.test.js
 
       - name: Professional UX tests
         run: node --test test/professional-ux.test.js
