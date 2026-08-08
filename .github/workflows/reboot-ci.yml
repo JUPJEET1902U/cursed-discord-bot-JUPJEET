@@ -59,6 +59,7 @@ jobs:
           node --check commands/powerCatalog.js
           node --check commands/protectionControl.js
           node --check commands/protectionCatalog.js
+          node --check commands/autoroleControl.js
           node --check commands/moderation.js
           node --check commands/moderationAdvanced.js
           node --check commands/securitySuite.js
@@ -84,6 +85,7 @@ jobs:
           node --check utils/automationStore.js
           node --check utils/managedAutomation.js
           node --check utils/giveawayService.js
+          node --check utils/autoroleAdvanced.js
           node --check utils/auditLogResolver.js
           node --check utils/antiRaidRisk.js
           node --check utils/antiSpam.js
