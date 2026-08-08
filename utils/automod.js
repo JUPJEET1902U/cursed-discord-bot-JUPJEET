@@ -47,6 +47,32 @@ function canManageMessages(guild) {
     return guild.members.me?.permissions.has(PermissionFlagsBits.ManageMessages) ?? false
 }
 
+function normalizeAutomodPolicy(config = {}) {
+    const raw = config.automodPolicy
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+    const action = raw.action === "timeout" ? "timeout" : raw.action === "delete" ? "delete" : null
+    if (!action) return null
+    const timeoutMinutes = Math.max(1, Math.min(40320, Math.floor(Number(raw.timeoutMinutes) || 1)))
+    return {
+        action,
+        timeoutMinutes,
+        timeoutMs: timeoutMinutes * 60_000,
+        dmUser: raw.dmUser !== false,
+    }
+}
+
+async function applyPolicyTimeout(member, policy, reason) {
+    if (!policy || policy.action !== "timeout" || member?.moderatable === false) return false
+    if (!member?.guild?.members?.me?.permissions?.has(PermissionFlagsBits.ModerateMembers)) return false
+    try {
+        await member.timeout(policy.timeoutMs, reason)
+        return true
+    } catch (error) {
+        console.error("AutoMod policy timeout error:", error.message)
+        return false
+    }
+}
+
 async function safeDelete(message) {
     try {
         await message.delete()
@@ -111,19 +137,24 @@ async function runAutoMod(message) {
     }
 
     const { config } = getServerConfig(guildId)
+    const policy = normalizeAutomodPolicy(config)
     const target = { id: author.id, tag: author.tag }
 
     if (config.antiInvite) {
         INVITE_REGEX.lastIndex = 0
         if (INVITE_REGEX.test(content)) {
             if (canManageMessages(guild)) await safeDelete(message)
-            await safeDm(author, `Your message in **${guild.name}** was removed because Discord invite links are not allowed.`)
+            const timedOut = await applyPolicyTimeout(member, policy, "AutoMod: Discord invite link")
+            if (!policy || policy.dmUser) {
+                await safeDm(author, `Your message in **${guild.name}** was removed because Discord invite links are not allowed.${timedOut ? ` You were timed out for ${policy.timeoutMinutes} minute${policy.timeoutMinutes === 1 ? "" : "s"}.` : ""}`)
+            }
             await logAction(guild, {
                 action: "ANTI_INVITE",
                 target,
                 reason: "Posted a Discord invite link",
-                extra: `Channel: <#${message.channel.id}>\nContent: \`${content.slice(0, 200)}\``,
-                metadata: { channelId: message.channel.id, messageId: message.id },
+                extra: `Channel: <#${message.channel.id}>\nResponse: ${timedOut ? `${policy.timeoutMinutes}m timeout` : "message removal"}\nContent: \`${content.slice(0, 200)}\``,
+                durationMs: timedOut ? policy.timeoutMs : null,
+                metadata: { channelId: message.channel.id, messageId: message.id, timedOut },
             })
             return true
         }
@@ -148,13 +179,17 @@ async function runAutoMod(message) {
 
         if (blockedLinks.length > 0) {
             if (canManageMessages(guild)) await safeDelete(message)
-            await safeDm(author, `Your message in **${guild.name}** was removed because links are restricted in this server.`)
+            const timedOut = await applyPolicyTimeout(member, policy, "AutoMod: restricted link")
+            if (!policy || policy.dmUser) {
+                await safeDm(author, `Your message in **${guild.name}** was removed because links are restricted in this server.${timedOut ? ` You were timed out for ${policy.timeoutMinutes} minute${policy.timeoutMinutes === 1 ? "" : "s"}.` : ""}`)
+            }
             await logAction(guild, {
                 action: "ANTI_LINK",
                 target,
                 reason: "Posted a restricted link",
-                extra: `Channel: <#${message.channel.id}>\nLinks: ${blockedLinks.slice(0, 3).join(", ")}`,
-                metadata: { channelId: message.channel.id, messageId: message.id, blockedLinks: blockedLinks.slice(0, 10) },
+                extra: `Channel: <#${message.channel.id}>\nResponse: ${timedOut ? `${policy.timeoutMinutes}m timeout` : "message removal"}\nLinks: ${blockedLinks.slice(0, 3).join(", ")}`,
+                durationMs: timedOut ? policy.timeoutMs : null,
+                metadata: { channelId: message.channel.id, messageId: message.id, blockedLinks: blockedLinks.slice(0, 10), timedOut },
             })
             return true
         }
@@ -170,17 +205,20 @@ async function runAutoMod(message) {
 
         const { spam, count, threshold, windowMs } = recordMessage(guildId, userId)
         if (spam) {
-            const muteDurationSec = MUTE_DURATION_MS / 1000
+            const responseDurationMs = policy?.action === "timeout" ? policy.timeoutMs : MUTE_DURATION_MS
+            const responseDurationSec = Math.round(responseDurationMs / 1000)
             if (canManageMessages(guild)) await safeDelete(message)
 
-            const canTimeout = guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers) ?? false
             let timedOut = false
-            if (canTimeout && member?.moderatable !== false) {
-                try {
-                    await member.timeout(MUTE_DURATION_MS, "AutoMod: rapid message spam")
-                    timedOut = true
-                } catch (error) {
-                    console.error("Anti-spam timeout error:", error.message)
+            if (policy?.action !== "delete") {
+                const canTimeout = guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers) ?? false
+                if (canTimeout && member?.moderatable !== false) {
+                    try {
+                        await member.timeout(responseDurationMs, "AutoMod: rapid message spam")
+                        timedOut = true
+                    } catch (error) {
+                        console.error("Anti-spam timeout error:", error.message)
+                    }
                 }
             }
 
@@ -188,10 +226,10 @@ async function runAutoMod(message) {
                 await logAction(guild, {
                     action: "UNMUTE",
                     target,
-                    reason: `AutoMod timeout expired (${muteDurationSec}s)`,
+                    reason: `AutoMod rate limit expired (${responseDurationSec}s)`,
                     source: "system",
                 })
-            })
+            }, { muteDurationMs: responseDurationMs })
 
             await message.channel.send({
                 content: statusLine("warning", `<@${userId}> was ${timedOut ? "timed out" : "rate-limited"} for rapid spam.`),
@@ -202,8 +240,8 @@ async function runAutoMod(message) {
                 action: "ANTI_SPAM",
                 target,
                 reason: "Rapid message spam detected",
-                extra: `${count}/${threshold} messages in ${Math.round(windowMs / 1000)}s. Response: ${timedOut ? `${muteDurationSec}s timeout` : "message removal"}.`,
-                durationMs: timedOut ? MUTE_DURATION_MS : null,
+                extra: `${count}/${threshold} messages in ${Math.round(windowMs / 1000)}s. Response: ${timedOut ? `${responseDurationSec}s timeout` : "message removal/rate limit"}.`,
+                durationMs: timedOut ? responseDurationMs : null,
                 metadata: { channelId: message.channel.id, messageId: message.id, count, threshold, windowMs, timedOut },
             })
             return true
@@ -215,4 +253,4 @@ async function runAutoMod(message) {
     return false
 }
 
-module.exports = { runAutoMod }
+module.exports = { runAutoMod, normalizeAutomodPolicy }
