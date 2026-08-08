@@ -3,8 +3,8 @@
  *
  * Reboot goals:
  * - one predictable command pipeline
+ * - built-in commands always win collisions
  * - concise user-facing failures
- * - no feature-specific dispatch quirks
  * - bounded latency measurements without storing user content
  */
 
@@ -44,6 +44,7 @@ function loadCommands() {
         { name: "system", module: require("../commands/system") },
         { name: "protection-control", module: require("../commands/protectionControl") },
         { name: "autorole-control", module: require("../commands/autoroleControl") },
+        { name: "custom-command-admin", module: require("../commands/customCommands") },
         { name: "power-modules", module: require("../commands/powerModules") },
         { name: "power-runtime", module: require("../commands/powerRuntime") },
         { name: "premium", module: require("../commands/premium") },
@@ -70,6 +71,21 @@ function loadCommands() {
 
     log.info(`Loaded ${commandModules.length} command modules`)
     return commandModules
+}
+
+async function markHandled(message, name, dispatchStartedAt) {
+    recordTiming("command.prefix.total", Date.now() - dispatchStartedAt)
+    log.debug(`Command handled by: ${name}`)
+    if (message.guild && !message.author.bot) {
+        trackDetailedCommand(
+            message.guild.id,
+            message.author.id,
+            message.channel.id,
+            message.channel.type,
+            { isBot: false }
+        ).catch(err => log.error(`Detailed prefix command tracking failed: ${err.message}`))
+    }
+    return true
 }
 
 async function dispatchCommand(message, commandModules) {
@@ -103,24 +119,27 @@ async function dispatchCommand(message, commandModules) {
             const handled = await module.handle(commandMessage)
             recordTiming(`command.module.${name}`, Date.now() - moduleStartedAt)
             if (!handled) continue
-
-            recordTiming("command.prefix.total", Date.now() - dispatchStartedAt)
-            log.debug(`Command handled by: ${name}`)
-            if (message.guild && !message.author.bot) {
-                trackDetailedCommand(
-                    message.guild.id,
-                    message.author.id,
-                    message.channel.id,
-                    message.channel.type,
-                    { isBot: false }
-                ).catch(err => log.error(`Detailed prefix command tracking failed: ${err.message}`))
-            }
-            return true
+            return markHandled(message, name, dispatchStartedAt)
         } catch (err) {
             recordTiming(`command.module.${name}`, Date.now() - moduleStartedAt)
             recordTiming("command.prefix.error", Date.now() - dispatchStartedAt)
             log.error(`Error in command module "${name}": ${err.message}`, { stack: err.stack })
             await sendSafe(message, statusLine("error", "Command failed. Try again in a moment.")).catch(() => {})
+            return true
+        }
+    }
+
+    // Custom commands are deliberately evaluated only after every built-in
+    // module. A server-created command can never shadow CURSED functionality.
+    if (commandName) {
+        try {
+            const { executeCustomCommand } = require("../commands/customCommands")
+            const handled = await executeCustomCommand(commandMessage, commandName)
+            if (handled) return markHandled(message, "custom-command", dispatchStartedAt)
+        } catch (error) {
+            recordTiming("command.custom.error", Date.now() - dispatchStartedAt)
+            log.error(`Custom command execution failed: ${error.message}`)
+            await sendSafe(message, statusLine("error", "Custom command failed. Try again in a moment.")).catch(() => {})
             return true
         }
     }
