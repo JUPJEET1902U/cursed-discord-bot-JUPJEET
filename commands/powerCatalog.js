@@ -87,6 +87,16 @@ const AUTOMATION_COMMANDS = [
         aliases: [],
         slashOnly: true,
     },
+    {
+        name: "/reactionrole",
+        usage: "/reactionrole create|add|remove|list|delete",
+        description: "Build persistent button panels that let members safely add or remove approved roles themselves.",
+        examples: ["/reactionrole create channel:#roles title:Choose your roles", "/reactionrole add panel:abc123 role:@Announcements"],
+        cooldown: "none",
+        permissions: ["Manage Roles"],
+        aliases: [],
+        slashOnly: true,
+    },
 ]
 
 const COMMUNITY_TOOL_COMMANDS = [
@@ -126,7 +136,7 @@ function applyPowerCatalog() {
         emoji: "",
         color: 0x5865F2,
         adminOnly: true,
-        description: "Autoresponders, auto reactions, custom commands, autoroles, and managed embeds.",
+        description: "Autoresponders, auto reactions, custom commands, autoroles, reaction roles, and managed embeds.",
         commands: AUTOMATION_COMMANDS.map(command => ({ ...command })),
     }
     COMMAND_REGISTRY.communitytools = {
