@@ -1,105 +1,75 @@
 /**
- * utils/sanitizeMentions.js
- * CURSED bot mention protection for Discord.js v14
+ * Discord mention-safety helpers.
+ * User content may be displayed, but mass mentions and arbitrary role/channel
+ * pings must never be created accidentally by CURSED.
  */
+
+const SAFE_ALLOWED_MENTIONS = Object.freeze({
+    parse: [],
+    users: [],
+    roles: [],
+    repliedUser: false,
+})
 
 function sanitizeMentions(text) {
-  if (text === null || text === undefined) return '';
-  if (typeof text !== 'string') text = String(text);
-
-  let out = text;
-
-  // Block @everyone and @here by inserting zero-width space
- out = out.replace(/@everyone/gi, '@\u200Beveryone');
-out = out.replace(/@here/gi, '@\u200Bhere');
-
-out = out.replace(/@\d{17,20}/g, '[user]');
-out = out.replace(/<@!?\d+>/g, '[user]');
-
-out = out.replace(/<@&\d+>/g, '[role]');
-out = out.replace(/<#\d+>/g, '[channel]');
-
-  // DO NOT replace user mentions globally
-  // We rely on allowedMentions to control exactly who can be pinged
-
-  // Replace role mentions
-  out = out.replace(/<@&\d+>/g, '[role]');
-
-  // Replace channel mentions
-  out = out.replace(/<#\d+>/g, '[channel]');
-
-  return out;
+    let output = String(text ?? "")
+    output = output.replace(/@everyone/gi, "@\u200Beveryone")
+    output = output.replace(/@here/gi, "@\u200Bhere")
+    output = output.replace(/@\d{17,20}/g, "[user]")
+    output = output.replace(/<@!?\d+>/g, "[user]")
+    output = output.replace(/<@&\d+>/g, "[role]")
+    output = output.replace(/<#\d+>/g, "[channel]")
+    return output
 }
 
-/**
- * Safe reply: only allows pinging the author if explicitly requested
- */
+function allowedMentionsForUser(userId = null) {
+    return {
+        ...SAFE_ALLOWED_MENTIONS,
+        users: userId ? [String(userId)] : [],
+    }
+}
+
 async function createSafeReply(message, content, { mentionAuthor = false } = {}) {
-  const payload = {
-    content: sanitizeMentions(content),
-    allowedMentions: {
-      parse: [],
-      users: mentionAuthor ? [message.author.id] : [],
-      roles: [],
-      repliedUser: false
-    }
-  };
-  return message.reply(payload);
+    return message.reply({
+        content: sanitizeMentions(content),
+        allowedMentions: allowedMentionsForUser(mentionAuthor ? message.author.id : null),
+    })
 }
 
-/**
- * Safe channel send: no mentions allowed
- */
 async function createSafeMessage(channel, content) {
-  const payload = {
-    content: sanitizeMentions(content),
-    allowedMentions: {
-      parse: [],
-      users: [],
-      roles: [],
-      repliedUser: false
-    }
-  };
-  return channel.send(payload);
+    return channel.send({
+        content: sanitizeMentions(content),
+        allowedMentions: SAFE_ALLOWED_MENTIONS,
+    })
 }
 
-/**
- * Safe interaction reply
- */
 async function createSafeInteractionReply(interaction, content, options = {}) {
-  const payload = {
-    content: sanitizeMentions(content),
-    allowedMentions: {
-      parse: [],
-      users: options.mentionUser ? [interaction.user.id] : [],
-      roles: [],
-      repliedUser: false
-    },
-    ephemeral: !!options.ephemeral
-  };
-  return interaction.reply(payload);
+    const payload = {
+        content: sanitizeMentions(content),
+        allowedMentions: allowedMentionsForUser(options.mentionUser ? interaction.user.id : null),
+        ephemeral: Boolean(options.ephemeral),
+    }
+    if (interaction.deferred) {
+        const { ephemeral: _ephemeral, ...editPayload } = payload
+        return interaction.editReply(editPayload)
+    }
+    if (interaction.replied) return interaction.followUp(payload)
+    return interaction.reply(payload)
 }
 
-/**
- * Safe interaction followUp
- */
 async function createSafeInteractionFollowUp(interaction, content, options = {}) {
-  const payload = {
-    content: sanitizeMentions(content),
-    allowedMentions: {
-      parse: [],
-      users: options.mentionUser ? [interaction.user.id] : [],
-      roles: [],
-      repliedUser: false
-    }
-  };
-  return interaction.followUp(payload);
+    return interaction.followUp({
+        content: sanitizeMentions(content),
+        allowedMentions: allowedMentionsForUser(options.mentionUser ? interaction.user.id : null),
+    })
 }
 
 module.exports = {
-  sanitizeMentions,
-  createSafeReply,
-  createSafeMessage,
-  createSafeInteractionReply,
-  createSafeInteractionFollowUp
-};
+    SAFE_ALLOWED_MENTIONS,
+    sanitizeMentions,
+    allowedMentionsForUser,
+    createSafeReply,
+    createSafeMessage,
+    createSafeInteractionReply,
+    createSafeInteractionFollowUp,
+}
