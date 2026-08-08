@@ -1,9 +1,3 @@
-/**
- * commands/memory.js
- * Long-term memory commands for CURSED bot (Phase 1)
- * !memories, !remember, !forgetmemory, !clearmemory
- */
-
 const {
     getUserLongTermMemories,
     addLongTermMemory,
@@ -11,15 +5,33 @@ const {
     clearLongTermMemories,
 } = require("../utils/longTermMemory")
 const { clearUserMemory } = require("../utils/memory")
-const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName } = require("../utils/sanitizer")
 const logger = require("../utils/logger")
+const {
+    memory: memoryEmbed,
+    statusLine,
+    invalidUsage,
+    sendEmbed,
+    sendSafe,
+} = require("../utils/responseBuilder")
+
 const log = logger.child("MemoryCmd")
 
-const TYPE_LABELS = {
-    like: "❤️ Likes", dislike: "💔 Dislikes", game: "🎮 Games",
-    anime: "🌸 Anime", music: "🎵 Music", friend: "👥 Friends",
-    note: "📝 Notes", fact: "💡 Facts"
+const TYPE_LABELS = Object.freeze({
+    like: "Likes",
+    dislike: "Dislikes",
+    game: "Games",
+    anime: "Anime",
+    music: "Music",
+    friend: "Friends",
+    friendship: "Friends",
+    personality: "Personality",
+    note: "Notes",
+    fact: "Facts",
+})
+
+function memoryId(memory, fallback) {
+    return memory?._id ? memory._id.toString().slice(-4) : String(fallback)
 }
 
 async function handle(message) {
@@ -27,55 +39,49 @@ async function handle(message) {
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-    // ── !memories ──────────────────────────────────────────────────────────────
     if (msgLower === "!memories" || msgLower === "!memory") {
         const memories = await getUserLongTermMemories(userId)
         if (!memories.length) {
-            await createSafeMessage(message.channel,
-                `🧠 **${senderName}**, I don't have any long-term memories about you yet!\n` +
-                `Just chat with me and I'll start remembering things. 😊\n` +
-                `You can also use \`!remember [fact]\` to tell me something directly.`)
+            await sendEmbed(message, memoryEmbed("Memory", "No long-term memories are stored for you yet.", {
+                fields: [{ name: "Add one", value: "Use `!remember [fact]` or continue chatting with CURSED.", inline: false }],
+            }))
             return true
         }
 
-        const grouped = {}
-        for (const m of memories) {
-            if (!grouped[m.type]) grouped[m.type] = []
-            grouped[m.type].push(m)
+        const grouped = new Map()
+        for (const item of memories) {
+            const key = TYPE_LABELS[item.type] || String(item.type || "Other")
+            if (!grouped.has(key)) grouped.set(key, [])
+            grouped.get(key).push(item)
         }
 
-        let output = `🧠 **What I Know About ${senderName}** (${memories.length} memories)\n\n`
-        for (const [type, items] of Object.entries(grouped)) {
-            const label = TYPE_LABELS[type] || type
-            output += `**${label}:**\n`
-            items.slice(0, 5).forEach((m, i) => {
-                const id = m._id ? m._id.toString().slice(-4) : i
-                output += `  \`[${id}]\` ${m.content}\n`
+        const fields = []
+        for (const [label, items] of grouped.entries()) {
+            fields.push({
+                name: label,
+                value: items.slice(0, 5).map((item, index) => `\`[${memoryId(item, index)}]\` ${item.content}`).join("\n").slice(0, 1024),
+                inline: false,
             })
-            output += "\n"
+            if (fields.length >= 20) break
         }
-        output += `*Use \`!forgetmemory [id]\` to remove a specific memory.*`
 
-        // Truncate if too long
-        if (output.length > 1900) output = output.slice(0, 1890) + "\n*...and more*"
-        await createSafeMessage(message.channel, output)
+        await sendEmbed(message, memoryEmbed(`${senderName}'s memory`, `${memories.length} stored memor${memories.length === 1 ? "y" : "ies"}.`, {
+            fields,
+        }))
         return true
     }
 
-    // ── !remember ──────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!remember")) {
         const content = message.content.slice(9).trim()
         if (!content || content.length < 3) {
-            await createSafeMessage(message.channel,
-                `📝 Usage: \`!remember [fact about yourself]\`\nExample: \`!remember I love playing Minecraft\``)
+            await sendSafe(message, invalidUsage("!remember [fact about yourself]"))
             return true
         }
         if (content.length > 200) {
-            await createSafeMessage(message.channel, `📝 Keep it under 200 characters please!`)
+            await sendSafe(message, statusLine("warning", "Memories must be 200 characters or fewer."))
             return true
         }
 
-        // Detect type from content
         let type = "fact"
         const lower = content.toLowerCase()
         if (lower.includes("like") || lower.includes("love") || lower.includes("enjoy")) type = "like"
@@ -83,44 +89,39 @@ async function handle(message) {
         else if (lower.includes("game") || lower.includes("play") || lower.includes("minecraft") || lower.includes("fortnite")) type = "game"
         else if (lower.includes("anime") || lower.includes("manga")) type = "anime"
         else if (lower.includes("music") || lower.includes("song") || lower.includes("band") || lower.includes("artist")) type = "music"
-        else if (lower.includes("friend") || lower.includes("my friend")) type = "friend"
+        else if (lower.includes("friend")) type = "friend"
 
         await addLongTermMemory(userId, { type, content, importance: 3, tags: [] })
-        await createSafeMessage(message.channel,
-            `✅ Got it, **${senderName}**! I'll remember: *"${content}"*\nUse \`!memories\` to see everything I know about you.`)
+        await sendSafe(message, statusLine("success", "Memory saved. Use `!memories` to review what CURSED remembers."))
         return true
     }
 
-    // ── !forgetmemory ──────────────────────────────────────────────────────────
     if (msgLower.startsWith("!forgetmemory")) {
-        const memoryId = message.content.split(" ")[1]?.trim()
-        if (!memoryId) {
-            await createSafeMessage(message.channel,
-                `Usage: \`!forgetmemory [id]\`\nUse \`!memories\` to see memory IDs.`)
+        const memoryIdInput = message.content.split(" ")[1]?.trim()
+        if (!memoryIdInput) {
+            await sendSafe(message, invalidUsage("!forgetmemory [id]"))
             return true
         }
 
-        // Try to find the memory by partial ID match
         const memories = await getUserLongTermMemories(userId)
-        const match = memories.find(m => m._id && m._id.toString().endsWith(memoryId))
-        const idToDelete = match ? match._id.toString() : memoryId
-
+        const match = memories.find(item => item._id && item._id.toString().endsWith(memoryIdInput))
+        const idToDelete = match ? match._id.toString() : memoryIdInput
         const deleted = await deleteLongTermMemory(userId, idToDelete)
-        if (deleted) {
-            await createSafeMessage(message.channel, `🗑️ Memory deleted! I've forgotten that. Use \`!memories\` to see what's left.`)
-        } else {
-            await createSafeMessage(message.channel, `❌ Couldn't find that memory. Use \`!memories\` to see valid IDs.`)
-        }
+        await sendSafe(message, deleted
+            ? statusLine("success", "Memory deleted.")
+            : statusLine("error", "Memory not found. Use `!memories` to view valid IDs."))
         return true
     }
 
-    // ── !clearmemory ───────────────────────────────────────────────────────────
     if (msgLower === "!clearmemory") {
-        await clearLongTermMemories(userId)
-        clearUserMemory(message.guild.id, userId)
-        await createSafeMessage(message.channel,
-            `🧹 Done, **${senderName}**. I've wiped ALL memories about you — both short-term and long-term.\n` +
-            `You're a complete stranger to me now. Fresh start! 😇`)
+        try {
+            await clearLongTermMemories(userId)
+            clearUserMemory(message.guild.id, userId)
+            await sendSafe(message, statusLine("success", "Short-term and long-term memories cleared."))
+        } catch (error) {
+            log.error(`Memory clear failed: ${error.message}`)
+            await sendSafe(message, statusLine("error", "Memory could not be fully cleared. Try again in a moment."))
+        }
         return true
     }
 
