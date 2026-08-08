@@ -1,87 +1,195 @@
+process.env.NODE_ENV = "test"
+delete process.env.MONGO_URI
+
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
-const path = require("node:path")
 
 const memoryModule = require("../utils/memory")
 const economyModule = require("../utils/economy")
 const longTermMemoryModule = require("../utils/longTermMemory")
 
-test("1. Cache entries and knownSnapshots eviction occur safely without dropping pendingWrites", () => {
-    // Append user memory
-    memoryModule.appendUserMemory("guild_test_1", "user_test_1", "Hello", "Hi there")
-    const history = memoryModule.getUserMemory("guild_test_1", "user_test_1")
-    assert.strictEqual(history.length, 2)
-    assert.strictEqual(history[0].content, "Hello")
-
-    // The entry has a pending write because DB is not flushed yet.
-    // Cleanup must NOT discard this entry from memory cache
-    memoryModule.cleanupMemory()
-    const historyAfterCleanup = memoryModule.getUserMemory("guild_test_1", "user_test_1")
-    assert.strictEqual(historyAfterCleanup.length, 2)
-})
-
-test("2. Economy cache handles updates and pending writes without data loss", () => {
-    const { user } = economyModule.getUser("user_econ_1", "Tester")
-    user.coins = (user.coins || 0) + 100
-    economyModule.saveEconomy()
-
-    const { user: retrieved } = economyModule.getUser("user_econ_1", "Tester")
-    assert.strictEqual(retrieved.coins >= 100, true)
-})
-
-test("3. Pending writes survive simulated database unavailability", async () => {
-    // Save memory when DB is not connected
-    memoryModule.appendUserMemory("guild_offline", "user_offline", "Offline message", "Offline reply")
-    // Flush returns false when Mongo is not connected, but keeps pendingWrites in queue
-    const flushed = await memoryModule.flushMemory()
-    assert.strictEqual(flushed, false)
-
-    // Verify memory is still intact in memoryCache
-    const history = memoryModule.getUserMemory("guild_offline", "user_offline")
-    assert.strictEqual(history.length, 2)
-    assert.strictEqual(history[0].content, "Offline message")
-})
-
-test("4. Failed filesystem operations do not crash process", () => {
-    // Attempting a read/write on legacy paths or bad JSON safely catches errors
-    assert.doesNotThrow(() => {
-        try {
-            fs.readFileSync("/nonexistent_dir/bad_file.json", "utf8")
-        } catch (err) {
-            // Handled safely without process panic
-            assert.ok(err)
-        }
+function deferred() {
+    let resolve
+    let reject
+    const promise = new Promise((res, rej) => {
+        resolve = res
+        reject = rej
     })
+    return { promise, resolve, reject }
+}
+
+test("1. Memory and economy snapshots do not create false repeat writes", async () => {
+    const memState = memoryModule.__testing.getState()
+    const econState = economyModule.__testing.getState()
+
+    const memKey = "guild_snapshot:user_snapshot"
+    memoryModule.appendUserMemory("guild_snapshot", "user_snapshot", "Hello", "Hi")
+    assert.equal(memState.pendingWrites.has(memKey), true)
+
+    // Simulate a successful persistence cycle while keeping the current snapshot.
+    memState.pendingWrites.delete(memKey)
+    await memoryModule.saveMemory()
+    assert.equal(memState.pendingWrites.has(memKey), false)
+
+    const { user } = economyModule.getUser("user_econ_snapshot", "SnapshotTester")
+    user.coins = 500
+    await economyModule.saveEconomy()
+    assert.equal(econState.pendingWrites.has("user_econ_snapshot"), true)
+
+    econState.pendingWrites.delete("user_econ_snapshot")
+    await economyModule.saveEconomy()
+    assert.equal(econState.pendingWrites.has("user_econ_snapshot"), false)
 })
 
-test("5. Unsaved long-term memories in fallback map are tagged and preserved", async () => {
-    await longTermMemoryModule.addLongTermMemory("user_ltm_1", {
+test("2. Pending short-term memory writes survive database unavailability", async () => {
+    const state = memoryModule.__testing.getState()
+    const key = "guild_offline:user_offline"
+
+    memoryModule.appendUserMemory("guild_offline", "user_offline", "Offline message", "Offline reply")
+    const flushed = await memoryModule.flushMemory()
+
+    assert.equal(flushed, false)
+    assert.equal(state.pendingWrites.has(key), true)
+    assert.equal(Array.isArray(state.memoryCache[key]), true)
+    assert.equal(state.memoryCache[key][0].content, "Offline message")
+})
+
+test("3. Long-term fallback sync is single-flight and marks data saved only after persistence", async () => {
+    const hooks = longTermMemoryModule.__testing
+    const state = hooks.getFallbackState()
+    state.memoryFallback.clear()
+    state.fallbackLastAccess.clear()
+
+    hooks.setMongoConnected(false)
+    await longTermMemoryModule.addLongTermMemory("user_ltm_concurrency", {
         type: "fact",
-        content: "User loves pizza",
+        content: "User prefers dark mode",
+        importance: 4,
+    })
+
+    const list = state.memoryFallback.get("user_ltm_concurrency")
+    assert.ok(list && list.length === 1)
+    assert.equal(list[0]._unsaved, true)
+
+    const gate = deferred()
+    let updateCalls = 0
+    hooks.setMemoryModel({
+        updateOne: async () => {
+            updateCalls++
+            await gate.promise
+            return { acknowledged: true }
+        },
+    })
+    hooks.setMongoConnected(true)
+
+    const sync1 = hooks.syncFallbackToMongo()
+    const sync2 = hooks.syncFallbackToMongo()
+    assert.equal(sync1, sync2, "concurrent callers must share one in-flight sync")
+
+    gate.resolve()
+    await Promise.all([sync1, sync2])
+
+    assert.equal(updateCalls, 1)
+    assert.equal(list[0]._unsaved, false)
+
+    hooks.resetMemoryModel()
+    hooks.setMongoConnected(false)
+})
+
+test("4. A fallback entry changed during persistence remains unsaved for the next sync", async () => {
+    const hooks = longTermMemoryModule.__testing
+    const state = hooks.getFallbackState()
+    state.memoryFallback.clear()
+    state.fallbackLastAccess.clear()
+
+    hooks.setMongoConnected(false)
+    await longTermMemoryModule.addLongTermMemory("user_ltm_race", {
+        type: "fact",
+        content: "User likes blue",
         importance: 3,
     })
 
-    const memories = await longTermMemoryModule.getUserLongTermMemories("user_ltm_1")
-    assert.strictEqual(memories.length > 0, true)
-    assert.strictEqual(memories[0].content, "User loves pizza")
-})
-
-test("6. Centralized timers use unref and do not prevent process exit", () => {
-    const timer = setInterval(() => {}, 1000000)
-    assert.doesNotThrow(() => {
-        timer.unref()
-        clearInterval(timer)
+    const entry = state.memoryFallback.get("user_ltm_race")[0]
+    const gate = deferred()
+    let updateCalls = 0
+    hooks.setMemoryModel({
+        updateOne: async () => {
+            updateCalls++
+            if (updateCalls === 1) await gate.promise
+            return { acknowledged: true }
+        },
     })
+    hooks.setMongoConnected(true)
+
+    const firstSync = hooks.syncFallbackToMongo()
+
+    // Simulate a newer local update arriving while the first database write is in flight.
+    entry.content = "User likes navy blue"
+    entry._unsaved = true
+    entry._syncVersion += 1
+
+    gate.resolve()
+    await firstSync
+    assert.equal(entry._unsaved, true, "newer local data must not be marked saved by an older write")
+
+    await hooks.syncFallbackToMongo()
+    assert.equal(entry._unsaved, false)
+    assert.equal(updateCalls, 2)
+
+    hooks.resetMemoryModel()
+    hooks.setMongoConnected(false)
 })
 
-test("7. Existing synchronous API exports remain available and unchanged", () => {
-    assert.strictEqual(typeof memoryModule.getUserMemory, "function")
-    assert.strictEqual(typeof memoryModule.appendUserMemory, "function")
-    assert.strictEqual(typeof memoryModule.clearUserMemory, "function")
-    assert.strictEqual(typeof memoryModule.cleanupMemory, "function")
+test("5. Fallback trimming never discards unsaved long-term memory", () => {
+    const hooks = longTermMemoryModule.__testing
 
-    assert.strictEqual(typeof economyModule.getUser, "function")
-    assert.strictEqual(typeof economyModule.loadEconomy, "function")
-    assert.strictEqual(typeof economyModule.saveEconomy, "function")
+    const allUnsaved = Array.from({ length: 101 }, (_, index) => ({
+        content: `unsaved-${index}`,
+        _unsaved: true,
+    }))
+    hooks.trimFallbackListSafely("user_all_unsaved", allUnsaved)
+    assert.equal(allUnsaved.length, 101, "unsaved entries must be retained even above the soft cap")
+
+    const mixed = [
+        ...Array.from({ length: 10 }, (_, index) => ({ content: `persisted-${index}`, _unsaved: false })),
+        ...Array.from({ length: 95 }, (_, index) => ({ content: `pending-${index}`, _unsaved: true })),
+    ]
+    hooks.trimFallbackListSafely("user_mixed", mixed)
+    assert.equal(mixed.length, 100)
+    assert.equal(mixed.filter(item => item._unsaved).length, 95)
+})
+
+test("6. The actual long-term cleanup timer is non-blocking", () => {
+    const timer = longTermMemoryModule.__testing.getCleanupInterval()
+    assert.ok(timer)
+    if (typeof timer.hasRef === "function") {
+        assert.equal(timer.hasRef(), false)
+    }
+})
+
+test("7. Snapshot fingerprints are stable for unchanged data and change with state", () => {
+    const memFingerprint = memoryModule.__testing.snapshotFingerprint
+    const econFingerprint = economyModule.__testing.snapshotFingerprint
+
+    const history = [{ role: "user", content: "hello" }]
+    assert.equal(memFingerprint(history), memFingerprint(history))
+    assert.notEqual(memFingerprint(history), memFingerprint([...history, { role: "assistant", content: "hi" }]))
+
+    const economy = { coins: 100, xp: 5 }
+    assert.equal(econFingerprint(economy), econFingerprint(economy))
+    assert.notEqual(econFingerprint(economy), econFingerprint({ coins: 101, xp: 5 }))
+})
+
+test("8. Existing public synchronous APIs remain available", () => {
+    assert.equal(typeof memoryModule.getUserMemory, "function")
+    assert.equal(typeof memoryModule.appendUserMemory, "function")
+    assert.equal(typeof memoryModule.clearUserMemory, "function")
+    assert.equal(typeof memoryModule.cleanupMemory, "function")
+
+    assert.equal(typeof economyModule.getUser, "function")
+    assert.equal(typeof economyModule.loadEconomy, "function")
+    assert.equal(typeof economyModule.saveEconomy, "function")
+
+    assert.equal(typeof longTermMemoryModule.getUserLongTermMemories, "function")
+    assert.equal(typeof longTermMemoryModule.addLongTermMemory, "function")
 })
