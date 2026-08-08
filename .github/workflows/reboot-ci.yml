@@ -1,0 +1,75 @@
+name: CURSED Reboot CI
+
+on:
+  push:
+    branches:
+      - REBOOT-1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reboot-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check Reboot core
+        run: |
+          node --check commands/help.js
+          node --check commands/moderationAdvanced.js
+          node --check commands/economy.js
+          node --check commands/fun.js
+          node --check commands/gambling.js
+          node --check commands/profiles.js
+          node --check handlers/commandLoader.js
+          node --check utils/productSystem.js
+          node --check utils/responseBuilder.js
+          node --check utils/runtimeMetrics.js
+          node --check utils/auditLogResolver.js
+          node --check utils/antiRaidRisk.js
+          node --check utils/antiSpam.js
+          node --check utils/automod.js
+          node --check utils/securityMessageShield.js
+          node --check utils/securityProtection.js
+          node --check utils/securityPhase3Config.js
+          node --check utils/aiClients.js
+          node --check utils/aiProviderReliability.js
+          node --check utils/modlog.js
+          node --check utils/sanitizeMentions.js
+
+      - name: Reboot foundation tests
+        run: node --test test/reboot-foundation.test.js
+
+      - name: Professional UX tests
+        run: node --test test/professional-ux.test.js
+
+      - name: AI reliability regression tests
+        run: node --test test/ai-reliability.test.js
+
+      - name: Memory persistence regressions
+        run: |
+          node --test test/memory-cache-hardening.test.js
+          node --test test/short-term-memory-mongodb.test.js
+          node --test test/economy-mongodb.test.js
+
+      - name: Welcome regression tests
+        run: node --test test/professional-welcome-system.test.js
+
+      - name: Runtime warning regressions
+        run: node --test test/runtime-warning-regressions.test.js
