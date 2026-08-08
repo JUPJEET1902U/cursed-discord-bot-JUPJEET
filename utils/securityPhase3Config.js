@@ -6,6 +6,7 @@ const TRUSTED_SCOPES = Object.freeze([
     "massModeration",
     "manageChannels",
     "manageRoles",
+    "manageGuild",
     "addBots",
     "manageWebhooks",
     "manualModeration",
