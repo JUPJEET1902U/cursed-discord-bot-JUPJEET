@@ -22,7 +22,7 @@ const SECTION_DEFINITIONS = Object.freeze([
         key: "server-management",
         name: "Server Management",
         description: "Protection, moderation, automation and server administration.",
-        categoryKeys: Object.freeze(["moderation", "admin", "server", "automation", "customroles", "custom-roles", "owner"]),
+        categoryKeys: Object.freeze(["protection", "moderation", "admin", "server", "automation", "customroles", "custom-roles", "owner"]),
     }),
     Object.freeze({
         key: "ai-creative",
