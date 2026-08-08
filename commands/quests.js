@@ -1,4 +1,10 @@
-const { getUser, saveEconomy, calcLevel, getOrCreateDailyQuests, CURRENCY } = require("../utils/economy")
+const { getUser, saveEconomy, calcLevel, getOrCreateDailyQuests } = require("../utils/economy")
+const {
+    economy: economyEmbed,
+    statusLine,
+    sendEmbed,
+    sendSafe,
+} = require("../utils/responseBuilder")
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -7,50 +13,65 @@ async function handle(message) {
 
     if (msgLower === "!quests" || msgLower === "!dailyquests") {
         const { user } = getUser(userId, senderName)
-        const qp = getOrCreateDailyQuests(user)
-        const lines = qp.quests.map((q, i) => {
-            const done = q.progress >= q.goal
-            const bar = done ? "✅" : `${q.progress}/${q.goal}`
-            return `${done ? "✅" : "🔲"} **Quest ${i + 1}:** ${q.desc}\n   Progress: \`[${bar}]\` | Reward: **${q.reward.coins} coins** + **${q.reward.xp} XP**`
+        const questProgress = getOrCreateDailyQuests(user)
+        const fields = questProgress.quests.map((quest, index) => {
+            const complete = quest.progress >= quest.goal
+            return {
+                name: `Quest ${index + 1}${complete ? " · Complete" : ""}`,
+                value: `${quest.desc}\nProgress: **${Math.min(quest.progress, quest.goal)}/${quest.goal}** · Reward: **${quest.reward.coins} coins + ${quest.reward.xp} XP**`,
+                inline: false,
+            }
         })
-        const allDone = qp.quests.every(q => q.progress >= q.goal)
-        const footer = qp.claimed
-            ? "\n\n✅ Quests already claimed today! Come back tomorrow."
+        const allDone = questProgress.quests.every(quest => quest.progress >= quest.goal)
+        const state = questProgress.claimed
+            ? "Rewards already claimed today."
             : allDone
-            ? "\n\n🎉 All quests complete! Type `!claimquests` to collect your rewards!"
-            : "\n\nComplete all 3 to claim your rewards with `!claimquests`."
-        await message.channel.send(`📋 **DAILY QUESTS** — ${new Date().toDateString()}\n\n${lines.join("\n\n")}${footer}`)
+                ? "All quests complete. Use `!claimquests` to collect rewards."
+                : "Complete all quests, then use `!claimquests`."
+        await sendEmbed(message, economyEmbed("Daily quests", state, { fields, timestamp: false }))
         return true
     }
 
     if (msgLower === "!claimquests" || msgLower === "!claimquest") {
         const { data, user } = getUser(userId, senderName)
-        const qp = getOrCreateDailyQuests(user)
-        if (qp.claimed) {
-            await message.channel.send(`😒 **${senderName}**, you already claimed today's quests. Come back tomorrow, you greedy thing.`)
+        const questProgress = getOrCreateDailyQuests(user)
+        if (questProgress.claimed) {
+            await sendSafe(message, statusLine("warning", "Today's quest rewards have already been claimed."))
             return true
         }
-        const allDone = qp.quests.every(q => q.progress >= q.goal)
-        if (!allDone) {
-            const incomplete = qp.quests.filter(q => q.progress < q.goal)
-            const lines = incomplete.map(q => `• ${q.desc} (${q.progress}/${q.goal})`)
-            await message.channel.send(`❌ **${senderName}**, you haven't finished all quests yet!\n\nStill need:\n${lines.join("\n")}`)
+
+        const incomplete = questProgress.quests.filter(quest => quest.progress < quest.goal)
+        if (incomplete.length) {
+            await sendEmbed(message, economyEmbed("Quest rewards", "Some quests are still incomplete.", {
+                fields: incomplete.map(quest => ({
+                    name: quest.desc,
+                    value: `${quest.progress}/${quest.goal}`,
+                    inline: false,
+                })),
+            }))
             return true
         }
-        let totalCoins = 0
-        let totalXP = 0
-        for (const q of qp.quests) {
-            totalCoins += q.reward.coins
-            totalXP += q.reward.xp
-        }
-        user.coins += totalCoins
-        user.xp += totalXP
+
+        const totals = questProgress.quests.reduce((sum, quest) => ({
+            coins: sum.coins + quest.reward.coins,
+            xp: sum.xp + quest.reward.xp,
+        }), { coins: 0, xp: 0 })
+        user.coins += totals.coins
+        user.xp += totals.xp
         user.level = calcLevel(user.xp)
         user.stats = user.stats || {}
         user.stats.questClaimed = (user.stats.questClaimed || 0) + 1
-        qp.claimed = true
+        questProgress.claimed = true
         saveEconomy(data)
-        await message.channel.send(`🎉 **${senderName}** claimed all daily quest rewards!\n\n💰 **+${totalCoins} coins** | ⭐ **+${totalXP} XP**\nTotal balance: **${user.coins} coins** | Level: **${user.level}**\n\nNew quests tomorrow. Don't slack off. 😤`)
+
+        await sendEmbed(message, economyEmbed("Quest rewards claimed", null, {
+            fields: [
+                { name: "Coins", value: `+${totals.coins}`, inline: true },
+                { name: "XP", value: `+${totals.xp}`, inline: true },
+                { name: "Balance", value: `${user.coins.toLocaleString()} coins`, inline: true },
+                { name: "Level", value: String(user.level), inline: true },
+            ],
+        }))
         return true
     }
 
