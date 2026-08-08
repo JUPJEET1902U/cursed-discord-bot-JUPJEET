@@ -52,6 +52,8 @@ jobs:
           node --check index.js
           node --check handlers/commandLoader.js
           node --check commands/help.js
+          node --check commands/system.js
+          node --check commands/systemCatalog.js
           node --check commands/moderation.js
           node --check commands/moderationAdvanced.js
           node --check commands/securitySuite.js
@@ -72,6 +74,8 @@ jobs:
           node --check utils/productSystem.js
           node --check utils/responseBuilder.js
           node --check utils/runtimeMetrics.js
+          node --check utils/botPermissions.js
+          node --check utils/systemHealth.js
           node --check utils/auditLogResolver.js
           node --check utils/antiRaidRisk.js
           node --check utils/antiSpam.js
@@ -89,6 +93,9 @@ jobs:
 
       - name: Feature preservation tests
         run: node --test test/reboot-feature-preservation.test.js
+
+      - name: System doctor tests
+        run: node --test test/reboot-system-doctor.test.js
 
       - name: Professional UX tests
         run: node --test test/professional-ux.test.js
