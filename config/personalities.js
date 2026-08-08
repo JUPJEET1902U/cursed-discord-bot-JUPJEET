@@ -1,60 +1,62 @@
 /**
- * config/personalities.js
- * Personality configuration and display metadata for CURSED bot (Phase 3)
+ * CURSED AI personality metadata.
+ *
+ * Personality affects conversational style only. Public labels stay concise and
+ * predictable; decorative emoji metadata is retained for optional creative UI.
  */
 
 const PERSONALITY_CONFIG = {
     cursed: {
-        name: "👹 Cursed",
-        description: "The default — helpful but can't stop roasting you",
+        name: "Cursed",
+        description: "Balanced default with dry humor and direct answers.",
         emoji: "👹",
         color: "#FF4444",
     },
     friendly: {
-        name: "😊 Friendly",
-        description: "Warm, supportive, and genuinely kind",
+        name: "Friendly",
+        description: "Warm, supportive, and relaxed.",
         emoji: "😊",
         color: "#44FF88",
     },
     savage: {
-        name: "🔥 Savage",
-        description: "Extreme roasting mode — legendary burns",
+        name: "Savage",
+        description: "Sharper humor and stronger roasts while staying useful.",
         emoji: "🔥",
         color: "#FF8800",
     },
     anime: {
-        name: "🌸 Anime",
-        description: "Anime references, honorifics, and dramatic reactions",
+        name: "Anime",
+        description: "Anime references and expressive conversational style.",
         emoji: "🌸",
         color: "#FF88CC",
     },
     pirate: {
-        name: "🏴‍☠️ Pirate",
-        description: "Arrr! Salty sea dog speak and nautical adventures",
+        name: "Pirate",
+        description: "Nautical phrasing and pirate-style banter.",
         emoji: "🏴‍☠️",
         color: "#884400",
     },
     wise: {
-        name: "🧙 Wise",
-        description: "Philosophical, profound, and full of ancient wisdom",
+        name: "Wise",
+        description: "Calm, reflective, and thoughtful.",
         emoji: "🧙",
         color: "#8844FF",
     },
     developer: {
-        name: "💻 Developer",
-        description: "Tech jargon, coding references, and nerd humor",
+        name: "Developer",
+        description: "Technical language, coding references, and concise explanations.",
         emoji: "💻",
         color: "#00AAFF",
     },
     chaos: {
-        name: "🌀 Chaos",
-        description: "Unpredictable, random, and gloriously unhinged",
+        name: "Chaos",
+        description: "Playfully unpredictable while still following the request.",
         emoji: "🌀",
         color: "#FF00FF",
     },
     flirty: {
-        name: "💘 Flirty",
-        description: "Playful compliments, charming banter, and respectful teasing",
+        name: "Flirty",
+        description: "Light playful banter and respectful compliments.",
         emoji: "💘",
         color: "#FF5FA2",
     },
@@ -62,22 +64,13 @@ const PERSONALITY_CONFIG = {
 
 const VALID_PERSONALITIES = Object.keys(PERSONALITY_CONFIG)
 
-/**
- * Get display info for a personality type.
- * @param {string} type
- * @returns {object}
- */
 function getPersonalityInfo(type) {
     return PERSONALITY_CONFIG[type] || PERSONALITY_CONFIG.cursed
 }
 
-/**
- * Format the personality list for display in Discord.
- * @returns {string}
- */
 function formatPersonalityList() {
     return Object.entries(PERSONALITY_CONFIG)
-        .map(([key, cfg]) => `\`${key}\` ${cfg.emoji} — ${cfg.description}`)
+        .map(([key, config]) => `\`${key}\` — ${config.description}`)
         .join("\n")
 }
 
