@@ -1,8 +1,9 @@
 /**
  * CURSED Help — product-oriented command browser.
  *
- * The command catalog is unchanged. Reboot only changes how it is presented:
- * a small set of stable product sections instead of a wall of internal modules.
+ * Reboot keeps the public hierarchy small while letting every deployed module
+ * expose a deep command surface. Prefix examples always follow the guild's
+ * configured prefix instead of teaching stale hard-coded syntax.
  */
 
 const {
@@ -22,6 +23,7 @@ const {
     searchCommands,
 } = require("../utils/helpGenerator")
 const { COLORS, SAFE_MENTIONS } = require("../utils/responseBuilder")
+const { getGuildPrefix } = require("../utils/prefix")
 const {
     BRAND,
     cleanCategoryName,
@@ -32,7 +34,7 @@ const { sanitize } = require("../utils/mentionSanitizer")
 const logger = require("../utils/logger")
 
 const log = logger.child("Help")
-const PAGE_SIZE = 8
+const PAGE_SIZE = 12
 const SESSION_MS = 180_000
 const OWNER_IDS = (process.env.BOT_OWNER_IDS || "").split(",").map(value => value.trim()).filter(Boolean)
 
@@ -60,6 +62,31 @@ function accessFor(message) {
     return { owner, admin }
 }
 
+function prefixFor(message) {
+    return message.guild ? getGuildPrefix(message.guild.id) : "c!"
+}
+
+function prefixAware(value, message) {
+    const prefix = prefixFor(message)
+    return String(value || "")
+        .replace(/(^|\s)!([a-z][a-z0-9-]*)/gi, (_, lead, command) => `${lead}${prefix}${command}`)
+        .replace(/`!([a-z][a-z0-9-]*)/gi, `\`${prefix}$1`)
+}
+
+function displayCommandName(command, message) {
+    const name = String(command?.name || "")
+    return name.startsWith("!") ? `${prefixFor(message)}${name.slice(1)}` : name
+}
+
+function decorateCommand(command, message) {
+    return {
+        ...command,
+        displayName: displayCommandName(command, message),
+        displayUsage: prefixAware(command.usage || command.name, message),
+        displayExamples: (command.examples || []).map(example => prefixAware(example, message)),
+    }
+}
+
 function normalizeCategory(category) {
     if (!category) return null
     return {
@@ -71,9 +98,7 @@ function normalizeCategory(category) {
 
 function categoriesFor(access) {
     const categories = getCategories(access.admin).map(normalizeCategory).filter(Boolean)
-    if (access.owner && !categories.some(category => normalizeKey(category.key) === "owner")) {
-        categories.push(OWNER_CATEGORY)
-    }
+    if (access.owner && !categories.some(category => normalizeKey(category.key) === "owner")) categories.push(OWNER_CATEGORY)
     return categories
 }
 
@@ -114,11 +139,7 @@ function visibleSearch(query, access) {
 }
 
 function withMeta(category) {
-    return category.commands.map(command => ({
-        ...command,
-        category: category.name,
-        categoryKey: category.key,
-    }))
+    return category.commands.map(command => ({ ...command, category: category.name, categoryKey: category.key }))
 }
 
 function avatar(message) {
@@ -134,6 +155,7 @@ function addThumbnail(embed, message) {
 function homeEmbed(message, access) {
     const sections = sectionsFor(access)
     const visibleCount = sections.reduce((sum, section) => sum + section.commandCount, 0)
+    const prefix = prefixFor(message)
     const fields = sections.map(section => ({
         name: section.name,
         value: `${section.commandCount} commands\n${section.categories.map(category => category.name).join(" · ")}`.slice(0, 1024),
@@ -143,11 +165,7 @@ function homeEmbed(message, access) {
     return addThumbnail(new EmbedBuilder()
         .setColor(COLORS.primary)
         .setTitle("CURSED")
-        .setDescription(
-            `${BRAND.tagline}\n\n` +
-            "Choose a section below or search for a command. " +
-            "For direct lookup, use `!help [command]`."
-        )
+        .setDescription(`${BRAND.tagline}\n\nChoose a section or search for a command. Direct lookup: \`${prefix}help <command>\`.`)
         .addFields(fields)
         .setFooter({ text: `CURSED • ${visibleCount} commands • ${access.owner ? "Owner" : access.admin ? "Server manager" : "Member"} access` })
         .setTimestamp(), message)
@@ -163,7 +181,7 @@ function sectionEmbed(message, section) {
             value: `${category.commands.length} commands`,
             inline: true,
         })))
-        .setFooter({ text: "CURSED • Select a category to continue" }), message)
+        .setFooter({ text: "CURSED • Select a module" }), message)
 }
 
 function categoryEmbed(message, category, page) {
@@ -171,37 +189,39 @@ function categoryEmbed(message, category, page) {
     const safePage = Math.max(0, Math.min(page, totalPages - 1))
     const commands = category.commands.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
     const description = commands.map(command => {
-        const meta = []
-        if (command.cooldown && command.cooldown !== "none") meta.push(`Cooldown ${command.cooldown}`)
-        if (command.slashOnly) meta.push("Slash")
-        const suffix = meta.length ? `  ${meta.map(value => `\`${value}\``).join(" ")}` : ""
-        return `**${command.name}**${suffix}\n${command.description}`
+        const decorated = decorateCommand(command, message)
+        const tags = []
+        if (command.cooldown && command.cooldown !== "none") tags.push(command.cooldown)
+        if (command.slashOnly) tags.push("slash")
+        const suffix = tags.length ? ` · ${tags.join(" · ")}` : ""
+        return `\`${decorated.displayName}\`${suffix}\n${command.description}`
     }).join("\n\n")
 
     return addThumbnail(new EmbedBuilder()
         .setColor(category.color || COLORS.primary)
         .setTitle(category.name)
-        .setDescription(description || "No commands are available in this category.")
-        .setFooter({ text: `CURSED • Page ${safePage + 1}/${totalPages} • Select a command for details` }), message)
+        .setDescription(description || "No commands are available in this module.")
+        .setFooter({ text: `CURSED • ${category.commands.length} commands • Page ${safePage + 1}/${totalPages}` }), message)
 }
 
 function detailEmbed(message, command) {
+    const decorated = decorateCommand(command, message)
     const embed = new EmbedBuilder()
         .setColor(COLORS.primary)
-        .setTitle(command.name)
+        .setTitle(decorated.displayName)
         .setDescription(command.description)
-        .addFields({ name: "Syntax", value: `\`${command.usage || command.name}\``, inline: false })
+        .addFields({ name: "Syntax", value: `\`${decorated.displayUsage}\``, inline: false })
 
-    if (command.examples?.length) embed.addFields({ name: "Examples", value: command.examples.map(example => `\`${example}\``).join("\n"), inline: false })
+    if (decorated.displayExamples.length) embed.addFields({ name: "Examples", value: decorated.displayExamples.map(example => `\`${example}\``).join("\n"), inline: false })
     if (command.cooldown && command.cooldown !== "none") embed.addFields({ name: "Cooldown", value: command.cooldown, inline: true })
-    if (command.aliases?.length) embed.addFields({ name: "Aliases", value: command.aliases.map(alias => `\`${alias}\``).join(", "), inline: true })
+    if (command.aliases?.length) embed.addFields({ name: "Aliases", value: command.aliases.map(alias => `\`${prefixAware(alias, message)}\``).join(", "), inline: true })
     embed.addFields({ name: "Permissions", value: command.permissions?.length ? command.permissions.join(", ") : "Everyone", inline: true })
-    embed.addFields({ name: "Category", value: cleanCategoryName(command.category), inline: true })
+    embed.addFields({ name: "Module", value: cleanCategoryName(command.category), inline: true })
     embed.setFooter({ text: BRAND.helpFooter })
     return addThumbnail(embed, message)
 }
 
-function resultsEmbed(query, results) {
+function resultsEmbed(message, query, results) {
     if (!results.length) {
         return new EmbedBuilder()
             .setColor(COLORS.error)
@@ -213,27 +233,28 @@ function resultsEmbed(query, results) {
     return new EmbedBuilder()
         .setColor(COLORS.primary)
         .setTitle(`Search • ${sanitize(query)}`)
-        .setDescription(results.slice(0, 12).map(command => `**${command.name}** • ${cleanCategoryName(command.category)}\n${command.description}`).join("\n\n"))
+        .setDescription(results.slice(0, 12).map(command => `\`${displayCommandName(command, message)}\` • ${cleanCategoryName(command.category)}\n${command.description}`).join("\n\n"))
         .setFooter({ text: `CURSED • ${results.length} match${results.length === 1 ? "" : "es"}` })
 }
 
-function popularEmbed(results) {
+function popularEmbed(message, results) {
     return new EmbedBuilder()
         .setColor(COLORS.primary)
         .setTitle("Common commands")
-        .setDescription(results.map(command => `**${command.name}** • ${cleanCategoryName(command.category)}\n${command.description}`).join("\n\n"))
+        .setDescription(results.map(command => `\`${displayCommandName(command, message)}\` • ${cleanCategoryName(command.category)}\n${command.description}`).join("\n\n"))
         .setFooter({ text: BRAND.helpFooter })
 }
 
-function guideEmbed() {
+function guideEmbed(message) {
+    const prefix = prefixFor(message)
     return new EmbedBuilder()
         .setColor(COLORS.info)
         .setTitle("Using CURSED")
         .setDescription(
-            "**Browse** — choose a product section, then a category.\n\n" +
-            "**Search** — search by command name or purpose.\n\n" +
-            "**Direct lookup** — use `!help [command]`, for example `!help ban`.\n\n" +
-            "Administrative commands appear only when your account has access."
+            `**Browse** — choose a product section, then a module.\n\n` +
+            `**Search** — search by command name or purpose.\n\n` +
+            `**Direct lookup** — use \`${prefix}help <command>\`, for example \`${prefix}help ban\`.\n\n` +
+            "Administrative modules appear only when your account has access."
         )
         .setFooter({ text: BRAND.helpFooter })
 }
@@ -253,7 +274,7 @@ function sectionRow(sections, selected = null) {
 function categoryRow(categories, selected = null) {
     return new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
         .setCustomId("help_category")
-        .setPlaceholder("Choose a category")
+        .setPlaceholder("Choose a module")
         .addOptions(categories.slice(0, 25).map(category => ({
             label: category.name.slice(0, 100),
             description: `${category.commands.length} commands`.slice(0, 100),
@@ -262,12 +283,12 @@ function categoryRow(categories, selected = null) {
         }))))
 }
 
-function commandRow(commands, id, placeholder) {
+function commandRow(commands, id, placeholder, message) {
     return new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
         .setCustomId(id)
         .setPlaceholder(placeholder)
         .addOptions(commands.slice(0, 25).map(command => ({
-            label: command.name.slice(0, 100),
+            label: displayCommandName(command, message).slice(0, 100),
             description: command.description.slice(0, 100),
             value: `${command.categoryKey}::${command.name}`.slice(0, 100),
         }))))
@@ -283,15 +304,10 @@ function homeButtons() {
 
 function navButtons(page = 0, totalPages = 1, detail = false) {
     const row = new ActionRowBuilder()
-    if (detail) {
-        row.addComponents(new ButtonBuilder().setCustomId("help_back").setLabel("Back").setStyle(ButtonStyle.Secondary))
-    } else {
-        row.addComponents(new ButtonBuilder().setCustomId("help_prev").setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0))
-    }
+    if (detail) row.addComponents(new ButtonBuilder().setCustomId("help_back").setLabel("Back").setStyle(ButtonStyle.Secondary))
+    else row.addComponents(new ButtonBuilder().setCustomId("help_prev").setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0))
     row.addComponents(new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary))
-    if (!detail) {
-        row.addComponents(new ButtonBuilder().setCustomId("help_next").setLabel("Next").setStyle(ButtonStyle.Primary).setDisabled(page >= totalPages - 1))
-    }
+    if (!detail) row.addComponents(new ButtonBuilder().setCustomId("help_next").setLabel("Next").setStyle(ButtonStyle.Primary).setDisabled(page >= totalPages - 1))
     row.addComponents(new ButtonBuilder().setCustomId("help_search").setLabel("Search").setStyle(ButtonStyle.Secondary))
     return row
 }
@@ -344,21 +360,19 @@ function render(message, access, state) {
             components: [
                 sectionRow(sections, section?.key || null),
                 categoryRow(section?.categories || [category], category.key),
-                commandRow(withMeta(category), "help_command", "View command details"),
+                commandRow(withMeta(category), "help_command", "View command details", message),
                 navButtons(state.page, totalPages),
             ],
         }
     }
 
-    if (state.view === "detail" && state.command) {
-        return { embeds: [detailEmbed(message, state.command)], components: [navButtons(0, 1, true)] }
-    }
+    if (state.view === "detail" && state.command) return { embeds: [detailEmbed(message, state.command)], components: [navButtons(0, 1, true)] }
 
     if (state.view === "search") {
         return {
-            embeds: [resultsEmbed(state.query, state.results)],
+            embeds: [resultsEmbed(message, state.query, state.results)],
             components: [
-                ...(state.results.length ? [commandRow(state.results, "help_result", "Open a search result")] : []),
+                ...(state.results.length ? [commandRow(state.results, "help_result", "Open a search result", message)] : []),
                 simpleNav(),
             ],
         }
@@ -367,16 +381,15 @@ function render(message, access, state) {
     if (state.view === "popular") {
         const results = popularFor(access)
         return {
-            embeds: [popularEmbed(results)],
+            embeds: [popularEmbed(message, results)],
             components: [
-                ...(results.length ? [commandRow(results, "help_popular_result", "Open a command")] : []),
+                ...(results.length ? [commandRow(results, "help_popular_result", "Open a command", message)] : []),
                 simpleNav(),
             ],
         }
     }
 
-    if (state.view === "guide") return { embeds: [guideEmbed()], components: [simpleNav()] }
-
+    if (state.view === "guide") return { embeds: [guideEmbed(message)], components: [simpleNav()] }
     return { embeds: [homeEmbed(message, access)], components: [sectionRow(sections), homeButtons()] }
 }
 
@@ -408,14 +421,11 @@ async function searchModal(interaction, sent, message, access, state) {
     const input = new TextInputBuilder()
         .setCustomId("query")
         .setLabel("Command or keyword")
-        .setPlaceholder("ban, security, balance, profile...")
+        .setPlaceholder("antinuke, automod, giveaway, balance...")
         .setStyle(TextInputStyle.Short)
         .setMaxLength(80)
         .setRequired(true)
-    const modal = new ModalBuilder()
-        .setCustomId(modalId)
-        .setTitle("Search CURSED")
-        .addComponents(new ActionRowBuilder().addComponents(input))
+    const modal = new ModalBuilder().setCustomId(modalId).setTitle("Search CURSED").addComponents(new ActionRowBuilder().addComponents(input))
 
     await interaction.showModal(modal)
     const submitted = await interaction.awaitModalSubmit({
@@ -425,15 +435,7 @@ async function searchModal(interaction, sent, message, access, state) {
     if (!submitted) return
 
     const query = submitted.fields.getTextInputValue("query").trim()
-    Object.assign(state, {
-        view: "search",
-        query,
-        results: visibleSearch(query, access).slice(0, 25),
-        sectionKey: null,
-        categoryKey: null,
-        command: null,
-        page: 0,
-    })
+    Object.assign(state, { view: "search", query, results: visibleSearch(query, access).slice(0, 25), sectionKey: null, categoryKey: null, command: null, page: 0 })
     await submitted.deferUpdate()
     await sent.edit(render(message, access, state))
 }
@@ -457,7 +459,7 @@ async function handle(message) {
         try {
             if (interaction.user.id !== message.author.id) {
                 await interaction.reply({
-                    content: "Run `!help` to open your own help menu.",
+                    content: `Run \`${prefixFor(message)}help\` to open your own help menu.`,
                     ephemeral: true,
                     allowedMentions: SAFE_MENTIONS,
                 }).catch(() => {})
@@ -472,15 +474,11 @@ async function handle(message) {
             await interaction.deferUpdate()
             const id = interaction.customId
 
-            if (id === "help_home") {
-                Object.assign(state, { view: "home", sectionKey: null, categoryKey: null, command: null, page: 0 })
-            } else if (id === "help_popular") {
-                Object.assign(state, { view: "popular", sectionKey: null, categoryKey: null, command: null, page: 0 })
-            } else if (id === "help_guide") {
-                Object.assign(state, { view: "guide", sectionKey: null, categoryKey: null, command: null, page: 0 })
-            } else if (interaction.isStringSelectMenu() && id === "help_section") {
-                Object.assign(state, { view: "section", sectionKey: interaction.values[0], categoryKey: null, command: null, page: 0 })
-            } else if (interaction.isStringSelectMenu() && id === "help_category") {
+            if (id === "help_home") Object.assign(state, { view: "home", sectionKey: null, categoryKey: null, command: null, page: 0 })
+            else if (id === "help_popular") Object.assign(state, { view: "popular", sectionKey: null, categoryKey: null, command: null, page: 0 })
+            else if (id === "help_guide") Object.assign(state, { view: "guide", sectionKey: null, categoryKey: null, command: null, page: 0 })
+            else if (interaction.isStringSelectMenu() && id === "help_section") Object.assign(state, { view: "section", sectionKey: interaction.values[0], categoryKey: null, command: null, page: 0 })
+            else if (interaction.isStringSelectMenu() && id === "help_category") {
                 const category = categoryFor(interaction.values[0], access)
                 const section = category ? sectionContainingCategory(category.key, access) : null
                 if (category) Object.assign(state, { view: "category", sectionKey: section?.key || null, categoryKey: category.key, command: null, page: 0 })
@@ -490,13 +488,9 @@ async function handle(message) {
                     const section = sectionContainingCategory(command.categoryKey, access)
                     Object.assign(state, { view: "detail", command, sectionKey: section?.key || null, categoryKey: command.categoryKey, page: 0 })
                 }
-            } else if (id === "help_prev" && state.view === "category") {
-                state.page = Math.max(0, state.page - 1)
-            } else if (id === "help_next" && state.view === "category") {
-                state.page += 1
-            } else if (id === "help_back" && state.categoryKey) {
-                Object.assign(state, { view: "category", command: null })
-            }
+            } else if (id === "help_prev" && state.view === "category") state.page = Math.max(0, state.page - 1)
+            else if (id === "help_next" && state.view === "category") state.page += 1
+            else if (id === "help_back" && state.categoryKey) Object.assign(state, { view: "category", command: null })
 
             await sent.edit(render(message, access, state))
         } catch (err) {
@@ -508,4 +502,4 @@ async function handle(message) {
     return true
 }
 
-module.exports = { handle }
+module.exports = { handle, prefixAware, displayCommandName, decorateCommand }
