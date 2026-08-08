@@ -14,10 +14,10 @@ const {
     restoreDeletedRole,
     notifyOwner,
 } = require("./securityResponse")
-const {
-    consumeBotApproval,
-    setIncidentMode,
-} = require("./securityRecoverySuite")
+const { consumeBotApproval, setIncidentMode } = require("./securityRecoverySuite")
+const { resolveAuditEntry } = require("./auditLogResolver")
+const { evaluateJoinRisk } = require("./antiRaidRisk")
+const { recordTiming } = require("./runtimeMetrics")
 
 const joinWindows = new Map()
 const activeRaids = new Map()
@@ -26,6 +26,10 @@ const triggerCooldowns = new Map()
 const processedAuditIds = new Set()
 const processingAddedBots = new Set()
 let attached = false
+
+const MAX_RUNTIME_KEYS = 5000
+const RUNTIME_STATE_TTL_MS = 30 * 60 * 1000
+const runtimeTouchedAt = new Map()
 
 const EVENT_DEFINITIONS = Object.freeze({
     bans: { thresholdKey: "bans", scope: "massModeration", severity: "critical", label: "Mass bans" },
@@ -39,7 +43,7 @@ const EVENT_DEFINITIONS = Object.freeze({
     webhookChanges: { thresholdKey: "webhookChanges", scope: "manageWebhooks", severity: "critical", label: "Webhook abuse" },
     dangerousRoleChanges: { thresholdKey: "dangerousRoleChanges", scope: "manageRoles", severity: "critical", label: "Dangerous role permission changes" },
     botAdds: { thresholdKey: "botAdds", scope: "addBots", severity: "critical", label: "Unauthorized bot addition" },
-    guildUpdates: { thresholdKey: "guildUpdates", scope: "manageRoles", severity: "high", label: "Mass server setting changes" },
+    guildUpdates: { thresholdKey: "guildUpdates", scope: "manageGuild", severity: "high", label: "Mass server setting changes" },
 })
 
 function now() {
@@ -47,16 +51,45 @@ function now() {
 }
 
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms))
+    return new Promise(resolve => {
+        const timer = setTimeout(resolve, ms)
+        timer.unref?.()
+    })
 }
+
+function touchRuntimeKey(key) {
+    runtimeTouchedAt.set(key, now())
+}
+
+function cleanupRuntimeState() {
+    const cutoff = now() - RUNTIME_STATE_TTL_MS
+    for (const [key, touchedAt] of runtimeTouchedAt.entries()) {
+        if (touchedAt >= cutoff) continue
+        runtimeTouchedAt.delete(key)
+        actionWindows.delete(key)
+        triggerCooldowns.delete(key)
+    }
+    for (const [guildId, timestamps] of joinWindows.entries()) {
+        if (!timestamps.length || Math.max(...timestamps) < cutoff) joinWindows.delete(guildId)
+    }
+    for (const [guildId, expiresAt] of activeRaids.entries()) {
+        if (expiresAt <= now()) activeRaids.delete(guildId)
+    }
+    while (runtimeTouchedAt.size > MAX_RUNTIME_KEYS) {
+        const oldest = runtimeTouchedAt.keys().next().value
+        runtimeTouchedAt.delete(oldest)
+        actionWindows.delete(oldest)
+        triggerCooldowns.delete(oldest)
+    }
+}
+
+const cleanupTimer = setInterval(cleanupRuntimeState, 60_000)
+cleanupTimer.unref?.()
 
 function rememberAuditId(id) {
     if (!id || processedAuditIds.has(id)) return false
     processedAuditIds.add(id)
-    if (processedAuditIds.size > 4000) {
-        const first = processedAuditIds.values().next().value
-        processedAuditIds.delete(first)
-    }
+    if (processedAuditIds.size > 4000) processedAuditIds.delete(processedAuditIds.values().next().value)
     return true
 }
 
@@ -74,6 +107,7 @@ function addActionCount(guildId, executorId, eventType, windowMs) {
     const times = pruneTimes(actionWindows.get(key) || [], windowMs)
     times.push(now())
     actionWindows.set(key, times)
+    touchRuntimeKey(key)
     return times.length
 }
 
@@ -82,6 +116,7 @@ function shouldTrigger(guildId, executorId, eventType, windowMs) {
     const last = triggerCooldowns.get(key) || 0
     if (now() - last < Math.max(2500, windowMs / 2)) return false
     triggerCooldowns.set(key, now())
+    touchRuntimeKey(key)
     return true
 }
 
@@ -90,49 +125,59 @@ function userTag(user) {
 }
 
 async function sendSecurityAlert(guild, incident, config) {
-    const channelId = config.securityLogChannelId
-    const channel = channelId ? guild.channels.cache.get(channelId) : null
+    const channel = config.securityLogChannelId ? guild.channels.cache.get(config.securityLogChannelId) : null
     if (!channel?.isTextBased()) return false
     const executor = incident.executorId ? `<@${incident.executorId}>` : "Unknown"
     const target = incident.targetId ? `\`${incident.targetId}\`` : "Multiple targets"
     const embed = new EmbedBuilder()
         .setColor(incident.severity === "critical" ? 0xE53935 : incident.severity === "high" ? 0xFF7A00 : 0xF5B041)
-        .setTitle(`🛡️ ${String(incident.type || "Security incident").replace(/_/g, " ")}`)
+        .setTitle(`Security • ${String(incident.type || "Incident").replace(/_/g, " ")}`)
         .addFields(
             { name: "Executor", value: executor, inline: true },
             { name: "Target", value: target, inline: true },
             { name: "Response", value: String(incident.actionTaken || "alert").slice(0, 1024), inline: true },
         )
-        .setDescription(String(incident.details?.summary || "CURSED detected suspicious server activity.").slice(0, 4000))
+        .setDescription(String(incident.details?.summary || "Suspicious server activity was detected.").slice(0, 4000))
+        .setFooter({ text: "CURSED • Server Protection" })
         .setTimestamp()
     await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => {})
     return true
 }
 
 async function executeSecurityResponse(guild, config, action, { member = null, reason, actor = null } = {}) {
-    if (action === "neutralize" && member) {
-        const result = await neutralizeExecutor(guild, member, config, { reason, actor })
-        return result.ok ? "neutralized" : `alert (neutralization unavailable: ${result.errors?.join("; ") || result.error || "unknown"})`
+    const startedAt = now()
+    try {
+        if (action === "neutralize" && member) {
+            const result = await neutralizeExecutor(guild, member, config, { reason, actor })
+            return result.ok ? "neutralized" : `alert (neutralization unavailable: ${result.errors?.join("; ") || result.error || "unknown"})`
+        }
+        if (action === "quarantine" && member) {
+            const result = await quarantineMember(guild, member, config, { reason, moderator: actor })
+            if (result.ok) return "quarantine"
+            const fallback = await neutralizeExecutor(guild, member, { ...config, antiNuke: { ...config.antiNuke, autoLockdown: false } }, { reason, actor })
+            return fallback.ok ? "neutralized (quarantine fallback)" : `alert (quarantine unavailable: ${result.error})`
+        }
+        if (action === "lockdown" && config.lockdown.enabled) {
+            const result = await enableEmergencyLockdown(guild, config, { reason, actor })
+            return result.ok ? "lockdown" : `alert (lockdown unavailable: ${result.error})`
+        }
+        return "alert"
+    } finally {
+        recordTiming("security.response", now() - startedAt)
     }
-    if (action === "quarantine" && member) {
-        const result = await quarantineMember(guild, member, config, { reason, moderator: actor })
-        if (result.ok) return "quarantine"
-        const fallback = await neutralizeExecutor(guild, member, { ...config, antiNuke: { ...config.antiNuke, autoLockdown: false } }, { reason, actor })
-        return fallback.ok ? "neutralized (quarantine fallback)" : `alert (quarantine unavailable: ${result.error})`
-    }
-    if (action === "lockdown" && config.lockdown.enabled) {
-        const result = await enableEmergencyLockdown(guild, config, { reason, actor })
-        return result.ok ? "lockdown" : `alert (lockdown unavailable: ${result.error})`
-    }
-    return "alert"
 }
 
 async function recordAndAlert(guild, config, input) {
-    const incident = await createSecurityIncident({ guildId: guild.id, ...input }) || { guildId: guild.id, ...input }
-    await sendSecurityAlert(guild, incident, config)
+    const incident = await createSecurityIncident({ guildId: guild.id, ...input }).catch(() => null)
+        || { guildId: guild.id, ...input }
+    const tasks = [sendSecurityAlert(guild, incident, config)]
     if (config.antiNuke.ownerAlerts !== false && input.severity === "critical") {
-        await notifyOwner(guild, `🚨 CURSED detected **${String(input.type).replace(/_/g, " ")}** in **${guild.name}**. ${input.details?.summary || "A critical response was triggered."} Response: ${input.actionTaken || "alert"}.`)
+        tasks.push(notifyOwner(
+            guild,
+            `CURSED blocked ${String(input.type || "a security incident").replace(/_/g, " ").toLowerCase()} in **${guild.name}**. Response: ${input.actionTaken || "alert"}.`
+        ))
     }
+    await Promise.allSettled(tasks)
     return incident
 }
 
@@ -146,61 +191,67 @@ async function maybeActivateIncidentMode(guild, config, reason, severity) {
 }
 
 async function processJoin(member) {
-    const guild = member?.guild
-    if (!guild || member.user?.bot) return false
-    const config = getSecurityPhase3Config(guild.id)
-    if (!config.enabled || !config.antiRaid.enabled) return false
-    if (isTrustedForScope({ guildId: guild.id, member, userId: member.id, isBot: false, scope: "antiRaid" })) return false
+    const startedAt = now()
+    try {
+        const guild = member?.guild
+        if (!guild || member.user?.bot) return false
+        const config = getSecurityPhase3Config(guild.id)
+        if (!config.enabled || !config.antiRaid.enabled) return false
+        if (isTrustedForScope({ guildId: guild.id, member, userId: member.id, isBot: false, scope: "antiRaid" })) return false
 
-    const raid = config.antiRaid
-    const windowMs = raid.windowSeconds * 1000
-    const times = pruneTimes(joinWindows.get(guild.id) || [], windowMs)
-    times.push(now())
-    joinWindows.set(guild.id, times)
+        const raid = config.antiRaid
+        const windowMs = raid.windowSeconds * 1000
+        const times = pruneTimes(joinWindows.get(guild.id) || [], windowMs)
+        times.push(now())
+        joinWindows.set(guild.id, times)
 
-    const accountAgeHours = Math.floor((now() - member.user.createdTimestamp) / 3600000)
-    const suspiciousAccount = accountAgeHours < raid.minAccountAgeHours
-    const activeUntil = activeRaids.get(guild.id) || 0
-    const thresholdReached = times.length >= raid.joinThreshold
-    const raidActive = thresholdReached || activeUntil > now()
-    if (!raidActive) return false
+        const activeUntil = activeRaids.get(guild.id) || 0
+        const thresholdReached = times.length >= raid.joinThreshold
+        const raidAlreadyActive = activeUntil > now()
+        if (thresholdReached) activeRaids.set(guild.id, now() + raid.activeRaidSeconds * 1000)
 
-    if (thresholdReached) activeRaids.set(guild.id, now() + raid.activeRaidSeconds * 1000)
-    if (!suspiciousAccount && !thresholdReached) return false
+        const risk = evaluateJoinRisk(member, raid, {
+            joinCount: times.length,
+            thresholdReached,
+            raidAlreadyActive,
+            nowMs: now(),
+        })
+        if (!risk.shouldAction) return false
 
-    const summary = `Detected ${times.length} joins within ${raid.windowSeconds} seconds. ${member.user.tag} account age: ${accountAgeHours} hour(s).`
-    const response = await executeSecurityResponse(guild, config, raid.action, {
-        member,
-        reason: `Anti-raid: ${summary}`,
-        actor: { id: guild.members.me?.id, tag: "CURSED Anti-Raid" },
-    })
-    await recordAndAlert(guild, config, {
-        type: "ANTI_RAID",
-        severity: thresholdReached ? "critical" : "high",
-        executorId: null,
-        executorTag: "Automated raid detection",
-        targetId: member.id,
-        targetTag: userTag(member.user),
-        actionTaken: response,
-        details: { summary, joins: times.length, windowSeconds: raid.windowSeconds, accountAgeHours },
-    })
-    if (thresholdReached) await maybeActivateIncidentMode(guild, config, summary, "critical")
-    return true
+        const reasonText = risk.reasons.length ? risk.reasons.join(", ") : "join velocity"
+        const summary = `Anti-raid matched ${times.length} joins in ${raid.windowSeconds}s. Risk ${risk.score}/${risk.threshold}: ${reasonText}.`
+        const response = await executeSecurityResponse(guild, config, raid.action, {
+            member,
+            reason: `Anti-raid: ${summary}`,
+            actor: { id: guild.members.me?.id, tag: "CURSED Anti-Raid" },
+        })
+        await recordAndAlert(guild, config, {
+            type: "ANTI_RAID",
+            severity: thresholdReached ? "critical" : "high",
+            executorId: null,
+            executorTag: "Automated raid detection",
+            targetId: member.id,
+            targetTag: userTag(member.user),
+            actionTaken: response,
+            details: {
+                summary,
+                joins: times.length,
+                windowSeconds: raid.windowSeconds,
+                accountAgeHours: risk.accountAgeHours,
+                riskScore: risk.score,
+                riskThreshold: risk.threshold,
+                riskReasons: risk.reasons,
+            },
+        })
+        if (thresholdReached) await maybeActivateIncidentMode(guild, config, summary, "critical")
+        return true
+    } finally {
+        recordTiming("security.anti-raid.total", now() - startedAt)
+    }
 }
 
 async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null) {
-    const types = Array.isArray(auditTypes) ? auditTypes : [auditTypes]
-    const candidates = []
-    for (const type of types) {
-        try {
-            const logs = await guild.fetchAuditLogs({ type, limit: 8 })
-            for (const entry of logs.entries.values()) candidates.push(entry)
-        } catch { /* missing View Audit Log or unsupported audit event */ }
-    }
-    return candidates
-        .filter(entry => now() - entry.createdTimestamp < 20000)
-        .filter(entry => !targetId || String(entry.targetId || entry.target?.id || "") === String(targetId))
-        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0] || null
+    return resolveAuditEntry(guild, auditTypes, { targetId, maxAgeMs: 15_000, limit: 8 })
 }
 
 async function removeUnauthorizedAddedBot(member, reason) {
@@ -214,13 +265,10 @@ async function removeUnauthorizedAddedBot(member, reason) {
 
         if (current.bannable && guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
             try {
-                await guild.members.ban(current.id, {
-                    reason: String(reason).slice(0, 512),
-                    deleteMessageSeconds: 86400,
-                })
+                await guild.members.ban(current.id, { reason: String(reason).slice(0, 512), deleteMessageSeconds: 86400 })
                 return { ok: true, action: "bot banned", attempts: attempt, errors }
-            } catch (err) {
-                errors.push(`ban attempt ${attempt}: ${err.message}`)
+            } catch (error) {
+                errors.push(`ban attempt ${attempt}: ${error.message}`)
             }
         }
 
@@ -228,21 +276,20 @@ async function removeUnauthorizedAddedBot(member, reason) {
             try {
                 await current.kick(String(reason).slice(0, 512))
                 return { ok: true, action: "bot kicked", attempts: attempt, errors }
-            } catch (err) {
-                errors.push(`kick attempt ${attempt}: ${err.message}`)
+            } catch (error) {
+                errors.push(`kick attempt ${attempt}: ${error.message}`)
             }
         }
 
-        if (attempt < 3) await sleep(attempt * 400)
+        if (attempt < 3) await sleep(attempt * 250)
     }
-
     return { ok: false, action: "bot removal failed", attempts: 3, errors }
 }
 
 async function processUnauthorizedBotAdd(member) {
+    const startedAt = now()
     const guild = member?.guild
     if (!guild || !member.user?.bot || member.id === guild.members.me?.id) return false
-
     const processingKey = `${guild.id}:${member.id}`
     if (processingAddedBots.has(processingKey)) return false
     processingAddedBots.add(processingKey)
@@ -250,7 +297,6 @@ async function processUnauthorizedBotAdd(member) {
     try {
         const config = getSecurityPhase3Config(guild.id)
         if (!config.enabled || !config.antiNuke.enabled) return false
-
         const entry = await fetchMatchingAuditEntry(guild, AuditLogEvent.BotAdd, member.id)
         if (!entry || !rememberAuditId(entry.id)) return false
 
@@ -270,25 +316,20 @@ async function processUnauthorizedBotAdd(member) {
                     targetId: member.id,
                     targetTag: userTag(member.user),
                     actionTaken: "approved",
-                    details: { summary: `${userTag(member.user)} was allowed using a valid owner bot approval.`, approvalId: approval.id },
-                })
+                    details: { summary: `${userTag(member.user)} used a valid bot approval.`, approvalId: approval.id },
+                }).catch(() => {})
                 return true
             }
         }
 
-        if (isTrustedForScope({
-            guildId: guild.id,
-            member: inviterMember,
-            userId: inviterId,
-            isBot: entry.executor?.bot,
-            scope: "addBots",
-        })) return false
+        if (isTrustedForScope({ guildId: guild.id, member: inviterMember, userId: inviterId, isBot: entry.executor?.bot, scope: "addBots" })) return false
 
         const antiNuke = config.antiNuke
         const windowMs = antiNuke.windowSeconds * 1000
         const count = addActionCount(guild.id, inviterId, "botAdds", windowMs)
         const summary = `Unauthorized bot addition: ${userTag(entry.executor)} added ${userTag(member.user)} (${member.id}).`
 
+        // Remove the unapproved bot first. Logging is intentionally after the defensive action.
         const botRemoval = await removeUnauthorizedAddedBot(member, `CURSED anti-nuke: ${summary}`)
         await recordAndAlert(guild, config, {
             type: "ANTI_NUKE_ADDED_BOT_REMOVAL",
@@ -313,26 +354,24 @@ async function processUnauthorizedBotAdd(member) {
             })
             : "alert (inviter no longer in server)"
 
-        await recordAndAlert(guild, config, {
-            type: "ANTI_NUKE_BOTADDS",
-            severity: "critical",
-            executorId: inviterId,
-            executorTag: userTag(entry.executor),
-            targetId: member.id,
-            targetTag: userTag(member.user),
-            actionTaken: inviterResponse,
-            details: {
-                summary: `${summary} Added bot response: ${botRemoval.action}. Inviter response: ${inviterResponse}.`,
-                count,
-                threshold,
-                windowSeconds: antiNuke.windowSeconds,
-                botRemoval,
-            },
-        })
-        await maybeActivateIncidentMode(guild, config, summary, "critical")
+        await Promise.allSettled([
+            recordAndAlert(guild, config, {
+                type: "ANTI_NUKE_BOTADDS",
+                severity: "critical",
+                executorId: inviterId,
+                executorTag: userTag(entry.executor),
+                targetId: member.id,
+                targetTag: userTag(member.user),
+                actionTaken: inviterResponse,
+                details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, botRemoval },
+            }),
+            maybeActivateIncidentMode(guild, config, summary, "critical"),
+        ])
         return botRemoval.ok
     } finally {
-        setTimeout(() => processingAddedBots.delete(processingKey), 30000).unref?.()
+        recordTiming("security.bot-add.total", now() - startedAt)
+        const timer = setTimeout(() => processingAddedBots.delete(processingKey), 30_000)
+        timer.unref?.()
     }
 }
 
@@ -358,75 +397,77 @@ function staffLimitDefinition(eventType, config) {
 }
 
 async function processAuditEvent(guild, eventType, auditTypes, target = null, extra = {}) {
-    const definition = EVENT_DEFINITIONS[eventType]
-    if (!guild || !definition || eventType === "botAdds") return false
-    const config = getSecurityPhase3Config(guild.id)
-    if (!config.enabled || !config.antiNuke.enabled) return false
-    const entry = await fetchMatchingAuditEntry(guild, auditTypes, target?.id || null)
-    if (!entry || !rememberAuditId(entry.id)) return false
+    const startedAt = now()
+    try {
+        const definition = EVENT_DEFINITIONS[eventType]
+        if (!guild || !definition || eventType === "botAdds") return false
+        const config = getSecurityPhase3Config(guild.id)
+        if (!config.enabled || !config.antiNuke.enabled) return false
 
-    const executorId = String(entry.executorId || entry.executor?.id || "")
-    if (!executorId || executorId === guild.ownerId || executorId === guild.members.me?.id) return false
-    const executorMember = guild.members.cache.get(executorId) || await guild.members.fetch(executorId).catch(() => null)
-    if (isTrustedForScope({
-        guildId: guild.id,
-        member: executorMember,
-        userId: executorId,
-        isBot: entry.executor?.bot,
-        scope: definition.scope,
-    })) return false
+        const entry = await fetchMatchingAuditEntry(guild, auditTypes, target?.id || null)
+        if (!entry || !rememberAuditId(entry.id)) return false
+        const executorId = String(entry.executorId || entry.executor?.id || "")
+        if (!executorId || executorId === guild.ownerId || executorId === guild.members.me?.id) return false
 
-    const antiNuke = config.antiNuke
-    const threshold = antiNuke.thresholds[definition.thresholdKey]
-    const windowMs = antiNuke.windowSeconds * 1000
-    const count = addActionCount(guild.id, executorId, eventType, windowMs)
+        const executorMember = guild.members.cache.get(executorId) || await guild.members.fetch(executorId).catch(() => null)
+        if (isTrustedForScope({ guildId: guild.id, member: executorMember, userId: executorId, isBot: entry.executor?.bot, scope: definition.scope })) return false
 
-    let staff = null
-    if (!entry.executor?.bot && !isTrustedForScope({
-        guildId: guild.id,
-        member: executorMember,
-        userId: executorId,
-        isBot: false,
-        scope: "staffLimits",
-    })) {
-        const definitionForStaff = staffLimitDefinition(eventType, config)
-        if (definitionForStaff) {
-            const staffWindowMs = config.staffLimits.windowSeconds * 1000
-            const staffCount = addActionCount(guild.id, executorId, `staff:${definitionForStaff.key}`, staffWindowMs)
-            staff = { ...definitionForStaff, count: staffCount, windowSeconds: config.staffLimits.windowSeconds }
+        const antiNuke = config.antiNuke
+        const threshold = antiNuke.thresholds[definition.thresholdKey]
+        const windowMs = antiNuke.windowSeconds * 1000
+        const count = addActionCount(guild.id, executorId, eventType, windowMs)
+
+        let staff = null
+        if (!entry.executor?.bot && !isTrustedForScope({ guildId: guild.id, member: executorMember, userId: executorId, isBot: false, scope: "staffLimits" })) {
+            const staffDefinition = staffLimitDefinition(eventType, config)
+            if (staffDefinition) {
+                const staffWindowMs = config.staffLimits.windowSeconds * 1000
+                const staffCount = addActionCount(guild.id, executorId, `staff:${staffDefinition.key}`, staffWindowMs)
+                staff = { ...staffDefinition, count: staffCount, windowSeconds: config.staffLimits.windowSeconds }
+            }
         }
+
+        const staffTriggered = Boolean(staff && staff.count >= staff.threshold)
+        const antiNukeTriggered = count >= threshold
+        const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} in ${antiNuke.windowSeconds}s (limit ${threshold}).${staff ? ` Staff limit ${staff.count}/${staff.threshold}.` : ""}`
+        const triggerWindowMs = staffTriggered ? config.staffLimits.windowSeconds * 1000 : windowMs
+        const triggered = (antiNukeTriggered || staffTriggered)
+            && shouldTrigger(guild.id, executorId, staffTriggered ? `staff:${eventType}` : eventType, triggerWindowMs)
+
+        // On a triggered destructive event, stop the executor before spending time on recovery/logging.
+        let response = null
+        if (triggered) {
+            const responseAction = staffTriggered ? config.staffLimits.action : antiNuke.action
+            response = await executeSecurityResponse(guild, config, responseAction, {
+                member: executorMember,
+                reason: `${staffTriggered ? "Staff safety limit" : "Anti-nuke"}: ${summary}`,
+                actor: { id: guild.members.me?.id, tag: staffTriggered ? "CURSED Staff Safety" : "CURSED Anti-Nuke" },
+            })
+        }
+
+        const recovery = await recoveryForEvent(guild, config, eventType, target, summary)
+        if (!triggered) return Boolean(recovery?.ok)
+
+        const incidentType = staffTriggered ? `STAFF_LIMIT_${eventType.toUpperCase()}` : `ANTI_NUKE_${eventType.toUpperCase()}`
+        const severity = staffTriggered ? "critical" : definition.severity
+        await Promise.allSettled([
+            recordAndAlert(guild, config, {
+                type: incidentType,
+                severity,
+                executorId,
+                executorTag: userTag(entry.executor),
+                targetId: target?.id || String(entry.targetId || entry.target?.id || "") || null,
+                targetTag: target?.name || target?.tag || entry.target?.name || userTag(entry.target) || null,
+                actionTaken: response || "alert",
+                auditLogEntryId: entry.id,
+                details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, staff, recovery, ...extra },
+            }),
+            maybeActivateIncidentMode(guild, config, summary, severity),
+        ])
+        return true
+    } finally {
+        recordTiming(`security.event.${eventType}`, now() - startedAt)
     }
-
-    const staffTriggered = Boolean(staff && staff.count >= staff.threshold)
-    const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds} seconds (threshold ${threshold}).${staff ? ` Staff limit: ${staff.count}/${staff.threshold} ${staff.key} in ${staff.windowSeconds}s.` : ""}`
-    const recovery = await recoveryForEvent(guild, config, eventType, target, summary)
-    const antiNukeTriggered = count >= threshold
-
-    if ((!antiNukeTriggered && !staffTriggered) || !shouldTrigger(guild.id, executorId, staffTriggered ? `staff:${eventType}` : eventType, staffTriggered ? config.staffLimits.windowSeconds * 1000 : windowMs)) {
-        return Boolean(recovery?.ok)
-    }
-
-    const responseAction = staffTriggered ? config.staffLimits.action : antiNuke.action
-    const response = await executeSecurityResponse(guild, config, responseAction, {
-        member: executorMember,
-        reason: `${staffTriggered ? "Staff safety limit" : "Anti-nuke"}: ${summary}`,
-        actor: { id: guild.members.me?.id, tag: staffTriggered ? "CURSED Staff Safety" : "CURSED Anti-Nuke" },
-    })
-    const incidentType = staffTriggered ? `STAFF_LIMIT_${eventType.toUpperCase()}` : `ANTI_NUKE_${eventType.toUpperCase()}`
-    const severity = staffTriggered ? "critical" : definition.severity
-    await recordAndAlert(guild, config, {
-        type: incidentType,
-        severity,
-        executorId,
-        executorTag: userTag(entry.executor),
-        targetId: target?.id || String(entry.targetId || entry.target?.id || "") || null,
-        targetTag: target?.name || target?.tag || entry.target?.name || userTag(entry.target) || null,
-        actionTaken: response,
-        auditLogEntryId: entry.id,
-        details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, staff, recovery, ...extra },
-    })
-    await maybeActivateIncidentMode(guild, config, summary, severity)
-    return true
 }
 
 function dangerousPermissionsAdded(oldRole, newRole) {
@@ -444,8 +485,8 @@ function dangerousPermissionsAdded(oldRole, newRole) {
 }
 
 function safeListener(label, handler) {
-    return (...args) => Promise.resolve(handler(...args)).catch(err => {
-        console.error(`[SecurityPhase3:${label}]`, err.message)
+    return (...args) => Promise.resolve(handler(...args)).catch(error => {
+        console.error(`[Security:${label}]`, error.message)
     })
 }
 
@@ -497,4 +538,6 @@ module.exports = {
     removeUnauthorizedAddedBot,
     dangerousPermissionsAdded,
     staffLimitDefinition,
+    fetchMatchingAuditEntry,
+    cleanupRuntimeState,
 }
