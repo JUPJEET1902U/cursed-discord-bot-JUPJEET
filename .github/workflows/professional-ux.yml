@@ -1,0 +1,50 @@
+name: Professional UX CI
+
+on:
+  pull_request:
+    paths:
+      - "commands/help.js"
+      - "commands/securityProtection.js"
+      - "commands/securitySuite.js"
+      - "utils/responseBuilder.js"
+      - "utils/modlog.js"
+      - "utils/securityOwnerNotification.js"
+      - "test/professional-ux.test.js"
+      - "test/security-owner-notification.test.js"
+      - "docs/ux-style-guide.md"
+      - ".github/workflows/professional-ux.yml"
+
+jobs:
+  presentation-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax checks
+        run: |
+          node --check utils/responseBuilder.js
+          node --check utils/modlog.js
+          node --check utils/securityOwnerNotification.js
+          node --check commands/help.js
+          node --check commands/securityProtection.js
+          node --check commands/securitySuite.js
+          node --check test/professional-ux.test.js
+          node --check test/security-owner-notification.test.js
+
+      - name: Professional presentation contracts
+        run: node --test test/professional-ux.test.js
+
+      - name: Existing security notification regression
+        run: node test/security-owner-notification.test.js

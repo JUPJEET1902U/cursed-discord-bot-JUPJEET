@@ -9,13 +9,14 @@ const { quarantineMember, releaseQuarantine, getActiveQuarantineCount } = requir
 const { enableEmergencyLockdown, disableEmergencyLockdown, getLockdownStatus } = require("../utils/lockdownState")
 const { getSecurityIncidentStats } = require("../utils/securityIncidents")
 const { logAction } = require("../utils/modlog")
+const { COLORS, statusLine } = require("../utils/responseBuilder")
 
 const COMMAND_NAMES = new Set(["quarantine", "unquarantine", "lockdown", "security-status"])
 
 const commands = [
     new SlashCommandBuilder()
         .setName("quarantine")
-        .setDescription("Isolate a member and safely preserve their restorable roles")
+        .setDescription("Isolate a member while preserving restorable roles")
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
         .addUserOption(option => option.setName("user").setDescription("Member to quarantine").setRequired(true))
         .addStringOption(option => option.setName("reason").setDescription("Reason for quarantine").setRequired(true).setMaxLength(1000)),
@@ -27,7 +28,7 @@ const commands = [
         .addStringOption(option => option.setName("reason").setDescription("Reason for release").setMaxLength(1000)),
     new SlashCommandBuilder()
         .setName("lockdown")
-        .setDescription("Control CURSED emergency server lockdown")
+        .setDescription("Manage emergency server lockdown")
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
         .addSubcommand(option => option
             .setName("enable")
@@ -35,12 +36,12 @@ const commands = [
             .addStringOption(input => input.setName("reason").setDescription("Reason for lockdown").setRequired(true).setMaxLength(1000)))
         .addSubcommand(option => option
             .setName("disable")
-            .setDescription("Restore the exact saved channel permissions")
+            .setDescription("Restore saved channel permissions")
             .addStringOption(input => input.setName("reason").setDescription("Reason for ending lockdown").setMaxLength(1000)))
         .addSubcommand(option => option.setName("status").setDescription("Show current lockdown state")),
     new SlashCommandBuilder()
         .setName("security-status")
-        .setDescription("Show CURSED anti-raid, anti-nuke, quarantine, and lockdown status")
+        .setDescription("Show server protection status")
         .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers),
 ]
 
@@ -67,23 +68,23 @@ async function guard(interaction, { requireSecurityEnabled = true, permission = 
     const moderation = getModerationConfig(interaction.guildId)
     const security = getSecurityPhase3Config(interaction.guildId)
     if (!moderation.moderationCommandsEnabled) {
-        await safeReply(interaction, { content: "⛔ Moderation is disabled in this server.", ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", "Moderation is disabled in this server."), ephemeral: true })
         return { ok: false, handled: true }
     }
     if (requireSecurityEnabled && !security.enabled) {
-        await safeReply(interaction, { content: "⛔ Server Protection is disabled. Enable it from the dashboard first.", ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", "Server Protection is disabled. Enable it from the dashboard first."), ephemeral: true })
         return { ok: false, handled: true }
     }
     if (!isModerator(interaction.member, moderation)) {
-        await safeReply(interaction, { content: "❌ You are not authorized to use CURSED security commands.", ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", "You are not authorized to use security commands."), ephemeral: true })
         return { ok: false, handled: true }
     }
     if (permission && !interaction.memberPermissions?.has(permission)) {
-        await safeReply(interaction, { content: "❌ You do not have the Discord permission required for that action.", ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", "You do not have the Discord permission required for this action."), ephemeral: true })
         return { ok: false, handled: true }
     }
     if (permission && !interaction.guild.members.me?.permissions.has(permission)) {
-        await safeReply(interaction, { content: "❌ CURSED does not have the Discord permission required for that action.", ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", "CURSED does not have the Discord permission required for this action."), ephemeral: true })
         return { ok: false, handled: true }
     }
     return { ok: true, handled: true, moderation, security }
@@ -108,7 +109,7 @@ async function validateQuarantineTarget(interaction, user, security) {
         isBot: member.user.bot,
         scope: "manualModeration",
     })) {
-        return { ok: false, error: "That member is protected by the granular security whitelist. Only the server owner can override it." }
+        return { ok: false, error: "That member is protected by the security whitelist. Only the server owner can override it." }
     }
     if (!security.quarantine.enabled) return { ok: false, error: "Quarantine is disabled in Server Protection settings." }
     return { ok: true, member }
@@ -119,7 +120,7 @@ async function handleQuarantine(interaction, guardResult) {
     const reason = interaction.options.getString("reason", true).trim()
     const validation = await validateQuarantineTarget(interaction, user, guardResult.security)
     if (!validation.ok) {
-        await safeReply(interaction, { content: `❌ ${validation.error}`, ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", validation.error), ephemeral: true })
         return true
     }
     await interaction.deferReply({ ephemeral: true })
@@ -128,7 +129,7 @@ async function handleQuarantine(interaction, guardResult) {
         moderator: actor(interaction),
     })
     if (!result.ok) {
-        await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", result.error), ephemeral: true })
         return true
     }
     const log = await logAction(interaction.guild, {
@@ -140,7 +141,7 @@ async function handleQuarantine(interaction, guardResult) {
         metadata: { originalRoleIds: result.state.originalRoleIds || [] },
     })
     await safeReply(interaction, {
-        content: `🛡️ **${user.tag}** was quarantined safely${log.caseRecord ? ` • Case #${log.caseRecord.caseNumber}` : ""}.`,
+        content: statusLine("success", `Quarantined **${user.tag}**${log.caseRecord ? ` • Case #${log.caseRecord.caseNumber}` : ""}.`),
         ephemeral: true,
     })
     return true
@@ -151,13 +152,13 @@ async function handleUnquarantine(interaction) {
     const reason = interaction.options.getString("reason")?.trim() || "Quarantine released"
     const member = interaction.guild.members.cache.get(user.id) || await interaction.guild.members.fetch(user.id).catch(() => null)
     if (!member) {
-        await safeReply(interaction, { content: "❌ That user is not currently in this server.", ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", "That user is not currently in this server."), ephemeral: true })
         return true
     }
     await interaction.deferReply({ ephemeral: true })
     const result = await releaseQuarantine(interaction.guild, member, { reason, moderator: actor(interaction) })
     if (!result.ok) {
-        await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", result.error), ephemeral: true })
         return true
     }
     const log = await logAction(interaction.guild, {
@@ -170,7 +171,7 @@ async function handleUnquarantine(interaction) {
     })
     const missing = result.missingRoleIds?.length ? ` ${result.missingRoleIds.length} deleted or unmanageable role(s) could not be restored.` : ""
     await safeReply(interaction, {
-        content: `✅ **${user.tag}** was released from quarantine${log.caseRecord ? ` • Case #${log.caseRecord.caseNumber}` : ""}.${missing}`,
+        content: statusLine("success", `Released **${user.tag}** from quarantine${log.caseRecord ? ` • Case #${log.caseRecord.caseNumber}` : ""}.${missing}`),
         ephemeral: true,
     })
     return true
@@ -182,8 +183,8 @@ async function handleLockdown(interaction, guardResult) {
         const state = await getLockdownStatus(interaction.guildId)
         await safeReply(interaction, {
             content: state.active
-                ? `🔒 Emergency lockdown is **active** across **${state.snapshots?.length || 0}** saved channel(s).`
-                : `🔓 Emergency lockdown is **not active**. Last state: **${state.status || "inactive"}**.`,
+                ? statusLine("security", `Lockdown active • ${state.snapshots?.length || 0} saved channel(s).`)
+                : statusLine("success", `Lockdown is not active • Last state: ${state.status || "inactive"}.`),
             ephemeral: true,
         })
         return true
@@ -193,12 +194,12 @@ async function handleLockdown(interaction, guardResult) {
     await interaction.deferReply({ ephemeral: true })
     if (subcommand === "enable") {
         if (!guardResult.security.lockdown.enabled) {
-            await safeReply(interaction, { content: "❌ Emergency lockdown is disabled in dashboard settings.", ephemeral: true })
+            await safeReply(interaction, { content: statusLine("error", "Emergency lockdown is disabled in Server Protection settings."), ephemeral: true })
             return true
         }
         const result = await enableEmergencyLockdown(interaction.guild, guardResult.security, { reason, actor: actor(interaction) })
         if (!result.ok) {
-            await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+            await safeReply(interaction, { content: statusLine("error", result.error), ephemeral: true })
             return true
         }
         await logAction(interaction.guild, {
@@ -209,12 +210,12 @@ async function handleLockdown(interaction, guardResult) {
             source: "manual",
             metadata: { affectedChannels: result.affectedChannels },
         })
-        await safeReply(interaction, { content: `🔒 Emergency lockdown enabled for **${result.affectedChannels}** channel(s).`, ephemeral: true })
+        await safeReply(interaction, { content: statusLine("security", `Emergency lockdown enabled • ${result.affectedChannels} channel(s).`), ephemeral: true })
         return true
     }
     const result = await disableEmergencyLockdown(interaction.guild, { reason, actor: actor(interaction) })
     if (!result.ok) {
-        await safeReply(interaction, { content: `❌ ${result.error}`, ephemeral: true })
+        await safeReply(interaction, { content: statusLine("error", result.error), ephemeral: true })
         return true
     }
     await logAction(interaction.guild, {
@@ -225,7 +226,7 @@ async function handleLockdown(interaction, guardResult) {
         source: "manual",
         metadata: { missingChannelIds: result.missingChannelIds || [] },
     })
-    await safeReply(interaction, { content: "🔓 Emergency lockdown ended. Saved channel permissions were restored.", ephemeral: true })
+    await safeReply(interaction, { content: statusLine("success", "Emergency lockdown ended. Saved channel permissions were restored."), ephemeral: true })
     return true
 }
 
@@ -236,16 +237,17 @@ async function handleStatus(interaction, security) {
         getActiveQuarantineCount(interaction.guildId),
     ])
     const embed = new EmbedBuilder()
-        .setColor(security.enabled ? 0x57F287 : 0x99AABB)
-        .setTitle("🛡️ CURSED Server Protection")
+        .setColor(security.enabled ? COLORS.success : COLORS.admin)
+        .setTitle("Server protection")
         .addFields(
-            { name: "Master protection", value: security.enabled ? "Enabled" : "Disabled", inline: true },
+            { name: "Protection", value: security.enabled ? "Enabled" : "Disabled", inline: true },
             { name: "Anti-raid", value: security.antiRaid.enabled ? `${security.antiRaid.joinThreshold} joins / ${security.antiRaid.windowSeconds}s` : "Disabled", inline: true },
             { name: "Anti-nuke", value: security.antiNuke.enabled ? `Enabled • ${security.antiNuke.action}` : "Disabled", inline: true },
             { name: "Lockdown", value: lockdown.active ? "Active" : "Inactive", inline: true },
             { name: "Quarantined", value: String(quarantined), inline: true },
             { name: "Open incidents", value: stats.available ? String(stats.open) : "Unavailable", inline: true },
         )
+        .setFooter({ text: "CURSED • Server Protection" })
         .setTimestamp()
     await safeReply(interaction, { embeds: [embed], ephemeral: true })
     return true
