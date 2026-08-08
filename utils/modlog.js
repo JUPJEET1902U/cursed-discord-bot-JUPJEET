@@ -1,6 +1,9 @@
 /**
  * Structured moderation logging plus MongoDB case creation.
- * A moderation case is persisted even when no log channel is configured.
+ *
+ * Reboot rule: moderation actions must never fail because case persistence or a
+ * log channel is unavailable. Case creation and Discord logging are isolated
+ * side effects after the moderation action itself succeeds.
  */
 
 const { buildEmbed, COLORS } = require("./responseBuilder")
@@ -9,8 +12,8 @@ const { createCase } = require("./moderationCases")
 const ACTION_COLORS = {
     WARN: COLORS.warning,
     CLEAR_WARNINGS: COLORS.admin,
-    TIMEOUT: 0xF0B232,
-    MUTE: 0xF0B232,
+    TIMEOUT: COLORS.warning,
+    MUTE: COLORS.warning,
     UNTIMEOUT: COLORS.success,
     UNMUTE: COLORS.success,
     KICK: COLORS.error,
@@ -38,32 +41,18 @@ let _client = null
 
 function setClient(client) {
     _client = client
-    try {
-        const { attachActivityTracking } = require("./activityTracker")
-        attachActivityTracking(client)
-    } catch (err) {
-        console.error("Activity tracking listener setup error:", err.message)
-    }
-
-    try {
-        const { initializeModerationPhase2 } = require("./moderationPhase2Bootstrap")
-        initializeModerationPhase2(client)
-    } catch (err) {
-        console.error("Moderation Phase 2 setup error:", err.message)
-    }
-
-    try {
-        const { initializeSecurityPhase3 } = require("./securityPhase3Bootstrap")
-        initializeSecurityPhase3(client)
-    } catch (err) {
-        console.error("Moderation Phase 3 setup error:", err.message)
-    }
-
-    try {
-        const { initializeTicketSystem } = require("./ticketBootstrap")
-        initializeTicketSystem(client)
-    } catch (err) {
-        console.error("Ticket System setup error:", err.message)
+    const initializers = [
+        ["Activity tracking", () => require("./activityTracker").attachActivityTracking(client)],
+        ["Moderation foundation", () => require("./moderationPhase2Bootstrap").initializeModerationPhase2(client)],
+        ["Server protection", () => require("./securityPhase3Bootstrap").initializeSecurityPhase3(client)],
+        ["Ticket system", () => require("./ticketBootstrap").initializeTicketSystem(client)],
+    ]
+    for (const [label, initialize] of initializers) {
+        try {
+            initialize()
+        } catch (error) {
+            console.error(`${label} setup error:`, error.message)
+        }
     }
 }
 
@@ -79,7 +68,9 @@ function inferDurationMs(extra) {
 }
 
 function isAutoAction(action, moderator, source) {
-    return source === "automod" || (!moderator && String(action).startsWith("ANTI_"))
+    return source === "automod"
+        || source === "system"
+        || (!moderator && ["ANTI_", "MESSAGE_SHIELD"].some(prefix => String(action).startsWith(prefix)))
 }
 
 function actionLabel(action) {
@@ -87,6 +78,39 @@ function actionLabel(action) {
         .toLowerCase()
         .replace(/_/g, " ")
         .replace(/\b\w/g, character => character.toUpperCase())
+}
+
+async function createCaseSafely(guild, input) {
+    if (!input.createCaseRecord || !guild?.id || !input.target?.id) return null
+    try {
+        return await createCase({
+            guildId: guild.id,
+            action: input.normalizedAction,
+            target: input.target,
+            moderator: input.moderator,
+            reason: input.reason,
+            durationMs: input.durationMs || inferDurationMs(input.extra),
+            evidenceUrl: input.evidenceUrl,
+            source: input.resolvedSource,
+            metadata: {
+                ...(input.metadata && typeof input.metadata === "object" ? input.metadata : {}),
+                details: input.extra || null,
+            },
+        })
+    } catch (error) {
+        console.error("Moderation case persistence error:", error.message)
+        return null
+    }
+}
+
+function resolveLogChannelId(guildId) {
+    try {
+        const { getServerConfig } = require("./serverConfig")
+        const { config } = getServerConfig(guildId)
+        return config.modLogChannelId || process.env.MOD_LOG_CHANNEL_ID || null
+    } catch {
+        return process.env.MOD_LOG_CHANNEL_ID || null
+    }
 }
 
 async function logAction(guild, {
@@ -103,40 +127,25 @@ async function logAction(guild, {
 }) {
     const normalizedAction = String(action || "NOTE").toUpperCase()
     const resolvedSource = source || (isAutoAction(normalizedAction, moderator, source) ? "automod" : "manual")
+    const caseRecord = await createCaseSafely(guild, {
+        createCaseRecord,
+        normalizedAction,
+        target,
+        moderator,
+        reason,
+        extra,
+        durationMs,
+        evidenceUrl,
+        resolvedSource,
+        metadata,
+    })
 
-    let caseRecord = null
-    if (createCaseRecord && guild?.id && target?.id) {
-        caseRecord = await createCase({
-            guildId: guild.id,
-            action: normalizedAction,
-            target,
-            moderator,
-            reason,
-            durationMs: durationMs || inferDurationMs(extra),
-            evidenceUrl,
-            source: resolvedSource,
-            metadata: {
-                ...(metadata && typeof metadata === "object" ? metadata : {}),
-                details: extra || null,
-            },
-        })
-    }
-
-    if (!_client) return { caseRecord, logged: false }
-
-    let channelId = null
-    try {
-        const { getServerConfig } = require("./serverConfig")
-        const { config } = getServerConfig(guild.id)
-        channelId = config.modLogChannelId || process.env.MOD_LOG_CHANNEL_ID || null
-    } catch {
-        channelId = process.env.MOD_LOG_CHANNEL_ID || null
-    }
-
+    if (!_client || !guild?.id) return { caseRecord, logged: false }
+    const channelId = resolveLogChannelId(guild.id)
     if (!channelId) return { caseRecord, logged: false }
 
     const channel = guild.channels.cache.get(channelId)
-    if (!channel || !channel.isTextBased()) return { caseRecord, logged: false }
+    if (!channel?.isTextBased()) return { caseRecord, logged: false }
 
     const targetType = metadata?.targetType === "channel" ? "channel" : "user"
     const targetDisplay = targetType === "channel"
@@ -147,11 +156,10 @@ async function logAction(guild, {
         { name: targetType === "channel" ? "Channel" : "User", value: targetDisplay, inline: true },
         { name: "Target ID", value: String(target.id), inline: true },
     ]
-
     if (caseRecord) fields.push({ name: "Case", value: `#${caseRecord.caseNumber}`, inline: true })
     fields.push({
         name: moderator ? "Moderator" : "Source",
-        value: moderator ? `<@${moderator.id}> (${moderator.tag || "Unknown"})` : "AutoMod",
+        value: moderator ? `<@${moderator.id}> (${moderator.tag || "Unknown"})` : actionLabel(resolvedSource),
         inline: true,
     })
     if (reason) fields.push({ name: "Reason", value: String(reason).slice(0, 1024), inline: false })
@@ -169,8 +177,8 @@ async function logAction(guild, {
     try {
         await channel.send({ embeds: [embed], allowedMentions: { parse: [] } })
         return { caseRecord, logged: true }
-    } catch (err) {
-        console.error("Mod-log send error:", err.message)
+    } catch (error) {
+        console.error("Moderation log send error:", error.message)
         return { caseRecord, logged: false }
     }
 }
