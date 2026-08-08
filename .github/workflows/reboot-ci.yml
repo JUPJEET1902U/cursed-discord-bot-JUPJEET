@@ -12,13 +12,31 @@ permissions:
 jobs:
   reboot-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       NODE_ENV: test
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Protect main-adjacent dashboard and deployment boundaries
+        shell: bash
+        run: |
+          git fetch origin main --depth=1
+          changed_files="$(git diff --name-only origin/main...HEAD)"
+          echo "$changed_files"
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              dashboard/*|api/*|webhook.js|railway.json|Procfile)
+                echo "REBOOT-1 must not change dashboard/API/deployment path: $file"
+                exit 1
+                ;;
+            esac
+          done <<< "$changed_files"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -31,13 +49,26 @@ jobs:
 
       - name: Syntax check Reboot core
         run: |
+          node --check index.js
+          node --check handlers/commandLoader.js
           node --check commands/help.js
+          node --check commands/moderation.js
           node --check commands/moderationAdvanced.js
+          node --check commands/securitySuite.js
           node --check commands/economy.js
+          node --check commands/economy-advanced.js
           node --check commands/fun.js
           node --check commands/gambling.js
+          node --check commands/games.js
+          node --check commands/battle.js
+          node --check commands/pets.js
           node --check commands/profiles.js
-          node --check handlers/commandLoader.js
+          node --check commands/quests.js
+          node --check commands/leaderboards.js
+          node --check commands/shop.js
+          node --check commands/premium.js
+          node --check commands/memory.js
+          node --check commands/admin.js
           node --check utils/productSystem.js
           node --check utils/responseBuilder.js
           node --check utils/runtimeMetrics.js
@@ -56,6 +87,9 @@ jobs:
       - name: Reboot foundation tests
         run: node --test test/reboot-foundation.test.js
 
+      - name: Feature preservation tests
+        run: node --test test/reboot-feature-preservation.test.js
+
       - name: Professional UX tests
         run: node --test test/professional-ux.test.js
 
@@ -73,3 +107,6 @@ jobs:
 
       - name: Runtime warning regressions
         run: node --test test/runtime-warning-regressions.test.js
+
+      - name: Owner network regression tests
+        run: node --test test/owner-network-inspector.test.js
