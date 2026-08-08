@@ -21,8 +21,8 @@ const SECTION_DEFINITIONS = Object.freeze([
     Object.freeze({
         key: "server-management",
         name: "Server Management",
-        description: "Protection, moderation and server administration.",
-        categoryKeys: Object.freeze(["moderation", "admin", "server", "customroles", "custom-roles", "owner"]),
+        description: "Protection, moderation, automation and server administration.",
+        categoryKeys: Object.freeze(["moderation", "admin", "server", "automation", "customroles", "custom-roles", "owner"]),
     }),
     Object.freeze({
         key: "ai-creative",
@@ -33,8 +33,8 @@ const SECTION_DEFINITIONS = Object.freeze([
     Object.freeze({
         key: "community",
         name: "Community",
-        description: "Profiles, birthdays and member-facing systems.",
-        categoryKeys: Object.freeze(["profiles", "birthdays", "premium"]),
+        description: "Welcome, tickets, profiles, leveling, birthdays and community tools.",
+        categoryKeys: Object.freeze(["communitytools", "profiles", "birthdays", "premium"]),
     }),
     Object.freeze({
         key: "economy-games",
