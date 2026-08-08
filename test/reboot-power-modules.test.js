@@ -8,6 +8,9 @@ const read = (...parts) => fs.readFileSync(path.join(root, ...parts), "utf8")
 
 const giveaway = require("../utils/giveawayService")
 const automation = require("../utils/automationStore")
+const customCommands = require("../utils/customCommandStore")
+const autoroles = require("../utils/autoroleAdvanced")
+const reactionRoles = require("../utils/reactionRoleService")
 const { normalizeAutomodPolicy } = require("../utils/automod")
 
 test("giveaway durations are bounded and parse common units", () => {
@@ -32,6 +35,34 @@ test("automation matching supports exact and contains without regex execution", 
     assert.equal(automation.matchesRule("[test]", { trigger: "[test]", mode: "exact" }), true)
 })
 
+test("custom command names are bounded and placeholders render without mentions", () => {
+    assert.deepEqual(customCommands.validateName("rules"), { ok: true, name: "rules" })
+    assert.equal(customCommands.validateName("bad name").ok, false)
+    const rendered = customCommands.renderCustomResponse("Hi {user} in {server} / {channel}", {
+        author: { username: "J" },
+        member: { displayName: "Jupjeet" },
+        guild: { name: "CURSED Lab" },
+        channel: { name: "general" },
+    })
+    assert.equal(rendered, "Hi Jupjeet in CURSED Lab / #general")
+})
+
+test("advanced autorole configuration separates humans and bots", () => {
+    assert.deepEqual(autoroles.normalizeAdvancedAutorole({ humanRoleIds: ["12345678901234567"], botRoleIds: ["22345678901234567"] }), {
+        enabled: true,
+        humanRoleIds: ["12345678901234567"],
+        botRoleIds: ["22345678901234567"],
+    })
+    assert.equal(autoroles.MAX_AUTOROLES_PER_TYPE, 10)
+})
+
+test("reaction-role panel components are bounded to Discord row limits", () => {
+    const options = Array.from({ length: 20 }, (_, index) => ({ roleId: String(10000000000000000n + BigInt(index)), label: `Role ${index + 1}` }))
+    const rows = reactionRoles.panelComponents({ panelId: "abc123", options })
+    assert.equal(rows.length, 4)
+    assert.ok(rows.every(row => row.components.length <= 5))
+})
+
 test("automod policy is normalized and bounded", () => {
     assert.equal(normalizeAutomodPolicy({}), null)
     assert.deepEqual(normalizeAutomodPolicy({ automodPolicy: { action: "delete" } }), {
@@ -48,17 +79,25 @@ test("professional command families are wired into the unified command system", 
     const loader = read("handlers", "commandLoader.js")
     const powers = read("commands", "powerModules.js")
     const protection = read("commands", "protectionControl.js")
+    const custom = read("commands", "customCommands.js")
+    const roles = read("commands", "reactionRoles.js")
     const index = read("index.js")
 
     assert.match(loader, /power-modules/)
     assert.match(loader, /protection-control/)
+    assert.match(loader, /autorole-control/)
+    assert.match(loader, /reaction-roles/)
+    assert.match(loader, /custom-command-admin/)
     assert.match(powers, /setName\("autoresponder"\)/)
     assert.match(powers, /setName\("autoreact"\)/)
     assert.match(powers, /setName\("giveaway"\)/)
     assert.match(powers, /setName\("embed"\)/)
     assert.match(protection, /setName\("automod"\)/)
     assert.match(protection, /setName\("antinuke"\)/)
+    assert.match(custom, /setName\("customcommand"\)/)
+    assert.match(roles, /setName\("reactionrole"\)/)
     assert.match(index, /startGiveawayScheduler\(client\)/)
+    assert.match(index, /assignJoinRoles\(member\)/)
     assert.doesNotMatch(index, /permissions=8/)
 })
 
