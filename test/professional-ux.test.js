@@ -48,14 +48,19 @@ test("product identity exposes a small stable public hierarchy", () => {
     assert.equal(product.cleanCategoryName("🛡️ Moderation"), "Moderation")
 })
 
-test("help center is section-first and avoids decorative emoji controls", () => {
+test("help center is section-first, prefix-aware, compact, and restrained", () => {
     assert.match(helpSource, /setTitle\("CURSED"\)/)
     assert.match(helpSource, /help_section/)
     assert.match(helpSource, /Choose a section/)
+    assert.match(helpSource, /commandGrid/)
+    assert.match(helpSource, /help_first/)
+    assert.match(helpSource, /help_last/)
+    assert.match(helpSource, /help_close/)
+    assert.match(helpSource, /getGuildPrefix/)
     assert.doesNotMatch(helpSource, /\.setEmoji\(/)
     assert.doesNotMatch(helpSource, /CURSED • Help Center/)
     assert.doesNotMatch(helpSource, /Popular Commands/)
-    assert.match(helpSource, /name: "Usage"/)
+    assert.match(helpSource, /name: "Syntax"/)
     assert.match(helpSource, /name: "Permissions"/)
 })
 
