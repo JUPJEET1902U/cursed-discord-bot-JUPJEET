@@ -1,7 +1,6 @@
 const {
     SlashCommandBuilder,
     PermissionFlagsBits,
-    EmbedBuilder,
     ChannelType,
 } = require("discord.js")
 const mongoose = require("mongoose")
@@ -16,6 +15,15 @@ const { logAction } = require("../utils/modlog")
 const { createCase, listCases } = require("../utils/moderationCases")
 const { scheduleTempbanUnban } = require("../utils/moderationTasks")
 const { lockChannel, unlockChannel } = require("../utils/channelLockState")
+const {
+    moderation: moderationEmbed,
+    statusLine,
+    permissionDenied,
+    botPermissionMissing,
+    commandDisabled,
+    caseSuffix,
+    replyInteraction,
+} = require("../utils/responseBuilder")
 
 const COMMAND_NAMES = new Set([
     "purge",
@@ -104,23 +112,17 @@ const commands = [
 ]
 
 function actor(interaction) {
-    return {
-        id: interaction.user.id,
-        tag: interaction.user.tag || interaction.user.username,
-    }
+    return { id: interaction.user.id, tag: interaction.user.tag || interaction.user.username }
 }
 
 function target(user) {
     return { id: user.id, tag: user.tag || user.username }
 }
 
-function safeReply(interaction, payload) {
-    const body = {
-        allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
-        ...payload,
-    }
-    if (interaction.deferred || interaction.replied) return interaction.followUp(body)
-    return interaction.reply(body)
+function reply(interaction, content, options = {}) {
+    return replyInteraction(interaction, typeof content === "string" ? { content } : content, {
+        ephemeral: options.ephemeral !== false,
+    })
 }
 
 function parseDuration(input) {
@@ -144,11 +146,11 @@ function parseDuration(input) {
 
 function formatDuration(ms) {
     const minutes = Math.floor(ms / 60000)
-    if (minutes < 60) return `${minutes} minute(s)`
+    if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"}`
     const hours = Math.floor(minutes / 60)
-    if (hours < 24) return `${hours} hour(s)`
+    if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"}`
     const days = Math.floor(hours / 24)
-    return `${days} day(s)`
+    return `${days} day${days === 1 ? "" : "s"}`
 }
 
 function requiredReason(interaction, moderationConfig, fallback) {
@@ -167,19 +169,19 @@ async function guard(interaction, commandName, { dangerous = false } = {}) {
     const phase2 = getPhase2Config(interaction.guildId)
 
     if (!moderationConfig.moderationCommandsEnabled || !phase2.advancedModerationEnabled) {
-        await safeReply(interaction, { content: "⛔ Advanced moderation is disabled in this server.", ephemeral: true })
+        await reply(interaction, commandDisabled())
         return { ok: false, handled: true }
     }
     if (!isCommandEnabled(phase2, commandName)) {
-        await safeReply(interaction, { content: "⛔ That moderation command is disabled in this server.", ephemeral: true })
+        await reply(interaction, commandDisabled())
         return { ok: false, handled: true }
     }
     if (!isModerator(interaction.member, moderationConfig)) {
-        await safeReply(interaction, { content: "❌ You are not authorized to use CURSED moderation commands.", ephemeral: true })
+        await reply(interaction, permissionDenied("server moderator access"))
         return { ok: false, handled: true }
     }
     if (dangerous && phase2.dangerousCommandsAdminOnly && !isAdministrator(interaction)) {
-        await safeReply(interaction, { content: "❌ This server restricts dangerous moderation commands to administrators.", ephemeral: true })
+        await reply(interaction, permissionDenied("Administrator"))
         return { ok: false, handled: true }
     }
     return { ok: true, moderationConfig, phase2, handled: true }
@@ -196,10 +198,7 @@ async function checkTargetWhitelist(interaction, user, phase2) {
         isBot: user.bot,
     })
     if (match && phase2.whitelist.protectFromManualModeration && interaction.user.id !== interaction.guild.ownerId) {
-        await safeReply(interaction, {
-            content: `🛡️ That target is protected by the moderation whitelist (${match.type}). Only the server owner can override it.`,
-            ephemeral: true,
-        })
+        await reply(interaction, statusLine("security", `This target is protected by the moderation whitelist (${match.type}).`))
         return false
     }
     return true
@@ -209,16 +208,17 @@ async function handlePurge(interaction, guardResult) {
     const requested = interaction.options.getInteger("amount", true)
     const max = guardResult.phase2.maxPurgeAmount
     if (requested > max) {
-        await safeReply(interaction, { content: `❌ This server limits purge operations to **${max}** messages.`, ephemeral: true })
+        await reply(interaction, statusLine("warning", `This server limits purge operations to **${max} messages**.`))
         return true
     }
+
     const channel = interaction.channel
     if (!channel?.messages?.fetch || !channel.bulkDelete) {
-        await safeReply(interaction, { content: "❌ This channel does not support bulk message deletion.", ephemeral: true })
+        await reply(interaction, statusLine("error", "This channel does not support bulk message deletion."))
         return true
     }
     if (!interaction.guild.members.me?.permissions.has(PermissionFlagsBits.ManageMessages)) {
-        await safeReply(interaction, { content: "❌ I need **Manage Messages** permission.", ephemeral: true })
+        await reply(interaction, botPermissionMissing("Manage Messages"))
         return true
     }
 
@@ -227,16 +227,16 @@ async function handlePurge(interaction, guardResult) {
     const botsOnly = interaction.options.getBoolean("bots") === true
     const contains = interaction.options.getString("contains")?.toLowerCase() || null
     const fetched = await channel.messages.fetch({ limit: 100 })
-    const candidates = fetched.filter(message => {
-        if (message.pinned) return false
-        if (user && message.author.id !== user.id) return false
-        if (botsOnly && !message.author.bot) return false
-        if (contains && !message.content.toLowerCase().includes(contains)) return false
+    const candidates = fetched.filter(candidate => {
+        if (candidate.pinned) return false
+        if (user && candidate.author.id !== user.id) return false
+        if (botsOnly && !candidate.author.bot) return false
+        if (contains && !candidate.content.toLowerCase().includes(contains)) return false
         return true
     }).first(requested)
 
     if (!candidates.length) {
-        await interaction.editReply("ℹ️ No recent messages matched those filters.")
+        await interaction.editReply("No recent messages matched those filters.")
         return true
     }
 
@@ -246,38 +246,40 @@ async function handlePurge(interaction, guardResult) {
         target: { id: channel.id, tag: `#${channel.name}` },
         moderator: actor(interaction),
         reason: "Bulk message cleanup",
-        extra: `Deleted **${deleted.size}** message(s).`,
+        extra: `Deleted ${deleted.size} message(s).`,
         metadata: {
             targetType: "channel",
             channelId: channel.id,
             filters: { userId: user?.id || null, botsOnly, contains },
         },
     })
-    await interaction.editReply(`🧹 Deleted **${deleted.size}** recent message(s).${result.caseRecord ? ` Case #${result.caseRecord.caseNumber}.` : ""}`)
+    await interaction.editReply(`Deleted **${deleted.size}** recent message(s)${caseSuffix(result.caseRecord)}.`)
     return true
 }
 
-async function handleLock(interaction, guardResult, unlock = false) {
+async function handleLock(interaction, _guardResult, unlock = false) {
     const channel = interaction.options.getChannel("channel") || interaction.channel
     if (!channel || ![ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(channel.type)) {
-        await safeReply(interaction, { content: "❌ Choose a text or announcement channel.", ephemeral: true })
+        await reply(interaction, statusLine("error", "Choose a text or announcement channel."))
         return true
     }
     if (!interaction.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-        await safeReply(interaction, { content: "❌ I need **Manage Channels** permission.", ephemeral: true })
+        await reply(interaction, botPermissionMissing("Manage Channels"))
         return true
     }
+
     const reason = interaction.options.getString("reason")?.trim() || (unlock ? "Channel unlocked" : "Channel locked")
     try {
         if (unlock) {
             const restored = await unlockChannel(channel, reason)
             if (!restored.restored) {
-                await safeReply(interaction, { content: `ℹ️ ${restored.message}`, ephemeral: true })
+                await reply(interaction, String(restored.message || "No saved lock state was found."))
                 return true
             }
         } else {
             await lockChannel(channel, actor(interaction), reason)
         }
+
         const action = unlock ? "UNLOCK" : "LOCK"
         const result = await logAction(interaction.guild, {
             action,
@@ -286,12 +288,9 @@ async function handleLock(interaction, guardResult, unlock = false) {
             reason,
             metadata: { targetType: "channel", channelId: channel.id },
         })
-        await safeReply(interaction, {
-            content: `${unlock ? "🔓" : "🔒"} <#${channel.id}> has been **${unlock ? "unlocked" : "locked"}**.${result.caseRecord ? ` Case #${result.caseRecord.caseNumber}.` : ""}`,
-            ephemeral: true,
-        })
-    } catch (err) {
-        await safeReply(interaction, { content: `❌ Could not ${unlock ? "unlock" : "lock"} the channel: ${err.message}`, ephemeral: true })
+        await reply(interaction, statusLine("success", `<#${channel.id}> ${unlock ? "unlocked" : "locked"}${caseSuffix(result.caseRecord)}.`))
+    } catch (error) {
+        await reply(interaction, statusLine("error", `Could not ${unlock ? "unlock" : "lock"} the channel: ${error.message}`))
     }
     return true
 }
@@ -300,13 +299,14 @@ async function handleSlowmode(interaction) {
     const channel = interaction.options.getChannel("channel") || interaction.channel
     const seconds = interaction.options.getInteger("seconds", true)
     if (!channel?.setRateLimitPerUser) {
-        await safeReply(interaction, { content: "❌ This channel does not support slowmode.", ephemeral: true })
+        await reply(interaction, statusLine("error", "This channel does not support slowmode."))
         return true
     }
     if (!interaction.guild.members.me?.permissions.has(PermissionFlagsBits.ManageChannels)) {
-        await safeReply(interaction, { content: "❌ I need **Manage Channels** permission.", ephemeral: true })
+        await reply(interaction, botPermissionMissing("Manage Channels"))
         return true
     }
+
     const reason = interaction.options.getString("reason")?.trim() || "Slowmode updated"
     await channel.setRateLimitPerUser(seconds, reason)
     const result = await logAction(interaction.guild, {
@@ -314,21 +314,19 @@ async function handleSlowmode(interaction) {
         target: { id: channel.id, tag: `#${channel.name}` },
         moderator: actor(interaction),
         reason,
-        extra: seconds === 0 ? "Slowmode disabled" : `Slowmode set to **${seconds} seconds**`,
+        extra: seconds === 0 ? "Slowmode disabled" : `Slowmode set to ${seconds} seconds`,
         metadata: { targetType: "channel", channelId: channel.id, seconds },
     })
-    await safeReply(interaction, {
-        content: seconds === 0
-            ? `🐢 Slowmode disabled in <#${channel.id}>.${result.caseRecord ? ` Case #${result.caseRecord.caseNumber}.` : ""}`
-            : `🐢 Slowmode set to **${seconds}s** in <#${channel.id}>.${result.caseRecord ? ` Case #${result.caseRecord.caseNumber}.` : ""}`,
-        ephemeral: true,
-    })
+    await reply(interaction, statusLine("success", seconds === 0
+        ? `Slowmode disabled in <#${channel.id}>${caseSuffix(result.caseRecord)}.`
+        : `Slowmode set to **${seconds}s** in <#${channel.id}>${caseSuffix(result.caseRecord)}.`))
     return true
 }
 
 async function handleNickname(interaction, guardResult) {
     const user = interaction.options.getUser("user", true)
     if (!await checkTargetWhitelist(interaction, user, guardResult.phase2)) return true
+
     const safety = await validateModerationTarget({
         guild: interaction.guild,
         actorMember: interaction.member,
@@ -337,56 +335,58 @@ async function handleNickname(interaction, guardResult) {
         skipActorPermission: true,
     })
     if (!safety.ok) {
-        await safeReply(interaction, { content: `❌ ${safety.error}`, ephemeral: true })
+        await reply(interaction, statusLine("error", safety.error))
         return true
     }
     if (!interaction.guild.members.me?.permissions.has(PermissionFlagsBits.ManageNicknames)) {
-        await safeReply(interaction, { content: "❌ I need **Manage Nicknames** permission.", ephemeral: true })
+        await reply(interaction, botPermissionMissing("Manage Nicknames"))
         return true
     }
+
     const nickname = interaction.options.getString("nickname")?.trim() || null
     const reason = requiredReason(interaction, guardResult.moderationConfig, nickname ? "Nickname changed" : "Nickname reset")
     if (reason === null) {
-        await safeReply(interaction, { content: "❌ A reason is required by this server's moderation settings.", ephemeral: true })
+        await reply(interaction, statusLine("error", "A reason is required by this server's moderation settings."))
         return true
     }
+
     await safety.targetMember.setNickname(nickname, reason)
     const result = await logAction(interaction.guild, {
         action: "NICKNAME",
         target: target(user),
         moderator: actor(interaction),
         reason,
-        extra: nickname ? `New nickname: **${nickname}**` : "Nickname reset",
+        extra: nickname ? `New nickname: ${nickname}` : "Nickname reset",
         metadata: { nickname },
     })
-    await safeReply(interaction, {
-        content: `✅ ${nickname ? `Nickname changed to **${nickname}**` : "Nickname reset"} for **${user.tag}**.${result.caseRecord ? ` Case #${result.caseRecord.caseNumber}.` : ""}`,
-        ephemeral: true,
-    })
+    await reply(interaction, statusLine("success", `${nickname ? `Nickname changed to **${nickname}**` : "Nickname reset"} for **${user.tag}**${caseSuffix(result.caseRecord)}.`))
     return true
 }
 
 async function handleTempban(interaction, guardResult) {
     if (!guardResult.phase2.tempBansEnabled) {
-        await safeReply(interaction, { content: "⛔ Temporary bans are disabled in this server.", ephemeral: true })
+        await reply(interaction, commandDisabled())
         return true
     }
     if (mongoose.connection.readyState !== 1) {
-        await safeReply(interaction, { content: "❌ MongoDB is unavailable, so a restart-safe temporary ban cannot be created.", ephemeral: true })
+        await reply(interaction, statusLine("error", "Temporary bans require the database so expiry survives restarts. Try again when persistence is available."))
         return true
     }
+
     const user = interaction.options.getUser("user", true)
     if (!await checkTargetWhitelist(interaction, user, guardResult.phase2)) return true
     const durationMs = parseDuration(interaction.options.getString("duration", true))
     if (!durationMs) {
-        await safeReply(interaction, { content: "❌ Invalid duration. Use values such as `30m`, `2h`, `7d`, or `2w` (maximum one year).", ephemeral: true })
+        await reply(interaction, statusLine("warning", "Invalid duration. Use values such as `30m`, `2h`, `7d`, or `2w` (maximum one year)."))
         return true
     }
+
     const reason = requiredReason(interaction, guardResult.moderationConfig, "Temporary ban")
     if (reason === null) {
-        await safeReply(interaction, { content: "❌ A reason is required by this server's moderation settings.", ephemeral: true })
+        await reply(interaction, statusLine("error", "A reason is required by this server's moderation settings."))
         return true
     }
+
     const safety = await validateModerationTarget({
         guild: interaction.guild,
         actorMember: interaction.member,
@@ -395,17 +395,17 @@ async function handleTempban(interaction, guardResult) {
         skipActorPermission: true,
     })
     if (!safety.ok) {
-        await safeReply(interaction, { content: `❌ ${safety.error}`, ephemeral: true })
+        await reply(interaction, statusLine("error", safety.error))
         return true
     }
     if (!interaction.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
-        await safeReply(interaction, { content: "❌ I need **Ban Members** permission.", ephemeral: true })
+        await reply(interaction, botPermissionMissing("Ban Members"))
         return true
     }
 
     const evidence = interaction.options.getAttachment("evidence")
     if (guardResult.moderationConfig.dmPunishedUsers) {
-        await user.send(`🔨 You were temporarily banned from **${interaction.guild.name}** for **${formatDuration(durationMs)}**.\nReason: ${reason}`).catch(() => {})
+        await user.send(`You were temporarily banned from **${interaction.guild.name}** for **${formatDuration(durationMs)}**.\nReason: ${reason}`).catch(() => {})
     }
 
     await interaction.guild.members.ban(user.id, { reason, deleteMessageSeconds: 0 })
@@ -416,7 +416,7 @@ async function handleTempban(interaction, guardResult) {
         reason,
         durationMs,
         evidenceUrl: evidence?.url || null,
-        extra: `Duration: **${formatDuration(durationMs)}**`,
+        extra: `Duration: ${formatDuration(durationMs)}`,
     })
 
     try {
@@ -427,31 +427,30 @@ async function handleTempban(interaction, guardResult) {
             executeAt: new Date(Date.now() + durationMs),
             reason,
         })
-    } catch (err) {
+    } catch (error) {
         await interaction.guild.members.unban(user.id, "Temporary ban scheduling failed; safety rollback").catch(() => {})
-        await safeReply(interaction, { content: `❌ The expiry task could not be saved, so the ban was rolled back: ${err.message}`, ephemeral: true })
+        await reply(interaction, statusLine("error", `Expiry scheduling failed, so the ban was rolled back: ${error.message}`))
         return true
     }
 
-    await safeReply(interaction, {
-        content: `⏳ **${user.tag}** was banned for **${formatDuration(durationMs)}**.${logged.caseRecord ? ` Case #${logged.caseRecord.caseNumber}.` : ""}`,
-        ephemeral: true,
-    })
+    await reply(interaction, statusLine("success", `**${user.tag}** banned for **${formatDuration(durationMs)}**${caseSuffix(logged.caseRecord)}.`))
     return true
 }
 
 async function handleSoftban(interaction, guardResult) {
     if (!guardResult.phase2.softbansEnabled) {
-        await safeReply(interaction, { content: "⛔ Softbans are disabled in this server.", ephemeral: true })
+        await reply(interaction, commandDisabled())
         return true
     }
+
     const user = interaction.options.getUser("user", true)
     if (!await checkTargetWhitelist(interaction, user, guardResult.phase2)) return true
     const reason = requiredReason(interaction, guardResult.moderationConfig, "Softban")
     if (reason === null) {
-        await safeReply(interaction, { content: "❌ A reason is required by this server's moderation settings.", ephemeral: true })
+        await reply(interaction, statusLine("error", "A reason is required by this server's moderation settings."))
         return true
     }
+
     const safety = await validateModerationTarget({
         guild: interaction.guild,
         actorMember: interaction.member,
@@ -460,19 +459,20 @@ async function handleSoftban(interaction, guardResult) {
         skipActorPermission: true,
     })
     if (!safety.ok) {
-        await safeReply(interaction, { content: `❌ ${safety.error}`, ephemeral: true })
+        await reply(interaction, statusLine("error", safety.error))
         return true
     }
     if (!interaction.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers)) {
-        await safeReply(interaction, { content: "❌ I need **Ban Members** permission.", ephemeral: true })
+        await reply(interaction, botPermissionMissing("Ban Members"))
         return true
     }
 
     const deleteDays = interaction.options.getInteger("delete_days") ?? 1
     const evidence = interaction.options.getAttachment("evidence")
     if (guardResult.moderationConfig.dmPunishedUsers) {
-        await user.send(`🧹 You were softbanned from **${interaction.guild.name}**.\nReason: ${reason}\nYou may rejoin using a valid invite.`).catch(() => {})
+        await user.send(`You were softbanned from **${interaction.guild.name}**.\nReason: ${reason}\nYou may rejoin using a valid invite.`).catch(() => {})
     }
+
     await interaction.guild.members.ban(user.id, {
         reason,
         deleteMessageSeconds: deleteDays * 24 * 60 * 60,
@@ -484,21 +484,19 @@ async function handleSoftban(interaction, guardResult) {
         moderator: actor(interaction),
         reason,
         evidenceUrl: evidence?.url || null,
-        extra: `Deleted up to **${deleteDays} day(s)** of recent messages.`,
+        extra: `Deleted up to ${deleteDays} day(s) of recent messages.`,
         metadata: { deleteDays },
     })
-    await safeReply(interaction, {
-        content: `🧹 **${user.tag}** was softbanned and can rejoin.${result.caseRecord ? ` Case #${result.caseRecord.caseNumber}.` : ""}`,
-        ephemeral: true,
-    })
+    await reply(interaction, statusLine("success", `**${user.tag}** softbanned and may rejoin${caseSuffix(result.caseRecord)}.`))
     return true
 }
 
 async function handleNote(interaction, guardResult) {
     if (!guardResult.phase2.moderatorNotesEnabled) {
-        await safeReply(interaction, { content: "⛔ Moderator notes are disabled in this server.", ephemeral: true })
+        await reply(interaction, commandDisabled())
         return true
     }
+
     const user = interaction.options.getUser("user", true)
     const text = interaction.options.getString("text", true).trim()
     const evidence = interaction.options.getAttachment("evidence")
@@ -511,12 +509,13 @@ async function handleNote(interaction, guardResult) {
         evidenceUrl: evidence?.url || null,
         source: "manual",
         metadata: { private: true, note: text },
-    })
+    }).catch(() => null)
+
     if (!record) {
-        await safeReply(interaction, { content: "❌ The private note could not be persisted because MongoDB is unavailable.", ephemeral: true })
+        await reply(interaction, statusLine("error", "The private note could not be persisted. Try again when the database is available."))
         return true
     }
-    await safeReply(interaction, { content: `📝 Private note saved as case **#${record.caseNumber}** for **${user.tag}**.`, ephemeral: true })
+    await reply(interaction, statusLine("success", `Private note saved as case **#${record.caseNumber}** for **${user.tag}**.`))
     return true
 }
 
@@ -525,20 +524,18 @@ async function handleHistory(interaction) {
     const limit = interaction.options.getInteger("limit") ?? 10
     const cases = await listCases(interaction.guildId, { targetId: user.id, limit })
     if (!cases.length) {
-        await safeReply(interaction, { content: `✅ **${user.tag}** has no persisted moderation history.`, ephemeral: true })
+        await reply(interaction, statusLine("success", `**${user.tag}** has no persisted moderation history.`))
         return true
     }
+
     const lines = cases.map(record => {
         const date = record.createdAt ? `<t:${Math.floor(new Date(record.createdAt).getTime() / 1000)}:d>` : "Unknown date"
-        return `**#${record.caseNumber} · ${record.action.replace(/_/g, " ")}** — ${record.status}\n${record.reason.slice(0, 180)} · ${date}`
+        return `**#${record.caseNumber} · ${record.action.replace(/_/g, " ")}** · ${record.status}\n${record.reason.slice(0, 180)} · ${date}`
     })
-    const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle(`🗂️ Moderation history for ${user.tag}`)
-        .setDescription(lines.join("\n\n").slice(0, 4000))
-        .setFooter({ text: `${cases.length} recent case(s)` })
-        .setTimestamp()
-    await safeReply(interaction, { embeds: [embed], ephemeral: true })
+    const embed = moderationEmbed(`Moderation history • ${user.tag}`, lines.join("\n\n").slice(0, 4000), {
+        fields: [{ name: "Cases shown", value: String(cases.length), inline: true }],
+    })
+    await reply(interaction, { embeds: [embed] })
     return true
 }
 
@@ -558,8 +555,8 @@ async function handleInteraction(interaction) {
         if (interaction.commandName === "softban") return handleSoftban(interaction, guardResult)
         if (interaction.commandName === "note") return handleNote(interaction, guardResult)
         if (interaction.commandName === "history") return handleHistory(interaction)
-    } catch (err) {
-        await safeReply(interaction, { content: `❌ Moderation command failed safely: ${err.message}`, ephemeral: true }).catch(() => {})
+    } catch (error) {
+        await reply(interaction, statusLine("error", `Command failed safely: ${error.message}`)).catch(() => {})
         return true
     }
     return false
