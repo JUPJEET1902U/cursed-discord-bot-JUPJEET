@@ -45,6 +45,9 @@ const { extractAndStoreMemories, buildMemoryContext } = require("./utils/longTer
 const { needsDiscordContext, buildDiscordContext } = require("./utils/discordContext")
 const { trackMessage, trackCommand, startVoiceSession, endVoiceSession, getActivity } = require("./utils/activityTracker")
 const { formatError } = require("./utils/errorFormatter")
+const { getGuildPrefix } = require("./utils/prefix")
+const { buildRecommendedInvite } = require("./utils/botPermissions")
+const { startGiveawayScheduler } = require("./utils/giveawayService")
 const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
@@ -77,10 +80,11 @@ client.once(Events.ClientReady, async clientUser => {
     const ai = getAIStatus()
     log.info(`AI providers: Gemini=${ai.geminiConfigured} Groq=${ai.groqConfigured} OpenRouter=${ai.openRouterConfigured}`)
 
-    const inviteLink = `https://discord.com/oauth2/authorize?client_id=${clientUser.user.id}&permissions=8&scope=bot%20applications.commands`
-    log.info(`Invite link: ${inviteLink}`)
+    const inviteLink = buildRecommendedInvite(clientUser.user.id)
+    if (inviteLink) log.info(`Recommended invite link: ${inviteLink}`)
 
     setModLogClient(client)
+    startGiveawayScheduler(client)
 
     try {
         const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN)
@@ -116,9 +120,10 @@ client.on(Events.GuildCreate, async guild => {
     if (!channel) return
 
     const totalCommands = require("./utils/helpGenerator").getTotalCommandCount()
+    const prefix = getGuildPrefix(guild.id)
     await sendSafe(
         channel,
-        `**CURSED is ready.**\nAI, server protection, moderation, community systems, economy and games.\n\nUse \`!help\` to browse **${totalCommands} commands**. Server managers can use \`!addchannel\` to restrict where CURSED responds.`
+        `**CURSED is ready.**\nProtection, moderation, automation, AI, community tools, economy and games.\n\nUse \`${prefix}help\` to browse **${totalCommands} commands**. Server managers can run \`${prefix}doctor\` to verify permissions and configuration.`
     ).catch(() => {})
 })
 
