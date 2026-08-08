@@ -43,6 +43,7 @@ function loadCommands() {
         { name: "help", module: require("../commands/help") },
         { name: "system", module: require("../commands/system") },
         { name: "protection-control", module: require("../commands/protectionControl") },
+        { name: "autorole-control", module: require("../commands/autoroleControl") },
         { name: "power-modules", module: require("../commands/powerModules") },
         { name: "power-runtime", module: require("../commands/powerRuntime") },
         { name: "premium", module: require("../commands/premium") },
@@ -58,15 +59,12 @@ function loadCommands() {
         { name: "profiles", module: require("../commands/profiles") },
         { name: "leaderboards", module: require("../commands/leaderboards") },
         { name: "images", module: require("../commands/images") },
-        // Bot-owner-only network inspection takes precedence over the legacy
-        // !botservers alias in admin.js while keeping the old command as a fallback.
         { name: "owner-network", module: require("../commands/ownerNetwork") },
         { name: "admin", module: require("../commands/admin") },
         { name: "memory", module: require("../commands/memory") },
         { name: "server-insights", module: require("../commands/serverInsights") },
         { name: "public-stats-status", module: require("../commands/publicStatsStatus") },
         { name: "leveling", module: require("../commands/leveling") },
-        // Deliberately last: built-in CURSED commands always win name collisions.
         { name: "custom-roles", module: require("../commands/customRoles") },
     ]
 
