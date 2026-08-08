@@ -101,6 +101,17 @@ test("professional command families are wired into the unified command system", 
     assert.doesNotMatch(index, /permissions=8/)
 })
 
+test("all Reboot slash command builders serialize with unique names", () => {
+    require("../handlers/commandLoader").loadCommands()
+    const moderation = require("../commands/moderation")
+    const payloads = moderation.commands.map(command => command.toJSON())
+    const names = payloads.map(command => command.name)
+    assert.equal(new Set(names).size, names.length)
+    for (const expected of ["automod", "antinuke", "autoresponder", "autoreact", "giveaway", "embed", "customcommand", "reactionrole", "autorole"]) {
+        assert.ok(names.includes(expected), `missing slash command: ${expected}`)
+    }
+})
+
 test("help renders configured prefixes instead of hard-coding legacy exclamation syntax", () => {
     const help = read("commands", "help.js")
     assert.match(help, /getGuildPrefix/)
