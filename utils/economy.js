@@ -1,5 +1,6 @@
 const fs = require("fs")
 const path = require("path")
+const crypto = require("crypto")
 const mongoose = require("mongoose")
 const EconomyUser = require("../database/economyModel")
 
@@ -47,13 +48,13 @@ function clone(value) {
     return JSON.parse(JSON.stringify(value))
 }
 
-function serialize(value) {
-    return JSON.stringify(value)
+function snapshotFingerprint(value) {
+    return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
 const economyCache = readLegacyEconomy()
 const knownSnapshots = new Map(
-    Object.entries(economyCache).map(([userId, user]) => [userId, serialize(user)])
+    Object.entries(economyCache).map(([userId, user]) => [userId, snapshotFingerprint(user)])
 )
 const pendingWrites = new Map()
 let initializationPromise = null
@@ -61,83 +62,42 @@ let initialized = false
 let flushPromise = null
 let retryTimer = null
 
-// Cache & Snapshot Lifecycle Constants
-const MAX_SNAPSHOT_CACHE_SIZE = 1000
-const SNAPSHOT_TTL_MS = 30 * 60 * 1000 // 30 minutes
-const MAX_ECONOMY_CACHE_SIZE = 1000
-const ECONOMY_CACHE_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
 const HIGH_QUEUE_PRESSURE_THRESHOLD = 100
-const CENTRALIZED_CLEANUP_INTERVAL_MS = 15 * 60 * 1000 // 15 minutes
-
-const cacheLastAccess = new Map()
-const snapshotLastAccess = new Map()
+const HIGH_CACHE_PRESSURE_THRESHOLD = 1000
+const PRESSURE_WARNING_INTERVAL_MS = 15 * 60 * 1000
+let lastQueuePressureWarningAt = 0
+let lastCachePressureWarningAt = 0
 let backoffDelayMs = 5000
 const MAX_BACKOFF_DELAY_MS = 60000
 
-for (const userId of Object.keys(economyCache)) {
-    cacheLastAccess.set(userId, Date.now())
-    snapshotLastAccess.set(userId, Date.now())
-}
-
 function updateSnapshot(userId, user) {
-    knownSnapshots.set(userId, serialize(user))
-    snapshotLastAccess.set(userId, Date.now())
+    knownSnapshots.set(userId, snapshotFingerprint(user))
 }
 
 function getSnapshot(userId) {
-    if (knownSnapshots.has(userId)) {
-        snapshotLastAccess.set(userId, Date.now())
-        return knownSnapshots.get(userId)
-    }
-    return undefined
+    return knownSnapshots.get(userId)
 }
 
-function deleteSnapshot(userId) {
-    knownSnapshots.delete(userId)
-    snapshotLastAccess.delete(userId)
-}
-
-function runCentralizedCacheCleanup() {
+function maybeWarnCachePressure() {
+    const size = knownSnapshots.size
+    if (size < HIGH_CACHE_PRESSURE_THRESHOLD) return
     const now = Date.now()
-
-    // 1. Snapshot eviction (safe derived data)
-    for (const [userId, lastAccess] of snapshotLastAccess.entries()) {
-        if (now - lastAccess > SNAPSHOT_TTL_MS) {
-            deleteSnapshot(userId)
-        }
-    }
-    if (knownSnapshots.size > MAX_SNAPSHOT_CACHE_SIZE) {
-        const sorted = Array.from(snapshotLastAccess.entries()).sort((a, b) => a[1] - b[1])
-        const toEvict = sorted.slice(0, knownSnapshots.size - MAX_SNAPSHOT_CACHE_SIZE)
-        for (const [userId] of toEvict) {
-            deleteSnapshot(userId)
-        }
-    }
-
-    // 2. Economy cache eviction (ONLY if persisted and Mongo initialized)
-    if (initialized || isMongoConnected()) {
-        for (const [userId, lastAccess] of cacheLastAccess.entries()) {
-            if (!pendingWrites.has(userId) && now - lastAccess > ECONOMY_CACHE_TTL_MS) {
-                delete economyCache[userId]
-                cacheLastAccess.delete(userId)
-            }
-        }
-        if (Object.keys(economyCache).length > MAX_ECONOMY_CACHE_SIZE) {
-            const sorted = Array.from(cacheLastAccess.entries())
-                .filter(([userId]) => !pendingWrites.has(userId))
-                .sort((a, b) => a[1] - b[1])
-            const excess = Object.keys(economyCache).length - MAX_ECONOMY_CACHE_SIZE
-            for (let i = 0; i < Math.min(excess, sorted.length); i++) {
-                const userId = sorted[i][0]
-                delete economyCache[userId]
-                cacheLastAccess.delete(userId)
-            }
-        }
-    }
+    if (now - lastCachePressureWarningAt < PRESSURE_WARNING_INTERVAL_MS) return
+    lastCachePressureWarningAt = now
+    console.warn(`[Economy] ${size} user record(s) are cached. Entries are retained because getUser() is synchronous; no persisted balance is evicted without an async reload path.`)
 }
 
-const cleanupInterval = setInterval(runCentralizedCacheCleanup, CENTRALIZED_CLEANUP_INTERVAL_MS)
-cleanupInterval.unref?.()
+function maybeFlushUnderPressure() {
+    if (pendingWrites.size < HIGH_QUEUE_PRESSURE_THRESHOLD) return
+    const now = Date.now()
+    if (now - lastQueuePressureWarningAt >= PRESSURE_WARNING_INTERVAL_MS) {
+        lastQueuePressureWarningAt = now
+        console.warn(`[Economy] High pending writes queue pressure: ${pendingWrites.size} items queued`)
+    }
+    if (!flushPromise) {
+        flushEconomy().catch(err => console.error("Economy high pressure flush error:", err.message))
+    }
+}
 
 function isMongoConnected() {
     return mongoose.connection.readyState === 1
@@ -237,7 +197,6 @@ async function initializeEconomyStore() {
             if (!pendingWrites.has(userId)) {
                 economyCache[userId] = mongoData
                 updateSnapshot(userId, mongoData)
-                cacheLastAccess.set(userId, Date.now())
             }
         }
 
@@ -265,19 +224,16 @@ function collectChangedUsers(data) {
     const source = data || economyCache
     for (const [userId, user] of Object.entries(source)) {
         if (!user || typeof user !== "object") continue
-        cacheLastAccess.set(userId, Date.now())
 
-        const snapshot = serialize(user)
+        const snapshot = snapshotFingerprint(user)
         if (snapshot !== getSnapshot(userId)) {
             pendingWrites.set(userId, clone(user))
-            updateSnapshot(userId, snapshot)
+            updateSnapshot(userId, user)
         }
     }
 
-    if (pendingWrites.size >= HIGH_QUEUE_PRESSURE_THRESHOLD) {
-        console.warn(`[Economy] High pending writes queue pressure: ${pendingWrites.size} items queued`)
-        flushEconomy().catch(err => console.error("Economy high pressure flush error:", err.message))
-    }
+    maybeWarnCachePressure()
+    maybeFlushUnderPressure()
 }
 
 function saveEconomy(data) {
@@ -415,10 +371,20 @@ initializeEconomyStore()
     .then(ok => { if (ok && pendingWrites.size > 0) return flushEconomy() })
     .catch(err => console.error("Economy MongoDB startup error:", err.message))
 
-module.exports = {
+const exported = {
     ECONOMY_FILE, CURRENCY, MEDALS, SHOP, QUEST_POOL,
     loadEconomy, saveEconomy, getUser, calcLevel, xpToNextLevel,
     addXP, addCoins, incrementStat,
     getOrCreateDailyQuests, updateQuestProgress,
     initializeEconomyStore, flushEconomy,
 }
+
+if (process.env.NODE_ENV === "test") {
+    exported.__testing = {
+        getState: () => ({ economyCache, knownSnapshots, pendingWrites, retryTimer }),
+        collectChangedUsers,
+        snapshotFingerprint,
+    }
+}
+
+module.exports = exported
