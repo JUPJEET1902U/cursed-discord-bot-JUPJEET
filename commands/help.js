@@ -1,5 +1,5 @@
 /**
- * Premium interactive help center for CURSED.
+ * Interactive help center for CURSED.
  * Presentation only: no command execution, data stores, or bot systems are changed.
  */
 
@@ -18,8 +18,8 @@ const {
     getCategories,
     getCategory,
     searchCommands,
-    getTotalCommandCount,
 } = require("../utils/helpGenerator")
+const { COLORS } = require("../utils/responseBuilder")
 const { sanitize } = require("../utils/mentionSanitizer")
 const logger = require("../utils/logger")
 
@@ -28,15 +28,13 @@ const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
 const PAGE_SIZE = 8
 const SESSION_MS = 180_000
 const OWNER_IDS = (process.env.BOT_OWNER_IDS || "").split(",").map(v => v.trim()).filter(Boolean)
-const COLOR = { purple: 0x7C3AED, rose: 0xE11D48, gold: 0xF59E0B, teal: 0x14B8A6 }
 
 const OWNER_CATEGORY = {
     key: "owner",
     name: "Owner Tools",
-    emoji: "👑",
-    color: COLOR.rose,
+    color: COLORS.error,
     adminOnly: true,
-    description: "Private diagnostics for CURSED's owner.",
+    description: "Private diagnostics for the bot owner.",
     commands: [
         { name: "!botstats", usage: "!botstats", description: "View uptime, memory, servers, and cached users.", examples: [], aliases: [], cooldown: "none", permissions: ["Bot Owner or Administrator"] },
         { name: "!aistats", usage: "!aistats", description: "View AI provider configuration and failure status.", examples: [], aliases: [], cooldown: "none", permissions: ["Bot Owner or Administrator"] },
@@ -93,19 +91,18 @@ function homeEmbed(message, access) {
     const categories = categoriesFor(access)
     const visibleCount = categories.reduce((sum, cat) => sum + cat.commands.length, 0)
     const embed = new EmbedBuilder()
-        .setColor(COLOR.purple)
-        .setTitle("☠️ CURSED • Help Center")
+        .setColor(COLORS.primary)
+        .setTitle("CURSED Help")
         .setDescription(
-            "**AI • Games • Economy • Utility**\n" +
-            "Browse modules, search for a command, or open a popular command below.\n\n" +
-            "Use `!help [command]` for a direct lookup, for example `!help battle`."
+            "Browse a category, search by command name, or open a commonly used command.\n\n" +
+            "For a direct lookup, use `!help [command]` — for example, `!help battle`."
         )
         .addFields(categories.map(cat => ({
-            name: `${cat.emoji} ${cat.name}`,
-            value: `**${cat.commands.length} commands**\n${cat.description}`,
+            name: cat.name,
+            value: `${cat.commands.length} commands\n${cat.description}`,
             inline: true,
         })))
-        .setFooter({ text: `${visibleCount} visible commands • ${access.owner ? "Bot owner" : access.admin ? "Server manager" : "Member"} access • 3-minute session` })
+        .setFooter({ text: `CURSED • ${visibleCount} commands • ${access.owner ? "Owner" : access.admin ? "Server manager" : "Member"} access` })
         .setTimestamp()
     const icon = avatar(message)
     if (icon) embed.setThumbnail(icon)
@@ -117,13 +114,13 @@ function categoryEmbed(message, category, page) {
     const safePage = Math.max(0, Math.min(page, totalPages - 1))
     const commands = category.commands.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
     const embed = new EmbedBuilder()
-        .setColor(category.color || COLOR.purple)
-        .setTitle(`${category.emoji} ${category.name} Module`)
+        .setColor(category.color || COLORS.primary)
+        .setTitle(category.name)
         .setDescription(commands.map(cmd => {
-            const tags = [cmd.cooldown && cmd.cooldown !== "none" ? `⏱ ${cmd.cooldown}` : null, cmd.slashOnly ? "Slash" : null].filter(Boolean)
+            const tags = [cmd.cooldown && cmd.cooldown !== "none" ? `Cooldown: ${cmd.cooldown}` : null, cmd.slashOnly ? "Slash command" : null].filter(Boolean)
             return `**${cmd.name}**${tags.length ? `  ${tags.map(t => `\`${t}\``).join(" ")}` : ""}\n${cmd.description}`
         }).join("\n\n"))
-        .setFooter({ text: `Page ${safePage + 1}/${totalPages} • Select a command below for full details` })
+        .setFooter({ text: `CURSED • Page ${safePage + 1}/${totalPages} • Select a command for details` })
     const icon = avatar(message)
     if (icon) embed.setThumbnail(icon)
     return embed
@@ -131,56 +128,64 @@ function categoryEmbed(message, category, page) {
 
 function detailEmbed(message, cmd) {
     const embed = new EmbedBuilder()
-        .setColor(COLOR.rose)
-        .setTitle(`${cmd.slashOnly ? "⚡" : "⌨️"} ${cmd.name}`)
+        .setColor(COLORS.primary)
+        .setTitle(cmd.name)
         .setDescription(cmd.description)
-        .addFields({ name: "🧾 Syntax", value: `\`${cmd.usage || cmd.name}\``, inline: false })
-    if (cmd.examples?.length) embed.addFields({ name: "✨ Examples", value: cmd.examples.map(x => `\`${x}\``).join("\n"), inline: false })
-    if (cmd.cooldown && cmd.cooldown !== "none") embed.addFields({ name: "⏱️ Cooldown", value: cmd.cooldown, inline: true })
-    if (cmd.aliases?.length) embed.addFields({ name: "🏷️ Aliases", value: cmd.aliases.map(x => `\`${x}\``).join(", "), inline: true })
-    embed.addFields({ name: "🛡️ Permissions", value: cmd.permissions?.length ? cmd.permissions.join(", ") : "Everyone", inline: true })
-    embed.addFields({ name: "📦 Module", value: cmd.category, inline: true })
+        .addFields({ name: "Syntax", value: `\`${cmd.usage || cmd.name}\``, inline: false })
+    if (cmd.examples?.length) embed.addFields({ name: "Examples", value: cmd.examples.map(x => `\`${x}\``).join("\n"), inline: false })
+    if (cmd.cooldown && cmd.cooldown !== "none") embed.addFields({ name: "Cooldown", value: cmd.cooldown, inline: true })
+    if (cmd.aliases?.length) embed.addFields({ name: "Aliases", value: cmd.aliases.map(x => `\`${x}\``).join(", "), inline: true })
+    embed.addFields({ name: "Permissions", value: cmd.permissions?.length ? cmd.permissions.join(", ") : "Everyone", inline: true })
+    embed.addFields({ name: "Category", value: cmd.category, inline: true })
+    embed.setFooter({ text: "CURSED • Help" })
     const icon = avatar(message)
     if (icon) embed.setThumbnail(icon)
     return embed
 }
 
 function resultsEmbed(query, results) {
-    if (!results.length) return new EmbedBuilder().setColor(COLOR.rose).setTitle("🔎 No commands found").setDescription(`Nothing matched **${sanitize(query)}**. Try a shorter keyword such as \`battle\`, \`pet\`, or \`welcome\`.`)
+    if (!results.length) {
+        return new EmbedBuilder()
+            .setColor(COLORS.error)
+            .setTitle("No commands found")
+            .setDescription(`Nothing matched **${sanitize(query)}**. Try a shorter keyword such as \`battle\`, \`pet\`, or \`welcome\`.`)
+            .setFooter({ text: "CURSED • Help" })
+    }
     return new EmbedBuilder()
-        .setColor(COLOR.purple)
-        .setTitle(`🔎 Results for “${sanitize(query)}”`)
-        .setDescription(results.slice(0, 12).map(cmd => `**${cmd.name}** • *${cmd.category}*\n${cmd.description}`).join("\n\n"))
-        .setFooter({ text: `${results.length} match${results.length === 1 ? "" : "es"} • Select one for details` })
+        .setColor(COLORS.primary)
+        .setTitle(`Search results for “${sanitize(query)}”`)
+        .setDescription(results.slice(0, 12).map(cmd => `**${cmd.name}** • ${cmd.category}\n${cmd.description}`).join("\n\n"))
+        .setFooter({ text: `CURSED • ${results.length} match${results.length === 1 ? "" : "es"} • Select a command for details` })
 }
 
 function popularEmbed(results) {
     return new EmbedBuilder()
-        .setColor(COLOR.gold)
-        .setTitle("🔥 Popular Commands")
-        .setDescription(results.map((cmd, i) => `**${i + 1}. ${cmd.name}** • *${cmd.category}*\n${cmd.description}`).join("\n\n"))
+        .setColor(COLORS.primary)
+        .setTitle("Popular commands")
+        .setDescription(results.map((cmd, i) => `**${i + 1}. ${cmd.name}** • ${cmd.category}\n${cmd.description}`).join("\n\n"))
+        .setFooter({ text: "CURSED • Help" })
 }
 
 function guideEmbed() {
     return new EmbedBuilder()
-        .setColor(COLOR.teal)
-        .setTitle("🎧 Help Center Guide")
+        .setColor(COLORS.info)
+        .setTitle("Using Help")
         .setDescription(
-            "**Browse:** choose a module, then choose a command.\n\n" +
-            "**Search:** press Search or type `!help search [keyword]`.\n\n" +
-            "**Direct lookup:** type `!help [command]`, such as `!help battle`.\n\n" +
-            "Admin and owner sections are shown only when you have access."
+            "**Browse** — choose a category, then select a command.\n\n" +
+            "**Search** — press Search or use `!help search [keyword]`.\n\n" +
+            "**Direct lookup** — use `!help [command]`, such as `!help battle`.\n\n" +
+            "Administrative sections are shown only when your account has access."
         )
+        .setFooter({ text: "CURSED • Help" })
 }
 
 function categoryRow(categories, selected = null) {
     return new ActionRowBuilder().addComponents(new StringSelectMenuBuilder()
         .setCustomId("help_category")
-        .setPlaceholder("Choose a module")
+        .setPlaceholder("Choose a category")
         .addOptions(categories.map(cat => ({
             label: cat.name.slice(0, 100),
             description: `${cat.commands.length} commands • ${cat.description}`.slice(0, 100),
-            emoji: cat.emoji,
             value: cat.key,
             default: cat.key === selected,
         }))))
@@ -199,27 +204,27 @@ function commandRow(commands, id, placeholder) {
 
 function homeButtons() {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("help_browse").setLabel("Browse Modules").setEmoji("📦").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("help_search").setLabel("Search").setEmoji("🔎").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("help_popular").setLabel("Popular").setEmoji("🔥").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("help_guide").setLabel("Guide").setEmoji("🎧").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("help_browse").setLabel("Browse").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("help_search").setLabel("Search").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("help_popular").setLabel("Popular").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("help_guide").setLabel("Guide").setStyle(ButtonStyle.Secondary)
     )
 }
 
 function navButtons(page = 0, totalPages = 1, detail = false) {
     const row = new ActionRowBuilder()
-    if (detail) row.addComponents(new ButtonBuilder().setCustomId("help_back").setLabel("Module").setEmoji("↩️").setStyle(ButtonStyle.Secondary))
-    else row.addComponents(new ButtonBuilder().setCustomId("help_prev").setLabel("Prev").setEmoji("◀️").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0))
-    row.addComponents(new ButtonBuilder().setCustomId("help_home").setLabel("Home").setEmoji("🏠").setStyle(ButtonStyle.Secondary))
-    if (!detail) row.addComponents(new ButtonBuilder().setCustomId("help_next").setLabel("Next").setEmoji("▶️").setStyle(ButtonStyle.Primary).setDisabled(page >= totalPages - 1))
-    row.addComponents(new ButtonBuilder().setCustomId("help_search").setLabel("Search").setEmoji("🔎").setStyle(ButtonStyle.Secondary))
+    if (detail) row.addComponents(new ButtonBuilder().setCustomId("help_back").setLabel("Back to category").setStyle(ButtonStyle.Secondary))
+    else row.addComponents(new ButtonBuilder().setCustomId("help_prev").setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0))
+    row.addComponents(new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary))
+    if (!detail) row.addComponents(new ButtonBuilder().setCustomId("help_next").setLabel("Next").setStyle(ButtonStyle.Primary).setDisabled(page >= totalPages - 1))
+    row.addComponents(new ButtonBuilder().setCustomId("help_search").setLabel("Search").setStyle(ButtonStyle.Secondary))
     return row
 }
 
 function simpleNav() {
     return new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("help_home").setLabel("Home").setEmoji("🏠").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("help_search").setLabel("Search Again").setEmoji("🔎").setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("help_search").setLabel("Search again").setStyle(ButtonStyle.Primary)
     )
 }
 
@@ -273,7 +278,7 @@ function initialState(args, access) {
 async function searchModal(interaction, sent, message, access, state) {
     const modalId = `help_search_${sent.id}`
     const input = new TextInputBuilder().setCustomId("query").setLabel("Command or keyword").setPlaceholder("battle, pet, economy, welcome...").setStyle(TextInputStyle.Short).setMaxLength(80).setRequired(true)
-    const modal = new ModalBuilder().setCustomId(modalId).setTitle("Search CURSED Commands").addComponents(new ActionRowBuilder().addComponents(input))
+    const modal = new ModalBuilder().setCustomId(modalId).setTitle("Search commands").addComponents(new ActionRowBuilder().addComponents(input))
     await interaction.showModal(modal)
     const submitted = await interaction.awaitModalSubmit({ time: 60_000, filter: i => i.customId === modalId && i.user.id === message.author.id }).catch(() => null)
     if (!submitted) return
@@ -300,7 +305,7 @@ async function handle(message) {
     collector.on("collect", async interaction => {
         try {
             if (interaction.user.id !== message.author.id) {
-                await interaction.reply({ content: "Run `!help` to open your own Help Center.", ephemeral: true, allowedMentions: SAFE_MENTIONS }).catch(() => {})
+                await interaction.reply({ content: "Use `!help` to open your own menu.", ephemeral: true, allowedMentions: SAFE_MENTIONS }).catch(() => {})
                 return
             }
             if (interaction.customId === "help_search") {
