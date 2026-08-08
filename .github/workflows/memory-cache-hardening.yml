@@ -1,0 +1,46 @@
+name: Memory Cache Hardening CI
+
+on:
+  pull_request:
+    paths:
+      - "utils/memory.js"
+      - "utils/economy.js"
+      - "utils/longTermMemory.js"
+      - "test/memory-cache-hardening.test.js"
+      - "test/short-term-memory-mongodb.test.js"
+      - "test/economy-mongodb.test.js"
+      - ".github/workflows/memory-cache-hardening.yml"
+  workflow_dispatch:
+
+jobs:
+  memory-cache-hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax checks
+        run: |
+          node --check utils/memory.js
+          node --check utils/economy.js
+          node --check utils/longTermMemory.js
+          node --check test/memory-cache-hardening.test.js
+
+      - name: Memory and persistence regressions
+        env:
+          NODE_ENV: test
+        run: |
+          node --test test/memory-cache-hardening.test.js
+          node --test test/short-term-memory-mongodb.test.js
+          node --test test/economy-mongodb.test.js
