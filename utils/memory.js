@@ -1,5 +1,6 @@
 const fs = require("fs")
 const path = require("path")
+const crypto = require("crypto")
 const mongoose = require("mongoose")
 const ShortTermMemory = require("../database/shortTermMemoryModel")
 
@@ -31,8 +32,8 @@ function clone(value) {
     return JSON.parse(JSON.stringify(value))
 }
 
-function serialize(value) {
-    return JSON.stringify(value)
+function snapshotFingerprint(value) {
+    return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
 function readLegacyMemory() {
@@ -48,13 +49,58 @@ function readLegacyMemory() {
 
 const memoryCache = readLegacyMemory()
 const knownSnapshots = new Map(
-    Object.entries(memoryCache).map(([key, history]) => [key, serialize(history)])
+    Object.entries(memoryCache).map(([key, history]) => [key, snapshotFingerprint(history)])
 )
 const pendingWrites = new Map()
 let initializationPromise = null
 let initialized = false
 let flushPromise = null
 let retryTimer = null
+
+const HIGH_QUEUE_PRESSURE_THRESHOLD = 100
+const HIGH_CACHE_PRESSURE_THRESHOLD = 1000
+const PRESSURE_WARNING_INTERVAL_MS = 15 * 60 * 1000
+let lastQueuePressureWarningAt = 0
+let lastCachePressureWarningAt = 0
+let backoffDelayMs = 5000
+const MAX_BACKOFF_DELAY_MS = 60000
+
+function updateSnapshot(key, history) {
+    knownSnapshots.set(key, snapshotFingerprint(history))
+}
+
+function getSnapshot(key) {
+    return knownSnapshots.get(key)
+}
+
+function deleteSnapshot(key) {
+    knownSnapshots.delete(key)
+}
+
+function maybeWarnCachePressure() {
+    const size = knownSnapshots.size
+    if (size < HIGH_CACHE_PRESSURE_THRESHOLD) return
+    const now = Date.now()
+    if (now - lastCachePressureWarningAt < PRESSURE_WARNING_INTERVAL_MS) return
+    lastCachePressureWarningAt = now
+    console.warn(`[Memory] ${size} conversation(s) are cached. Entries are retained because getUserMemory() is synchronous; no persisted conversation is evicted without an async reload path.`)
+}
+
+function maybeFlushUnderPressure() {
+    if (pendingWrites.size < HIGH_QUEUE_PRESSURE_THRESHOLD) return
+    const now = Date.now()
+    if (now - lastQueuePressureWarningAt >= PRESSURE_WARNING_INTERVAL_MS) {
+        lastQueuePressureWarningAt = now
+        console.warn(`[Memory] High pending writes queue pressure: ${pendingWrites.size} items queued`)
+    }
+    if (!flushPromise) {
+        flushMemory().catch(err => console.error("Memory high pressure flush error:", err.message))
+    }
+}
+
+function isMongoConnected() {
+    return mongoose.connection.readyState === 1
+}
 
 async function ensureMongoConnected() {
     if (mongoose.connection.readyState === 1) return true
@@ -100,10 +146,16 @@ function scheduleRetry() {
     retryTimer = setTimeout(() => {
         retryTimer = null
         initializeMemoryStore()
-            .then(ok => { if (ok) return flushMemory() })
+            .then(ok => {
+                if (ok) {
+                    backoffDelayMs = 5000
+                    return flushMemory()
+                }
+            })
             .catch(err => console.error("Short-term memory MongoDB retry error:", err.message))
-    }, 30000)
+    }, backoffDelayMs)
     retryTimer.unref?.()
+    backoffDelayMs = Math.min(MAX_BACKOFF_DELAY_MS, backoffDelayMs * 2)
 }
 
 async function initializeMemoryStore() {
@@ -141,19 +193,13 @@ async function initializeMemoryStore() {
         for (const record of records) {
             const key = record.memoryKey
             const mongoMessages = clone(record.messages)
-            // A chat or !clearmemory command may update the cache while MongoDB
-            // is connecting. Keep that newer local operation queued instead of
-            // replacing it with an older startup snapshot.
             if (!pendingWrites.has(key)) {
                 if (Array.isArray(mongoMessages) && mongoMessages.length > 0) {
                     memoryCache[key] = mongoMessages
-                    knownSnapshots.set(key, serialize(mongoMessages))
+                    updateSnapshot(key, mongoMessages)
                 } else {
-                    // An empty MongoDB history is a tombstone. It keeps stale
-                    // memory.json data from being reinserted on a later restart
-                    // while remaining invisible to all existing memory callers.
                     delete memoryCache[key]
-                    knownSnapshots.delete(key)
+                    deleteSnapshot(key)
                 }
             }
         }
@@ -183,12 +229,14 @@ function collectChangedMemory(mem) {
     const sourceKeys = new Set(Object.keys(source))
 
     for (const [key, history] of Object.entries(source)) {
-        if (source !== memoryCache) memoryCache[key] = clone(history)
+        if (source !== memoryCache) {
+            memoryCache[key] = clone(history)
+        }
 
-        const snapshot = serialize(history)
-        if (snapshot !== knownSnapshots.get(key)) {
+        const snapshot = snapshotFingerprint(history)
+        if (snapshot !== getSnapshot(key)) {
             pendingWrites.set(key, clone(history))
-            knownSnapshots.set(key, snapshot)
+            updateSnapshot(key, history)
         }
     }
 
@@ -196,9 +244,12 @@ function collectChangedMemory(mem) {
         if (!sourceKeys.has(key)) {
             delete memoryCache[key]
             pendingWrites.set(key, DELETE_MEMORY)
-            knownSnapshots.delete(key)
+            deleteSnapshot(key)
         }
     }
+
+    maybeWarnCachePressure()
+    maybeFlushUnderPressure()
 }
 
 function saveMemory(mem) {
@@ -228,18 +279,22 @@ async function flushMemory() {
 
             try {
                 await ShortTermMemory.bulkWrite(
-                    batch.map(([memoryKey, messages]) => ({
-                        updateOne: {
-                            filter: { memoryKey },
-                            update: {
-                                $set: {
-                                    memoryKey,
-                                    messages: messages === DELETE_MEMORY ? [] : clone(messages),
+                    batch.map(([memoryKey, messages]) => (
+                        messages === DELETE_MEMORY
+                            ? { deleteOne: { filter: { memoryKey } } }
+                            : {
+                                updateOne: {
+                                    filter: { memoryKey },
+                                    update: {
+                                        $set: {
+                                            memoryKey,
+                                            messages: clone(messages),
+                                        },
+                                    },
+                                    upsert: true,
                                 },
-                            },
-                            upsert: true,
-                        },
-                    })),
+                            }
+                    )),
                     { ordered: false }
                 )
             } catch (err) {
@@ -298,7 +353,7 @@ function appendUserMemory(guildId, userId, userMsg, botReply, storageLimit) {
     if (limit === 0) {
         delete mem[key]
         pendingWrites.set(key, DELETE_MEMORY)
-        knownSnapshots.delete(key)
+        deleteSnapshot(key)
         flushMemory()
         return
     }
@@ -313,7 +368,7 @@ function clearUserMemory(guildId, userId) {
     const key = memKey(guildId, userId)
     delete memoryCache[key]
     pendingWrites.set(key, DELETE_MEMORY)
-    knownSnapshots.delete(key)
+    deleteSnapshot(key)
     flushMemory()
 }
 
@@ -321,14 +376,25 @@ initializeMemoryStore()
     .then(ok => { if (ok && pendingWrites.size > 0) return flushMemory() })
     .catch(err => console.error("Short-term memory MongoDB startup error:", err.message))
 
-module.exports = {
+const exported = {
     getUserMemory,
     appendUserMemory,
     clearUserMemory,
     cleanupMemory,
     initializeMemoryStore,
     flushMemory,
+    saveMemory,
     MEMORY_FILE,
     MEMORY_FILE_BAK,
     MAX_FILE_SIZE,
 }
+
+if (process.env.NODE_ENV === "test") {
+    exported.__testing = {
+        getState: () => ({ memoryCache, knownSnapshots, pendingWrites, retryTimer }),
+        collectChangedMemory,
+        snapshotFingerprint,
+    }
+}
+
+module.exports = exported

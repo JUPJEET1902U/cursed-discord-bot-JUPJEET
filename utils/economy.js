@@ -1,5 +1,6 @@
 const fs = require("fs")
 const path = require("path")
+const crypto = require("crypto")
 const mongoose = require("mongoose")
 const EconomyUser = require("../database/economyModel")
 
@@ -47,19 +48,60 @@ function clone(value) {
     return JSON.parse(JSON.stringify(value))
 }
 
-function serialize(value) {
-    return JSON.stringify(value)
+function snapshotFingerprint(value) {
+    return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
 const economyCache = readLegacyEconomy()
 const knownSnapshots = new Map(
-    Object.entries(economyCache).map(([userId, user]) => [userId, serialize(user)])
+    Object.entries(economyCache).map(([userId, user]) => [userId, snapshotFingerprint(user)])
 )
 const pendingWrites = new Map()
 let initializationPromise = null
 let initialized = false
 let flushPromise = null
 let retryTimer = null
+
+const HIGH_QUEUE_PRESSURE_THRESHOLD = 100
+const HIGH_CACHE_PRESSURE_THRESHOLD = 1000
+const PRESSURE_WARNING_INTERVAL_MS = 15 * 60 * 1000
+let lastQueuePressureWarningAt = 0
+let lastCachePressureWarningAt = 0
+let backoffDelayMs = 5000
+const MAX_BACKOFF_DELAY_MS = 60000
+
+function updateSnapshot(userId, user) {
+    knownSnapshots.set(userId, snapshotFingerprint(user))
+}
+
+function getSnapshot(userId) {
+    return knownSnapshots.get(userId)
+}
+
+function maybeWarnCachePressure() {
+    const size = knownSnapshots.size
+    if (size < HIGH_CACHE_PRESSURE_THRESHOLD) return
+    const now = Date.now()
+    if (now - lastCachePressureWarningAt < PRESSURE_WARNING_INTERVAL_MS) return
+    lastCachePressureWarningAt = now
+    console.warn(`[Economy] ${size} user record(s) are cached. Entries are retained because getUser() is synchronous; no persisted balance is evicted without an async reload path.`)
+}
+
+function maybeFlushUnderPressure() {
+    if (pendingWrites.size < HIGH_QUEUE_PRESSURE_THRESHOLD) return
+    const now = Date.now()
+    if (now - lastQueuePressureWarningAt >= PRESSURE_WARNING_INTERVAL_MS) {
+        lastQueuePressureWarningAt = now
+        console.warn(`[Economy] High pending writes queue pressure: ${pendingWrites.size} items queued`)
+    }
+    if (!flushPromise) {
+        flushEconomy().catch(err => console.error("Economy high pressure flush error:", err.message))
+    }
+}
+
+function isMongoConnected() {
+    return mongoose.connection.readyState === 1
+}
 
 async function ensureMongoConnected() {
     if (mongoose.connection.readyState === 1) return true
@@ -105,10 +147,16 @@ function scheduleRetry() {
     retryTimer = setTimeout(() => {
         retryTimer = null
         initializeEconomyStore()
-            .then(ok => { if (ok) return flushEconomy() })
+            .then(ok => {
+                if (ok) {
+                    backoffDelayMs = 5000
+                    return flushEconomy()
+                }
+            })
             .catch(err => console.error("Economy MongoDB retry error:", err.message))
-    }, 30000)
+    }, backoffDelayMs)
     retryTimer.unref?.()
+    backoffDelayMs = Math.min(MAX_BACKOFF_DELAY_MS, backoffDelayMs * 2)
 }
 
 async function initializeEconomyStore() {
@@ -146,12 +194,9 @@ async function initializeEconomyStore() {
         for (const record of records) {
             const userId = record.userId
             const mongoData = clone(record.data || {})
-            // A command may have changed the in-memory copy while MongoDB was
-            // connecting. In that case, keep the newer local state queued for
-            // persistence instead of overwriting it with the startup snapshot.
             if (!pendingWrites.has(userId)) {
                 economyCache[userId] = mongoData
-                knownSnapshots.set(userId, serialize(mongoData))
+                updateSnapshot(userId, mongoData)
             }
         }
 
@@ -176,15 +221,19 @@ function loadEconomy() {
 }
 
 function collectChangedUsers(data) {
-    for (const [userId, user] of Object.entries(data || economyCache)) {
+    const source = data || economyCache
+    for (const [userId, user] of Object.entries(source)) {
         if (!user || typeof user !== "object") continue
 
-        const snapshot = serialize(user)
-        if (snapshot !== knownSnapshots.get(userId)) {
+        const snapshot = snapshotFingerprint(user)
+        if (snapshot !== getSnapshot(userId)) {
             pendingWrites.set(userId, clone(user))
-            knownSnapshots.set(userId, snapshot)
+            updateSnapshot(userId, user)
         }
     }
+
+    maybeWarnCachePressure()
+    maybeFlushUnderPressure()
 }
 
 function saveEconomy(data) {
@@ -322,10 +371,20 @@ initializeEconomyStore()
     .then(ok => { if (ok && pendingWrites.size > 0) return flushEconomy() })
     .catch(err => console.error("Economy MongoDB startup error:", err.message))
 
-module.exports = {
+const exported = {
     ECONOMY_FILE, CURRENCY, MEDALS, SHOP, QUEST_POOL,
     loadEconomy, saveEconomy, getUser, calcLevel, xpToNextLevel,
     addXP, addCoins, incrementStat,
     getOrCreateDailyQuests, updateQuestProgress,
     initializeEconomyStore, flushEconomy,
 }
+
+if (process.env.NODE_ENV === "test") {
+    exported.__testing = {
+        getState: () => ({ economyCache, knownSnapshots, pendingWrites, retryTimer }),
+        collectChangedUsers,
+        snapshotFingerprint,
+    }
+}
+
+module.exports = exported
