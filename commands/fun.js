@@ -5,7 +5,18 @@ const { incrementStat, updateQuestProgress, MEDALS } = require("../utils/economy
 const { clearUserMemory } = require("../utils/memory")
 const { activeTriviaAnswers } = require("../utils/state")
 const { handleImagineCommand } = require("../utils/imageGeneration")
+const {
+    fun: funEmbed,
+    statusLine,
+    cooldownMessage,
+    sendEmbed,
+    sendSafe,
+} = require("../utils/responseBuilder")
+const { createSafeMessage } = require("../utils/sanitizeMentions")
 
+async function aiFailure(message, label) {
+    await sendSafe(message, statusLine("error", `${label} is unavailable right now. Try again in a moment.`)).catch(() => {})
+}
 
 async function handle(message) {
     const msgLower = message.content.toLowerCase().trim()
@@ -14,21 +25,27 @@ async function handle(message) {
 
     if (msgLower.startsWith("!roast")) {
         const cd = checkCooldown(userId, "roast", 15 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ Chill! Wait **${cd.remaining}s** before roasting again.`); return true }
+        if (!cd.ok) {
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!roast"))
+            return true
+        }
         const mentioned = message.mentions.users.first()
         const target = mentioned
             ? (message.guild.members.cache.get(mentioned.id)?.displayName || mentioned.username)
             : message.content.slice(6).trim() || senderName
         try {
             const result = await callAI([
-                { role: "system", content: "You are CURSED, a savage roast bot. Generate one witty, funny, creative roast. Make it personal-sounding and hilarious. Under 3 sentences. Fun, not genuinely hurtful." },
-                { role: "user", content: `Roast this person: ${target}` }
+                { role: "system", content: "You are CURSED. Generate one witty, creative roast in under 3 sentences. Keep it playful rather than genuinely hurtful." },
+                { role: "user", content: `Roast this person: ${target}` },
             ], { maxTokens: 200 })
             addRoast(target)
-            await message.channel.send(`🔥 ${result.content}`)
+            await sendEmbed(message, funEmbed(`Roast • ${target}`, result.content))
             incrementStat(userId, senderName, "roast")
             updateQuestProgress(userId, senderName, "roast")
-        } catch (err) { console.error("Roast error:", err.message) }
+        } catch (error) {
+            console.error("Roast error:", error.message)
+            await aiFailure(message, "Roast generation")
+        }
         return true
     }
 
@@ -38,86 +55,78 @@ async function handle(message) {
                 try {
                     incrementStat(userId, senderName, "imagine")
                     updateQuestProgress(userId, senderName, "imagine")
-                } catch (err) {
-                    console.error("Image generation stat update error:", err.message)
+                } catch (error) {
+                    console.error("Image generation stat update error:", error.message)
                 }
             },
         })
     }
 
     if (msgLower.startsWith("!meme")) {
-        const topic =
-            message.content.slice(5).trim() || "something cursed and funny"
-
+        const topic = message.content.slice(5).trim() || "something cursed and funny"
         const cd = checkCooldown(userId, "meme", 30 * 1000)
-
         if (!cd.ok) {
-            await message.channel.send(
-                `⏳ Wait **${cd.remaining}s** before another meme.`
-            )
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!meme"))
             return true
         }
 
         try {
-            await message.channel.send(
-                `😂 Generating a meme about **${topic}**... hang on`
-            )
-
-            const imageUrl =
-                `https://image.pollinations.ai/prompt/${encodeURIComponent(
-                    `funny internet meme style image about ${topic}`
-                )}`
-
-            await message.channel.send(
-                `😂 **${topic}**\n${imageUrl}`
-            )
-
-        } catch (err) {
-            console.error("Meme generation error:", err)
-            await message.channel.send(
-                "😤 Couldn't generate that meme. Try a different topic!"
-            )
+            await sendSafe(message, statusLine("success", `Generating a meme about **${topic}**.`))
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(`funny internet meme style image about ${topic}`)}`
+            await createSafeMessage(message.channel, `**${topic}**\n${imageUrl}`)
+        } catch (error) {
+            console.error("Meme generation error:", error.message)
+            await sendSafe(message, statusLine("error", "Meme generation failed. Try a different topic."))
         }
-
         return true
     }
 
-
     if (msgLower === "!leaderboard") {
-        const { createSafeMessage: csm } = require("../utils/sanitizeMentions")
         const board = getLeaderboard()
-        if (!board) { await csm(message.channel, "😐 Nobody has been roasted yet. Type `!roast @someone` to get started."); return true }
-        const lines = board.slice(0, 10).map(([name, count], i) =>
-            `${MEDALS[i] || `**#${i + 1}**`} **${name}** — roasted **${count}** time${count === 1 ? "" : "s"}`
-        )
-        await csm(message.channel, `🔥 **CURSED ROAST LEADERBOARD** 🔥\n\n${lines.join("\n")}`)
+        if (!board) {
+            await sendSafe(message, "No roast activity yet. Use `!roast @user` to get started.")
+            return true
+        }
+        const lines = board.slice(0, 10).map(([name, count], index) => `${MEDALS[index] || `#${index + 1}`} **${name}** · ${count} roast${count === 1 ? "" : "s"}`)
+        await sendEmbed(message, funEmbed("Roast leaderboard", lines.join("\n")))
         return true
     }
 
     if (msgLower.startsWith("!trivia")) {
         const cd = checkCooldown(message.channel.id, "trivia", 20 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ Trivia is on cooldown! Wait **${cd.remaining}s**.`); return true }
+        if (!cd.ok) {
+            await sendSafe(message, cooldownMessage(null, cd.remaining, "!trivia"))
+            return true
+        }
         try {
             const result = await callAI([
-                { role: "system", content: "You are a trivia host. Generate one interesting trivia question with 4 multiple choice options (A, B, C, D) and clearly state the correct answer. Format:\nQuestion: ...\nA) ...\nB) ...\nC) ...\nD) ...\nAnswer: X" },
-                { role: "user", content: "Give me a random trivia question." }
+                { role: "system", content: "You are a trivia host. Generate one interesting question with four options A-D and clearly state the correct answer using exactly 'Answer: X'." },
+                { role: "user", content: "Give me a random trivia question." },
             ], { maxTokens: 300 })
             const trivia = result.content
-            activeTriviaAnswers.set(message.channel.id, trivia.match(/Answer:\s*([A-D])/i)?.[1]?.toUpperCase())
-            await message.channel.send(`🧠 **TRIVIA TIME!**\n\n${trivia.replace(/Answer:.*$/im, "").trim()}\n\nType **A**, **B**, **C**, or **D** to answer!`)
-        } catch (err) { console.error("Trivia error:", err.message) }
+            const answer = trivia.match(/Answer:\s*([A-D])/i)?.[1]?.toUpperCase()
+            if (!answer) {
+                await aiFailure(message, "Trivia generation")
+                return true
+            }
+            activeTriviaAnswers.set(message.channel.id, answer)
+            await sendEmbed(message, funEmbed("Trivia", `${trivia.replace(/Answer:.*$/im, "").trim()}\n\nReply with **A**, **B**, **C**, or **D**.`))
+        } catch (error) {
+            console.error("Trivia error:", error.message)
+            await aiFailure(message, "Trivia")
+        }
         return true
     }
 
-    if (["a", "b", "c", "d"].includes(msgLower.trim()) && activeTriviaAnswers.has(message.channel.id)) {
+    if (["a", "b", "c", "d"].includes(msgLower) && activeTriviaAnswers.has(message.channel.id)) {
         const correct = activeTriviaAnswers.get(message.channel.id)
         activeTriviaAnswers.delete(message.channel.id)
-        if (msgLower.trim().toUpperCase() === correct) {
-            await message.channel.send(`✅ **${senderName}** got it right! The answer was **${correct}**! 🎉 You're not as dumb as you look.`)
+        if (msgLower.toUpperCase() === correct) {
+            await sendSafe(message, statusLine("success", `**${senderName}** answered correctly. The answer was **${correct}**.`))
             incrementStat(userId, senderName, "triviaWin")
             updateQuestProgress(userId, senderName, "triviaWin")
         } else {
-            await message.channel.send(`❌ Wrong, **${senderName}**! The correct answer was **${correct}**. Maybe try using your brain next time? 💀`)
+            await sendSafe(message, statusLine("error", `Incorrect. The correct answer was **${correct}**.`))
         }
         return true
     }
@@ -125,67 +134,91 @@ async function handle(message) {
     if (msgLower.startsWith("!story")) {
         const theme = message.content.slice(6).trim() || "a random cursed adventure"
         const cd = checkCooldown(userId, "story", 20 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before requesting another story.`); return true }
+        if (!cd.ok) {
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!story"))
+            return true
+        }
         try {
             const result = await callAI([
-                { role: "system", content: "You are CURSED, a chaotic storyteller. Write a short, entertaining story (4-6 sentences) that is wild, funny, and unexpected. Dark humor and absurdity welcome." },
-                { role: "user", content: `Tell a story about: ${theme}` }
+                { role: "system", content: "You are CURSED, a chaotic storyteller. Write a short entertaining story in 4-6 sentences. Keep it clever, surprising and readable." },
+                { role: "user", content: `Tell a story about: ${theme}` },
             ], { maxTokens: 400 })
-            await message.channel.send(`📖 **A CURSED STORY: ${theme.toUpperCase()}**\n\n${result.content}`)
+            await sendEmbed(message, funEmbed(`Story • ${theme}`, result.content))
             incrementStat(userId, senderName, "story")
             updateQuestProgress(userId, senderName, "story")
-        } catch (err) { console.error("Story error:", err.message) }
+        } catch (error) {
+            console.error("Story error:", error.message)
+            await aiFailure(message, "Story generation")
+        }
         return true
     }
 
     if (msgLower.startsWith("!roleplay")) {
         const scenario = message.content.slice(9).trim() || "a mysterious encounter in a dark alley"
         const cd = checkCooldown(userId, "roleplay", 20 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before starting another roleplay.`); return true }
+        if (!cd.ok) {
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!roleplay"))
+            return true
+        }
         try {
             const result = await callAI([
                 { role: "system", content: "You are CURSED, a roleplay partner. Set the scene vividly in 3-4 sentences and end with a prompt inviting the user to continue." },
-                { role: "user", content: `Start a roleplay for ${senderName} with this scenario: ${scenario}` }
+                { role: "user", content: `Start a roleplay for ${senderName} with this scenario: ${scenario}` },
             ], { maxTokens: 400 })
-            await message.channel.send(`🎭 **ROLEPLAY: ${scenario.toUpperCase()}**\n\n${result.content}`)
+            await sendEmbed(message, funEmbed(`Roleplay • ${scenario}`, result.content))
             incrementStat(userId, senderName, "roleplay")
             updateQuestProgress(userId, senderName, "roleplay")
-        } catch (err) { console.error("Roleplay error:", err.message) }
+        } catch (error) {
+            console.error("Roleplay error:", error.message)
+            await aiFailure(message, "Roleplay")
+        }
         return true
     }
 
     if (msgLower.startsWith("!challenge")) {
         const cd = checkCooldown(userId, "challenge", 60 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ Wait **${cd.remaining}s** before getting another challenge.`); return true }
+        if (!cd.ok) {
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!challenge"))
+            return true
+        }
         try {
             const today = new Date().toDateString()
             const result = await callAI([
-                { role: "system", content: "You are CURSED, a daily challenge giver. Create a fun, creative, slightly ridiculous daily challenge. Include a fake reward. 3-4 sentences." },
-                { role: "user", content: `Generate a daily challenge for ${today}` }
+                { role: "system", content: "You are CURSED. Create one fun, creative daily challenge with a playful fictional reward. Keep it to 3-4 sentences." },
+                { role: "user", content: `Generate a daily challenge for ${today}` },
             ], { maxTokens: 250 })
-            await message.channel.send(`⚔️ **DAILY CHALLENGE — ${today.toUpperCase()}**\n\n${result.content}`)
-        } catch (err) { console.error("Challenge error:", err.message) }
+            await sendEmbed(message, funEmbed(`Daily challenge • ${today}`, result.content))
+        } catch (error) {
+            console.error("Challenge error:", error.message)
+            await aiFailure(message, "Challenge generation")
+        }
         return true
     }
 
     if (msgLower.startsWith("!fortune")) {
         const cd = checkCooldown(userId, "fortune", 30 * 1000)
-        if (!cd.ok) { await message.channel.send(`⏳ The oracle needs **${cd.remaining}s** to recover its powers.`); return true }
+        if (!cd.ok) {
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!fortune"))
+            return true
+        }
         try {
             const result = await callAI([
-                { role: "system", content: "You are CURSED, a dramatic and slightly unhinged fortune teller. Give a mysterious, cryptic, and funny fortune. Mix mysticism with absurd humor. 3-4 sentences, make it feel personal." },
-                { role: "user", content: `Tell the fortune of: ${senderName}` }
+                { role: "system", content: "You are CURSED, a dramatic but concise fortune teller. Give a mysterious, funny fortune in 3-4 sentences." },
+                { role: "user", content: `Tell the fortune of: ${senderName}` },
             ], { maxTokens: 250 })
-            await message.channel.send(`🔮 **THE CURSED ORACLE SPEAKS FOR ${senderName.toUpperCase()}...**\n\n${result.content}`)
+            await sendEmbed(message, funEmbed(`Fortune • ${senderName}`, result.content))
             incrementStat(userId, senderName, "fortune")
             updateQuestProgress(userId, senderName, "fortune")
-        } catch (err) { console.error("Fortune error:", err.message) }
+        } catch (error) {
+            console.error("Fortune error:", error.message)
+            await aiFailure(message, "Fortune generation")
+        }
         return true
     }
 
     if (msgLower === "!forget") {
         clearUserMemory(message.guild.id, userId)
-        await message.channel.send(`🧹 Done, **${senderName}**. Who are you again? I've completely forgotten you existed. Fresh start! 😇`)
+        await sendSafe(message, statusLine("success", "Short-term conversation memory cleared."))
         return true
     }
 
