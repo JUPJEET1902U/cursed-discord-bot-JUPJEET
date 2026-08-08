@@ -45,7 +45,7 @@ test("help center avoids decorative emoji controls and promotional titles", () =
 test("security commands keep their features while using consistent naming", () => {
     for (const command of ["security", "quarantine", "unquarantine", "lockdown", "security-status"]) {
         const source = command === "security" ? securitySuiteSource : securityProtectionSource
-        assert.match(source, new RegExp(`setName\\(\\"${command}\\"\\)`))
+        assert.match(source, new RegExp(`setName\\("${command}"\\)`))
     }
     assert.doesNotMatch(securitySuiteSource, /Advanced CURSED/)
     assert.match(securityProtectionSource, /setTitle\("Server protection"\)/)
@@ -56,6 +56,6 @@ test("moderation logs use clean field labels instead of emoji-heavy labels", () 
     assert.doesNotMatch(modlogSource, /ACTION_EMOJIS/)
     assert.match(modlogSource, /`Moderation • \$\{actionLabel\(normalizedAction\)\}`/)
     for (const field of ["User", "Target ID", "Moderator", "Reason", "Details", "Evidence"]) {
-        assert.match(modlogSource, new RegExp(`name: \\"${field}\\"`))
+        assert.match(modlogSource, new RegExp(`name: "${field}"`))
     }
 })
