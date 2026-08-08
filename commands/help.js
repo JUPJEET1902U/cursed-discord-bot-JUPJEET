@@ -34,7 +34,7 @@ const { sanitize } = require("../utils/mentionSanitizer")
 const logger = require("../utils/logger")
 
 const log = logger.child("Help")
-const PAGE_SIZE = 12
+const PAGE_SIZE = 18
 const SESSION_MS = 180_000
 const OWNER_IDS = (process.env.BOT_OWNER_IDS || "").split(",").map(value => value.trim()).filter(Boolean)
 
@@ -184,23 +184,23 @@ function sectionEmbed(message, section) {
         .setFooter({ text: "CURSED • Select a module" }), message)
 }
 
+function commandGrid(commands, message) {
+    const names = commands.map(command => `\`${displayCommandName(command, message)}\``)
+    const rows = []
+    for (let index = 0; index < names.length; index += 3) rows.push(names.slice(index, index + 3).join("  "))
+    return rows.join("\n")
+}
+
 function categoryEmbed(message, category, page) {
     const totalPages = Math.max(1, Math.ceil(category.commands.length / PAGE_SIZE))
     const safePage = Math.max(0, Math.min(page, totalPages - 1))
     const commands = category.commands.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
-    const description = commands.map(command => {
-        const decorated = decorateCommand(command, message)
-        const tags = []
-        if (command.cooldown && command.cooldown !== "none") tags.push(command.cooldown)
-        if (command.slashOnly) tags.push("slash")
-        const suffix = tags.length ? ` · ${tags.join(" · ")}` : ""
-        return `\`${decorated.displayName}\`${suffix}\n${command.description}`
-    }).join("\n\n")
+    const body = commandGrid(commands, message)
 
     return addThumbnail(new EmbedBuilder()
         .setColor(category.color || COLORS.primary)
         .setTitle(category.name)
-        .setDescription(description || "No commands are available in this module.")
+        .setDescription(`${category.description}\n\n${body || "No commands are available in this module."}\n\nSelect a command below for syntax, permissions, and examples.`)
         .setFooter({ text: `CURSED • ${category.commands.length} commands • Page ${safePage + 1}/${totalPages}` }), message)
 }
 
@@ -253,7 +253,7 @@ function guideEmbed(message) {
         .setDescription(
             `**Browse** — choose a product section, then a module.\n\n` +
             `**Search** — search by command name or purpose.\n\n` +
-            `**Direct lookup** — use \`${prefix}help <command>\`, for example \`${prefix}help ban\`.\n\n` +
+            `**Direct lookup** — use \`${prefix}help <command>\`, for example \`${prefix}help antinuke\`.\n\n` +
             "Administrative modules appear only when your account has access."
         )
         .setFooter({ text: BRAND.helpFooter })
@@ -294,28 +294,43 @@ function commandRow(commands, id, placeholder, message) {
         }))))
 }
 
+function closeButton() {
+    return new ButtonBuilder().setCustomId("help_close").setLabel("Close").setStyle(ButtonStyle.Danger)
+}
+
 function homeButtons() {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("help_search").setLabel("Search").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("help_popular").setLabel("Common commands").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("help_guide").setLabel("Guide").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("help_guide").setLabel("Guide").setStyle(ButtonStyle.Secondary),
+        closeButton()
     )
 }
 
-function navButtons(page = 0, totalPages = 1, detail = false) {
-    const row = new ActionRowBuilder()
-    if (detail) row.addComponents(new ButtonBuilder().setCustomId("help_back").setLabel("Back").setStyle(ButtonStyle.Secondary))
-    else row.addComponents(new ButtonBuilder().setCustomId("help_prev").setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0))
-    row.addComponents(new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary))
-    if (!detail) row.addComponents(new ButtonBuilder().setCustomId("help_next").setLabel("Next").setStyle(ButtonStyle.Primary).setDisabled(page >= totalPages - 1))
-    row.addComponents(new ButtonBuilder().setCustomId("help_search").setLabel("Search").setStyle(ButtonStyle.Secondary))
-    return row
+function categoryNav(page = 0, totalPages = 1) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("help_first").setLabel("First").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
+        new ButtonBuilder().setCustomId("help_prev").setLabel("Previous").setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
+        closeButton(),
+        new ButtonBuilder().setCustomId("help_next").setLabel("Next").setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1),
+        new ButtonBuilder().setCustomId("help_last").setLabel("Last").setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1)
+    )
+}
+
+function detailNav() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("help_back").setLabel("Back").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("help_search").setLabel("Search").setStyle(ButtonStyle.Primary),
+        closeButton()
+    )
 }
 
 function simpleNav() {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("help_home").setLabel("Home").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("help_search").setLabel("Search again").setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId("help_search").setLabel("Search again").setStyle(ButtonStyle.Primary),
+        closeButton()
     )
 }
 
@@ -361,12 +376,12 @@ function render(message, access, state) {
                 sectionRow(sections, section?.key || null),
                 categoryRow(section?.categories || [category], category.key),
                 commandRow(withMeta(category), "help_command", "View command details", message),
-                navButtons(state.page, totalPages),
+                categoryNav(state.page, totalPages),
             ],
         }
     }
 
-    if (state.view === "detail" && state.command) return { embeds: [detailEmbed(message, state.command)], components: [navButtons(0, 1, true)] }
+    if (state.view === "detail" && state.command) return { embeds: [detailEmbed(message, state.command)], components: [detailNav()] }
 
     if (state.view === "search") {
         return {
@@ -466,6 +481,13 @@ async function handle(message) {
                 return
             }
 
+            if (interaction.customId === "help_close") {
+                await interaction.deferUpdate().catch(() => {})
+                collector.stop("closed")
+                await sent.delete().catch(() => sent.edit({ components: [] }).catch(() => {}))
+                return
+            }
+
             if (interaction.customId === "help_search") {
                 await searchModal(interaction, sent, message, access, state)
                 return
@@ -488,9 +510,13 @@ async function handle(message) {
                     const section = sectionContainingCategory(command.categoryKey, access)
                     Object.assign(state, { view: "detail", command, sectionKey: section?.key || null, categoryKey: command.categoryKey, page: 0 })
                 }
-            } else if (id === "help_prev" && state.view === "category") state.page = Math.max(0, state.page - 1)
+            } else if (id === "help_first" && state.view === "category") state.page = 0
+            else if (id === "help_prev" && state.view === "category") state.page = Math.max(0, state.page - 1)
             else if (id === "help_next" && state.view === "category") state.page += 1
-            else if (id === "help_back" && state.categoryKey) Object.assign(state, { view: "category", command: null })
+            else if (id === "help_last" && state.view === "category") {
+                const category = categoryFor(state.categoryKey, access)
+                state.page = Math.max(0, Math.ceil((category?.commands.length || 1) / PAGE_SIZE) - 1)
+            } else if (id === "help_back" && state.categoryKey) Object.assign(state, { view: "category", command: null })
 
             await sent.edit(render(message, access, state))
         } catch (err) {
@@ -498,8 +524,10 @@ async function handle(message) {
         }
     })
 
-    collector.on("end", () => sent.edit({ components: [] }).catch(() => {}))
+    collector.on("end", (_collected, reason) => {
+        if (reason !== "closed") sent.edit({ components: [] }).catch(() => {})
+    })
     return true
 }
 
-module.exports = { handle, prefixAware, displayCommandName, decorateCommand }
+module.exports = { handle, prefixAware, displayCommandName, decorateCommand, commandGrid }
