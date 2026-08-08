@@ -79,6 +79,7 @@ jobs:
           node --check commands/premium.js
           node --check commands/memory.js
           node --check commands/admin.js
+          node --check config/personalities.js
           node --check utils/productSystem.js
           node --check utils/responseBuilder.js
           node --check utils/runtimeMetrics.js
@@ -90,6 +91,7 @@ jobs:
           node --check utils/autoroleAdvanced.js
           node --check utils/customCommandStore.js
           node --check utils/reactionRoleService.js
+          node --check utils/premiumCommandGate.js
           node --check utils/auditLogResolver.js
           node --check utils/antiRaidRisk.js
           node --check utils/antiSpam.js
