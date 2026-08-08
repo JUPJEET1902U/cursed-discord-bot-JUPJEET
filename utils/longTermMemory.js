@@ -47,29 +47,78 @@ try {
 } catch {
     MemoryModel = mongoose.model("LongTermMemory", memorySchema)
 }
+const defaultMemoryModel = MemoryModel
 
 const memoryFallback = new Map()
 const fallbackLastAccess = new Map()
 
 const MAX_FALLBACK_USERS = 1000
+const MAX_FALLBACK_MEMORIES_PER_USER = 100
 const FALLBACK_TTL_MS = 2 * 60 * 60 * 1000 // 2 hours
 const CENTRALIZED_CLEANUP_INTERVAL_MS = 15 * 60 * 1000 // 15 minutes
+let fallbackSyncPromise = null
+let connectionOverrideForTesting = null
 
-async function syncFallbackToMongo() {
-    if (!isMongoConnected() || memoryFallback.size === 0) return
-    for (const [userId, list] of memoryFallback.entries()) {
-        const unsaved = list.filter(item => item._unsaved)
-        if (!unsaved.length) continue
-        for (const entry of unsaved) {
-            try {
-                const { _unsaved, ...cleanEntry } = entry
-                await new MemoryModel(cleanEntry).save()
-                entry._unsaved = false
-            } catch (err) {
-                log.error(`Failed to sync fallback memory for ${userId}: ${err.message}`)
+function isMongoConnected() {
+    if (process.env.NODE_ENV === "test" && connectionOverrideForTesting !== null) {
+        return connectionOverrideForTesting
+    }
+    return mongoose.connection.readyState === 1
+}
+
+function markFallbackDirty(entry) {
+    entry._unsaved = true
+    entry._syncVersion = (Number(entry._syncVersion) || 0) + 1
+}
+
+function trimFallbackListSafely(userId, list) {
+    while (list.length > MAX_FALLBACK_MEMORIES_PER_USER) {
+        const removableIndex = list.findIndex(item => !item._unsaved)
+        if (removableIndex === -1) {
+            log.warn(`Fallback memory pressure for ${userId}: ${list.length} unsaved entries retained to avoid data loss`)
+            break
+        }
+        list.splice(removableIndex, 1)
+    }
+}
+
+function syncFallbackToMongo() {
+    if (fallbackSyncPromise) return fallbackSyncPromise
+    if (!isMongoConnected() || memoryFallback.size === 0) return Promise.resolve(false)
+
+    fallbackSyncPromise = (async () => {
+        for (const [userId, list] of memoryFallback.entries()) {
+            const unsaved = list.filter(item => item._unsaved)
+            if (!unsaved.length) continue
+
+            for (const entry of unsaved) {
+                const syncVersion = Number(entry._syncVersion) || 0
+                try {
+                    const { _unsaved, _syncVersion, ...cleanEntry } = entry
+                    await MemoryModel.updateOne(
+                        {
+                            userId: cleanEntry.userId,
+                            memoryKey: cleanEntry.memoryKey,
+                            extractedAt: cleanEntry.extractedAt,
+                        },
+                        { $set: cleanEntry },
+                        { upsert: true }
+                    )
+
+                    if ((Number(entry._syncVersion) || 0) === syncVersion) {
+                        entry._unsaved = false
+                    }
+                } catch (err) {
+                    log.error(`Failed to sync fallback memory for ${userId}: ${err.message}`)
+                }
             }
         }
-    }
+        return true
+    })().finally(() => {
+        fallbackSyncPromise = null
+    })
+
+    return fallbackSyncPromise
 }
 
 function runLongTermMemoryCleanup() {
@@ -103,10 +152,6 @@ function runLongTermMemoryCleanup() {
 const cleanupInterval = setInterval(runLongTermMemoryCleanup, CENTRALIZED_CLEANUP_INTERVAL_MS)
 cleanupInterval.unref?.()
 
-function isMongoConnected() {
-    return mongoose.connection.readyState === 1
-}
-
 function activeQuery(userId) {
     return { userId, active: { $ne: false } }
 }
@@ -116,7 +161,7 @@ async function getUserLongTermMemories(userId, options = {}) {
     const includeInactive = options.includeInactive === true
     if (isMongoConnected()) {
         try {
-            syncFallbackToMongo().catch(() => {})
+            await syncFallbackToMongo()
             const query = includeInactive ? { userId } : activeQuery(userId)
             return await MemoryModel.find(query)
                 .sort({ importance: -1, lastConfirmedAt: -1, extractedAt: -1 })
@@ -234,6 +279,7 @@ async function addLongTermMemory(userId, memory) {
         }
     }
 
+    fallbackLastAccess.set(userId, Date.now())
     const list = memoryFallback.get(userId) || []
     const active = list.filter(item => item.active !== false)
     const nearDuplicate = active.find(item =>
@@ -249,18 +295,19 @@ async function addLongTermMemory(userId, memory) {
         nearDuplicate.memoryKey = entry.memoryKey
         nearDuplicate.lastConfirmedAt = entry.lastConfirmedAt
         nearDuplicate.active = true
-        nearDuplicate._unsaved = true
+        markFallbackDirty(nearDuplicate)
     } else {
         for (const existing of active) {
             if (existing.memoryKey === entry.memoryKey) {
                 existing.active = false
                 existing.supersededAt = new Date()
+                markFallbackDirty(existing)
                 entry.source = "correction"
             }
         }
-        entry._unsaved = true
+        markFallbackDirty(entry)
         list.push(entry)
-        if (list.length > 100) list.splice(0, list.length - 100)
+        trimFallbackListSafely(userId, list)
     }
     memoryFallback.set(userId, list)
 }
@@ -279,7 +326,13 @@ async function deleteLongTermMemory(userId, memoryId) {
     const index = parseInt(memoryId)
     if (!Number.isNaN(index) && index >= 0 && index < list.length) {
         list.splice(index, 1)
-        memoryFallback.set(userId, list)
+        if (list.length) {
+            memoryFallback.set(userId, list)
+            fallbackLastAccess.set(userId, Date.now())
+        } else {
+            memoryFallback.delete(userId)
+            fallbackLastAccess.delete(userId)
+        }
         return true
     }
     return false
@@ -311,8 +364,10 @@ async function deleteMatchingMemories(userId, operation) {
         if (matchSet.has(memory)) {
             memory.active = false
             memory.supersededAt = new Date()
+            markFallbackDirty(memory)
         }
     }
+    fallbackLastAccess.set(userId, Date.now())
     memoryFallback.set(userId, list)
     return matches.length
 }
@@ -328,6 +383,7 @@ async function clearLongTermMemories(userId) {
         }
     }
     memoryFallback.delete(userId)
+    fallbackLastAccess.delete(userId)
 }
 
 async function applyMemoryOperations(userId, operations) {
@@ -415,7 +471,7 @@ async function buildMemoryContext(userId, userInput = "") {
     return `\n\nWHAT YOU KNOW ABOUT THIS USER:\n${lines.join("\n")}`
 }
 
-module.exports = {
+const exported = {
     getUserLongTermMemories,
     getRelevantMemories,
     addLongTermMemory,
@@ -427,3 +483,18 @@ module.exports = {
     buildMemoryContext,
     stringSimilarity,
 }
+
+if (process.env.NODE_ENV === "test") {
+    exported.__testing = {
+        syncFallbackToMongo,
+        runLongTermMemoryCleanup,
+        trimFallbackListSafely,
+        getFallbackState: () => ({ memoryFallback, fallbackLastAccess, fallbackSyncPromise }),
+        getCleanupInterval: () => cleanupInterval,
+        setMongoConnected: value => { connectionOverrideForTesting = value },
+        setMemoryModel: model => { MemoryModel = model },
+        resetMemoryModel: () => { MemoryModel = defaultMemoryModel },
+    }
+}
+
+module.exports = exported
