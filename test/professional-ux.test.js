@@ -26,6 +26,9 @@ test("shared response builder uses restrained CURSED branding", () => {
     assert.equal(failure.title, "Action failed")
     assert.equal(failure.footer.text, "CURSED")
     assert.equal(failure.color, ui.COLORS.error)
+
+    const security = ui.security("Server protection", "Healthy.").toJSON()
+    assert.equal(security.footer.text, "CURSED • Server Protection")
 })
 
 test("plain status messages use one functional status indicator", () => {
@@ -52,7 +55,7 @@ test("help center is section-first and avoids decorative emoji controls", () => 
     assert.doesNotMatch(helpSource, /\.setEmoji\(/)
     assert.doesNotMatch(helpSource, /CURSED • Help Center/)
     assert.doesNotMatch(helpSource, /Popular Commands/)
-    assert.match(helpSource, /name: "Syntax"/)
+    assert.match(helpSource, /name: "Usage"/)
     assert.match(helpSource, /name: "Permissions"/)
 })
 
@@ -62,8 +65,9 @@ test("security commands keep their features while using consistent naming", () =
         assert.match(source, new RegExp(`setName\\("${command}"\\)`))
     }
     assert.doesNotMatch(securitySuiteSource, /Advanced CURSED/)
-    assert.match(securityProtectionSource, /setTitle\("Server protection"\)/)
-    assert.match(securitySuiteSource, /CURSED • Server Protection/)
+    assert.match(securitySuiteSource, /securityEmbed/)
+    assert.match(securitySuiteSource, /auditRecommendationText/)
+    assert.doesNotMatch(securitySuiteSource, /Current configuration is strong\./)
 })
 
 test("moderation logs use operational field labels", () => {
