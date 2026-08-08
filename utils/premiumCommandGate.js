@@ -7,6 +7,10 @@ const {
 const FUN_AI_COMMANDS = new Set(["roast", "trivia", "story", "roleplay", "challenge", "fortune"])
 const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
 
+function normalizeCommandName(value) {
+    return String(value || "").trim().toLowerCase().replace(/^[!/]+/, "")
+}
+
 function quotaMessage(feature, result, plan) {
     const label = feature === "image"
         ? "image generations"
@@ -25,8 +29,9 @@ async function checkCommandPlan(message, commandName) {
     const guildId = message.guild?.id || "dm"
     const plan = getUserPlan(userId)
     const limits = getPlanLimits(userId)
+    const name = normalizeCommandName(commandName)
 
-    if (commandName === "imagine") {
+    if (name === "imagine") {
         const content = String(message.content || "").toLowerCase()
         const asksForVariation = /^!imagine\s+(variation|variations)\b/i.test(message.content)
         const usesAvatar = Boolean(message.mentions?.users?.first?.())
@@ -52,7 +57,7 @@ async function checkCommandPlan(message, commandName) {
         }
     }
 
-    if (commandName === "meme") {
+    if (name === "meme") {
         const usage = consumeFeatureUsage("meme", { userId, guildId })
         if (!usage.ok) {
             await message.channel.send({ content: quotaMessage("meme", usage, plan), allowedMentions: SAFE_MENTIONS })
@@ -60,7 +65,7 @@ async function checkCommandPlan(message, commandName) {
         }
     }
 
-    if (FUN_AI_COMMANDS.has(commandName)) {
+    if (FUN_AI_COMMANDS.has(name)) {
         const usage = consumeFeatureUsage("fun", { userId, guildId })
         if (!usage.ok) {
             await message.channel.send({ content: quotaMessage("fun", usage, plan), allowedMentions: SAFE_MENTIONS })
@@ -71,4 +76,4 @@ async function checkCommandPlan(message, commandName) {
     return { ok: true }
 }
 
-module.exports = { FUN_AI_COMMANDS, checkCommandPlan }
+module.exports = { FUN_AI_COMMANDS, normalizeCommandName, checkCommandPlan }
