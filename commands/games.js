@@ -1,39 +1,61 @@
-/**
- * commands/games.js
- * Mini-games: guess, mines, blackjack, rps, duel, treasure, dailygame (Phase 7)
- */
-
-const { getUser, saveEconomy, addXP, incrementStat, updateQuestProgress } = require("../utils/economy")
+const { getUser, saveEconomy, addXP, incrementStat } = require("../utils/economy")
 const { checkCooldown } = require("../utils/cooldowns")
-const { createSafeMessage } = require("../utils/sanitizeMentions")
 const { sanitizeName, validateAmount } = require("../utils/sanitizer")
 const logger = require("../utils/logger")
-const log = logger.child("Games")
+const {
+    games: gamesEmbed,
+    statusLine,
+    cooldownMessage,
+    invalidUsage,
+    sendEmbed,
+    sendSafe,
+} = require("../utils/responseBuilder")
 
-// Active game sessions
-const activeGuessGames = new Map()   // channelId → { answer, userId, bet }
-const activeBlackjack  = new Map()   // userId → { playerHand, dealerHand, bet, deck }
-const activeDuels      = new Map()   // channelId → { challenger, challenged, bet }
+const log = logger.child("Games")
+const activeGuessGames = new Map()
+const activeBlackjack = new Map()
 
 const CARD_VALUES = { A: 11, K: 10, Q: 10, J: 10, "10": 10, "9": 9, "8": 8, "7": 7, "6": 6, "5": 5, "4": 4, "3": 3, "2": 2 }
-const CARD_SUITS  = ["♠", "♥", "♦", "♣"]
-const CARD_RANKS  = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+const CARD_SUITS = ["♠", "♥", "♦", "♣"]
+const CARD_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 
 function buildDeck() {
     const deck = []
-    for (const suit of CARD_SUITS) for (const rank of CARD_RANKS) deck.push({ rank, suit })
+    for (const suit of CARD_SUITS) {
+        for (const rank of CARD_RANKS) deck.push({ rank, suit })
+    }
+    // Existing game uses pseudo-random shuffling; preserve behavior while making
+    // the rest of the session lifecycle predictable.
     return deck.sort(() => Math.random() - 0.5)
 }
 
 function handValue(hand) {
-    let total = hand.reduce((s, c) => s + CARD_VALUES[c.rank], 0)
-    let aces = hand.filter(c => c.rank === "A").length
-    while (total > 21 && aces > 0) { total -= 10; aces-- }
+    let total = hand.reduce((sum, card) => sum + CARD_VALUES[card.rank], 0)
+    let aces = hand.filter(card => card.rank === "A").length
+    while (total > 21 && aces > 0) {
+        total -= 10
+        aces--
+    }
     return total
 }
 
 function formatHand(hand) {
-    return hand.map(c => `${c.rank}${c.suit}`).join(" ")
+    return hand.map(card => `${card.rank}${card.suit}`).join(" ")
+}
+
+function formatCoins(value) {
+    return Math.max(0, Number(value) || 0).toLocaleString("en-US")
+}
+
+function expireMapEntry(map, key, expectedValue, ms) {
+    const timer = setTimeout(() => {
+        if (map.get(key) === expectedValue) map.delete(key)
+    }, ms)
+    timer.unref?.()
+}
+
+function gameResult(title, description, fields = []) {
+    return gamesEmbed(title, description, { fields })
 }
 
 async function handle(message) {
@@ -41,11 +63,10 @@ async function handle(message) {
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-    // ── !dailygame ─────────────────────────────────────────────────────────────
     if (msgLower === "!dailygame") {
         const cd = checkCooldown(userId, "dailygame", 24 * 60 * 60 * 1000)
         if (!cd.ok) {
-            await createSafeMessage(message.channel, `⏳ You already played your daily game! Come back in **${Math.floor(cd.remaining / 3600)}h**.`)
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!dailygame"))
             return true
         }
         const games = ["!guess 50", "!rps rock", "!blackjack 30"]
@@ -54,359 +75,362 @@ async function handle(message) {
         const { data, user } = getUser(userId, senderName)
         user.coins += bonus
         saveEconomy(data)
-        await createSafeMessage(message.channel,
-            `🎮 **Daily Game Bonus!** **${senderName}** received **${bonus} coins** for showing up!\n` +
-            `Try today's featured game: \`${suggestion}\`\n` +
-            `Balance: **${user.coins} coins**`)
+        await sendEmbed(message, gameResult("Daily game", "Daily participation reward claimed.", [
+            { name: "Reward", value: `+${bonus} coins`, inline: true },
+            { name: "Featured game", value: `\`${suggestion}\``, inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !guess ─────────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!guess")) {
-        // Check if answering an active game
-        if (activeGuessGames.has(message.channel.id)) {
-            const game = activeGuessGames.get(message.channel.id)
-            const guess = parseInt(msgLower.replace("!guess", "").trim())
-            if (isNaN(guess)) return false // not a guess attempt
-
-            if (game.userId !== userId) {
-                await createSafeMessage(message.channel, `❌ This isn't your game, **${senderName}**! Wait for your turn.`)
+        const active = activeGuessGames.get(message.channel.id)
+        if (active) {
+            const guess = parseInt(msgLower.replace("!guess", "").trim(), 10)
+            if (Number.isNaN(guess)) return false
+            if (active.userId !== userId) {
+                await sendSafe(message, statusLine("warning", "A number game is already active for another member in this channel."))
                 return true
             }
 
             activeGuessGames.delete(message.channel.id)
-
-            if (guess === game.answer) {
-                const reward = game.bet * 2
+            if (guess === active.answer) {
+                const reward = active.bet * 2
                 const { data, user } = getUser(userId, senderName)
                 user.coins += reward
                 saveEconomy(data)
                 addXP(userId, senderName, 20)
                 incrementStat(userId, senderName, "gamesWon")
-                await createSafeMessage(message.channel, `✅ **CORRECT!** The number was **${game.answer}**! **${senderName}** wins **${reward} coins**! 🎉`)
+                await sendEmbed(message, gameResult("Number guess", "Correct answer.", [
+                    { name: "Number", value: String(active.answer), inline: true },
+                    { name: "Reward", value: `+${formatCoins(reward)} coins`, inline: true },
+                    { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+                ]))
             } else {
-                const hint = guess < game.answer ? "📈 Too low!" : "📉 Too high!"
-                await createSafeMessage(message.channel, `❌ Wrong! ${hint} The answer was **${game.answer}**. **${senderName}** lost **${game.bet} coins**.`)
+                await sendEmbed(message, gameResult("Number guess", "Incorrect answer.", [
+                    { name: "Your guess", value: String(guess), inline: true },
+                    { name: "Answer", value: String(active.answer), inline: true },
+                    { name: "Bet lost", value: `${formatCoins(active.bet)} coins`, inline: true },
+                ]))
             }
             return true
         }
 
-        // Start a new guess game
         const parts = message.content.split(" ")
         const { valid, amount } = validateAmount(parts[1], 10, 10000)
         if (!valid) {
-            await createSafeMessage(message.channel, `🔢 Usage: \`!guess [bet]\` (min 10 coins)\nGuess a number between 1-100 to double your bet!`)
+            await sendSafe(message, invalidUsage("!guess [bet]"))
             return true
         }
-
         const { data, user } = getUser(userId, senderName)
         if (user.coins < amount) {
-            await createSafeMessage(message.channel, `💸 You only have **${user.coins} coins**!`)
+            await sendSafe(message, statusLine("error", `Insufficient balance. You have **${formatCoins(user.coins)} coins**.`))
             return true
         }
 
         user.coins -= amount
         saveEconomy(data)
-
-        const answer = Math.floor(Math.random() * 100) + 1
-        activeGuessGames.set(message.channel.id, { answer, userId, bet: amount })
-
-        // Auto-expire after 30 seconds
-        setTimeout(() => {
-            if (activeGuessGames.has(message.channel.id)) {
-                activeGuessGames.delete(message.channel.id)
-            }
-        }, 30000)
-
-        await createSafeMessage(message.channel,
-            `🔢 **Number Guessing Game!** **${senderName}** bet **${amount} coins**!\n` +
-            `Guess a number between **1-100**! Type \`!guess [number]\` within 30 seconds.\n` +
-            `Correct answer = **${amount * 2} coins**!`)
+        const game = { answer: Math.floor(Math.random() * 100) + 1, userId, bet: amount }
+        activeGuessGames.set(message.channel.id, game)
+        expireMapEntry(activeGuessGames, message.channel.id, game, 30_000)
+        await sendEmbed(message, gameResult("Number guess", "Guess a number from **1 to 100** within 30 seconds.", [
+            { name: "Bet", value: `${formatCoins(amount)} coins`, inline: true },
+            { name: "Winning payout", value: `${formatCoins(amount * 2)} coins`, inline: true },
+            { name: "Reply", value: "`!guess [number]`", inline: true },
+        ]))
         return true
     }
 
-    // ── !rps ───────────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!rps")) {
         const choice = message.content.split(" ")[1]?.toLowerCase()
-        const valid = ["rock", "paper", "scissors"]
-        if (!valid.includes(choice)) {
-            await createSafeMessage(message.channel, `✊ Usage: \`!rps [rock/paper/scissors]\``)
+        const validChoices = ["rock", "paper", "scissors"]
+        if (!validChoices.includes(choice)) {
+            await sendSafe(message, invalidUsage("!rps [rock/paper/scissors]"))
+            return true
+        }
+        const cd = checkCooldown(userId, "rps", 10 * 1000)
+        if (!cd.ok) {
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!rps"))
             return true
         }
 
-        const cd = checkCooldown(userId, "rps", 10 * 1000)
-        if (!cd.ok) { await createSafeMessage(message.channel, `⏳ Wait **${cd.remaining}s** before playing again.`); return true }
-
-        const botChoice = valid[Math.floor(Math.random() * 3)]
-        const emojis = { rock: "✊", paper: "📄", scissors: "✂️" }
+        const botChoice = validChoices[Math.floor(Math.random() * validChoices.length)]
         const wins = { rock: "scissors", paper: "rock", scissors: "paper" }
-
         const { data, user } = getUser(userId, senderName)
-        let result, coinsChange = 0
-
-        if (choice === botChoice) {
-            result = `🤝 **TIE!** We both chose ${emojis[choice]} ${choice}!`
-        } else if (wins[choice] === botChoice) {
-            coinsChange = 30
-            user.coins += coinsChange
+        let outcome = "Tie"
+        let change = 0
+        if (choice !== botChoice && wins[choice] === botChoice) {
+            outcome = "Win"
+            change = 30
+            user.coins += change
             incrementStat(userId, senderName, "gamesWon")
-            result = `🏆 **${senderName} WINS!** ${emojis[choice]} beats ${emojis[botChoice]}! +${coinsChange} coins!`
-        } else {
-            coinsChange = -20
-            user.coins = Math.max(0, user.coins + coinsChange)
-            result = `💀 **CURSED WINS!** ${emojis[botChoice]} beats ${emojis[choice]}! -20 coins.`
+        } else if (choice !== botChoice) {
+            outcome = "Loss"
+            change = -20
+            user.coins = Math.max(0, user.coins + change)
         }
-
         saveEconomy(data)
-        await createSafeMessage(message.channel, `✊ **Rock Paper Scissors!**\n${senderName}: ${emojis[choice]} | CURSED: ${emojis[botChoice]}\n\n${result}\n💰 Balance: **${user.coins} coins**`)
+
+        await sendEmbed(message, gameResult("Rock Paper Scissors", null, [
+            { name: "You", value: choice, inline: true },
+            { name: "CURSED", value: botChoice, inline: true },
+            { name: "Outcome", value: outcome, inline: true },
+            { name: "Coins", value: change === 0 ? "No change" : `${change > 0 ? "+" : ""}${change}`, inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !blackjack ─────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!blackjack")) {
-        // Handle hit/stand for active game
-        if (activeBlackjack.has(userId)) {
-            const game = activeBlackjack.get(userId)
+        const active = activeBlackjack.get(userId)
+        if (active) {
             const action = message.content.split(" ")[1]?.toLowerCase()
-
             if (action === "hit") {
-                game.playerHand.push(game.deck.pop())
-                const pv = handValue(game.playerHand)
-
-                if (pv > 21) {
+                active.playerHand.push(active.deck.pop())
+                const playerValue = handValue(active.playerHand)
+                if (playerValue > 21) {
                     activeBlackjack.delete(userId)
                     const { data, user } = getUser(userId, senderName)
-                    user.coins = Math.max(0, user.coins - game.bet)
+                    user.coins = Math.max(0, user.coins - active.bet)
                     saveEconomy(data)
-                    await createSafeMessage(message.channel,
-                        `🃏 **BUST!** Your hand: ${formatHand(game.playerHand)} = **${pv}**\n` +
-                        `💸 Lost **${game.bet} coins**. Balance: **${user.coins}**`)
+                    await sendEmbed(message, gameResult("Blackjack", "Bust.", [
+                        { name: "Hand", value: `${formatHand(active.playerHand)} · ${playerValue}`, inline: false },
+                        { name: "Loss", value: `${formatCoins(active.bet)} coins`, inline: true },
+                        { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+                    ]))
                 } else {
-                    await createSafeMessage(message.channel,
-                        `🃏 Your hand: ${formatHand(game.playerHand)} = **${pv}**\n` +
-                        `Type \`!blackjack hit\` or \`!blackjack stand\``)
+                    await sendEmbed(message, gameResult("Blackjack", "Game in progress.", [
+                        { name: "Hand", value: `${formatHand(active.playerHand)} · ${playerValue}`, inline: false },
+                        { name: "Next action", value: "`!blackjack hit` or `!blackjack stand`", inline: false },
+                    ]))
                 }
                 return true
             }
 
             if (action === "stand") {
                 activeBlackjack.delete(userId)
-                const pv = handValue(game.playerHand)
-
-                // Dealer draws to 17
-                while (handValue(game.dealerHand) < 17) game.dealerHand.push(game.deck.pop())
-                const dv = handValue(game.dealerHand)
-
+                const playerValue = handValue(active.playerHand)
+                while (handValue(active.dealerHand) < 17) active.dealerHand.push(active.deck.pop())
+                const dealerValue = handValue(active.dealerHand)
                 const { data, user } = getUser(userId, senderName)
-                let resultMsg
-
-                if (dv > 21 || pv > dv) {
-                    const reward = game.bet * 2
+                let outcome
+                let coinText
+                if (dealerValue > 21 || playerValue > dealerValue) {
+                    const reward = active.bet * 2
                     user.coins += reward
                     incrementStat(userId, senderName, "gamesWon")
-                    resultMsg = `🏆 **${senderName} WINS!** Your ${pv} beats dealer's ${dv}! +${reward} coins!`
-                } else if (pv === dv) {
-                    user.coins += game.bet // push — return bet
-                    resultMsg = `🤝 **PUSH!** Both ${pv}. Bet returned.`
+                    outcome = "Win"
+                    coinText = `+${formatCoins(reward)} coins`
+                } else if (playerValue === dealerValue) {
+                    user.coins += active.bet
+                    outcome = "Push"
+                    coinText = `${formatCoins(active.bet)} coins returned`
                 } else {
-                    user.coins = Math.max(0, user.coins - game.bet)
-                    resultMsg = `💀 **Dealer wins!** ${dv} beats your ${pv}. Lost **${game.bet} coins**.`
+                    user.coins = Math.max(0, user.coins - active.bet)
+                    outcome = "Loss"
+                    coinText = `-${formatCoins(active.bet)} coins`
                 }
-
                 saveEconomy(data)
-                await createSafeMessage(message.channel,
-                    `🃏 **Blackjack Result**\nYour hand: ${formatHand(game.playerHand)} = **${pv}**\n` +
-                    `Dealer: ${formatHand(game.dealerHand)} = **${dv}**\n\n${resultMsg}\n💰 Balance: **${user.coins}**`)
+                await sendEmbed(message, gameResult("Blackjack", outcome, [
+                    { name: "Your hand", value: `${formatHand(active.playerHand)} · ${playerValue}`, inline: false },
+                    { name: "Dealer", value: `${formatHand(active.dealerHand)} · ${dealerValue}`, inline: false },
+                    { name: "Coins", value: coinText, inline: true },
+                    { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+                ]))
                 return true
             }
 
-            await createSafeMessage(message.channel, `🃏 You have an active game! Type \`!blackjack hit\` or \`!blackjack stand\``)
+            await sendSafe(message, statusLine("warning", "Blackjack is already active. Use `!blackjack hit` or `!blackjack stand`."))
             return true
         }
 
-        // Start new blackjack game
         const parts = message.content.split(" ")
         const { valid, amount } = validateAmount(parts[1], 10, 5000)
         if (!valid) {
-            await createSafeMessage(message.channel, `🃏 Usage: \`!blackjack [bet]\` (min 10 coins)\nThen use \`!blackjack hit\` or \`!blackjack stand\``)
+            await sendSafe(message, invalidUsage("!blackjack [bet]"))
             return true
         }
-
         const { data, user } = getUser(userId, senderName)
         if (user.coins < amount) {
-            await createSafeMessage(message.channel, `💸 You only have **${user.coins} coins**!`)
+            await sendSafe(message, statusLine("error", `Insufficient balance. You have **${formatCoins(user.coins)} coins**.`))
             return true
         }
 
         const deck = buildDeck()
         const playerHand = [deck.pop(), deck.pop()]
         const dealerHand = [deck.pop(), deck.pop()]
-        const pv = handValue(playerHand)
+        const playerValue = handValue(playerHand)
+        const game = { playerHand, dealerHand, bet: amount, deck }
+        activeBlackjack.set(userId, game)
+        expireMapEntry(activeBlackjack, userId, game, 120_000)
 
-        activeBlackjack.set(userId, { playerHand, dealerHand, bet: amount, deck })
-
-        // Auto-expire after 2 minutes
-        setTimeout(() => activeBlackjack.delete(userId), 120000)
-
-        if (pv === 21) {
+        if (playerValue === 21) {
             activeBlackjack.delete(userId)
             const reward = Math.floor(amount * 2.5)
             user.coins += reward
             saveEconomy(data)
-            await createSafeMessage(message.channel,
-                `🃏 **BLACKJACK!** ${formatHand(playerHand)} = **21**!\n` +
-                `🏆 **${senderName}** wins **${reward} coins**! 🎉`)
+            incrementStat(userId, senderName, "gamesWon")
+            await sendEmbed(message, gameResult("Blackjack", "Natural blackjack.", [
+                { name: "Hand", value: `${formatHand(playerHand)} · 21`, inline: false },
+                { name: "Reward", value: `+${formatCoins(reward)} coins`, inline: true },
+                { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+            ]))
         } else {
-            await createSafeMessage(message.channel,
-                `🃏 **Blackjack!** Bet: **${amount} coins**\n\n` +
-                `Your hand: ${formatHand(playerHand)} = **${pv}**\n` +
-                `Dealer shows: ${dealerHand[0].rank}${dealerHand[0].suit} + 🂠\n\n` +
-                `Type \`!blackjack hit\` or \`!blackjack stand\``)
+            await sendEmbed(message, gameResult("Blackjack", "Game started.", [
+                { name: "Bet", value: `${formatCoins(amount)} coins`, inline: true },
+                { name: "Your hand", value: `${formatHand(playerHand)} · ${playerValue}`, inline: false },
+                { name: "Dealer shows", value: `${dealerHand[0].rank}${dealerHand[0].suit} + hidden`, inline: false },
+                { name: "Next action", value: "`!blackjack hit` or `!blackjack stand`", inline: false },
+            ]))
         }
         return true
     }
 
-    // ── !mines ─────────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!mines")) {
         const parts = message.content.split(" ")
         const { valid, amount } = validateAmount(parts[1], 10, 2000)
         if (!valid) {
-            await createSafeMessage(message.channel, `💣 Usage: \`!mines [bet]\` — Pick a safe tile from a 3x3 grid (3 mines hidden)!`)
+            await sendSafe(message, invalidUsage("!mines [bet]"))
             return true
         }
-
         const { data, user } = getUser(userId, senderName)
         if (user.coins < amount) {
-            await createSafeMessage(message.channel, `💸 You only have **${user.coins} coins**!`)
+            await sendSafe(message, statusLine("error", `Insufficient balance. You have **${formatCoins(user.coins)} coins**.`))
             return true
         }
 
-        // 3x3 grid, 3 mines
         const grid = Array(9).fill("safe")
         const minePositions = new Set()
         while (minePositions.size < 3) minePositions.add(Math.floor(Math.random() * 9))
-        for (const pos of minePositions) grid[pos] = "mine"
-
-        const playerPick = Math.floor(Math.random() * 9) // simulate random pick
+        for (const position of minePositions) grid[position] = "mine"
+        const playerPick = Math.floor(Math.random() * 9)
         const hit = grid[playerPick] === "mine"
-
-        const displayGrid = grid.map((cell, i) => {
-            if (i === playerPick) return cell === "mine" ? "💥" : "✅"
-            if (minePositions.has(i)) return "💣"
+        const displayGrid = grid.map((cell, index) => {
+            if (index === playerPick) return cell === "mine" ? "💥" : "✅"
+            if (minePositions.has(index)) return "💣"
             return "⬜"
         })
-
-        const rows = [
+        const board = [
             displayGrid.slice(0, 3).join(" "),
             displayGrid.slice(3, 6).join(" "),
             displayGrid.slice(6, 9).join(" "),
-        ]
+        ].join("\n")
 
+        let outcome
+        let coinText
         if (hit) {
             user.coins = Math.max(0, user.coins - amount)
-            saveEconomy(data)
-            await createSafeMessage(message.channel,
-                `💣 **MINES** — **${senderName}** bet **${amount} coins**\n\n${rows.join("\n")}\n\n💥 **BOOM!** You hit a mine! Lost **${amount} coins**.\nBalance: **${user.coins}**`)
+            outcome = "Mine hit"
+            coinText = `-${formatCoins(amount)} coins`
         } else {
             const reward = Math.floor(amount * 1.8)
             user.coins += reward
             incrementStat(userId, senderName, "gamesWon")
-            saveEconomy(data)
-            await createSafeMessage(message.channel,
-                `💣 **MINES** — **${senderName}** bet **${amount} coins**\n\n${rows.join("\n")}\n\n✅ **SAFE!** Won **${reward} coins**!\nBalance: **${user.coins}**`)
+            outcome = "Safe tile"
+            coinText = `+${formatCoins(reward)} coins`
         }
+        saveEconomy(data)
+        await sendEmbed(message, gameResult("Mines", board, [
+            { name: "Outcome", value: outcome, inline: true },
+            { name: "Result", value: coinText, inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
-    // ── !duel ──────────────────────────────────────────────────────────────────
     if (msgLower.startsWith("!duel")) {
         const mentioned = message.mentions.users.first()
         const parts = message.content.split(" ")
         const { valid, amount } = validateAmount(parts[parts.length - 1], 10, 5000)
-
         if (!mentioned || !valid) {
-            await createSafeMessage(message.channel, `⚔️ Usage: \`!duel @user [bet]\` — Challenge someone to a coin duel!`)
+            await sendSafe(message, invalidUsage("!duel @user [bet]"))
             return true
         }
-        if (mentioned.id === userId) { await createSafeMessage(message.channel, `😂 You can't duel yourself!`); return true }
-        if (mentioned.bot) { await createSafeMessage(message.channel, `🤖 Can't duel a bot!`); return true }
+        if (mentioned.id === userId) {
+            await sendSafe(message, statusLine("warning", "You cannot duel yourself."))
+            return true
+        }
+        if (mentioned.bot) {
+            await sendSafe(message, statusLine("warning", "Bots cannot participate in coin duels."))
+            return true
+        }
 
         const { user: challenger } = getUser(userId, senderName)
         if (challenger.coins < amount) {
-            await createSafeMessage(message.channel, `💸 You need **${amount} coins** to duel but only have **${challenger.coins}**!`)
+            await sendSafe(message, statusLine("error", `You need **${formatCoins(amount)} coins** to duel.`))
             return true
         }
-
         const targetName = sanitizeName(message.guild.members.cache.get(mentioned.id)?.displayName || mentioned.username)
         const { user: challenged } = getUser(mentioned.id, targetName)
         if (challenged.coins < amount) {
-            await createSafeMessage(message.channel, `💸 **${targetName}** doesn't have enough coins for this duel!`)
+            await sendSafe(message, statusLine("error", `**${targetName}** does not have enough coins for this duel.`))
             return true
         }
 
-        // Simple duel — random winner with slight skill factor (level)
         const p1Score = Math.random() * 100 + (challenger.level || 0) * 2
         const p2Score = Math.random() * 100 + (challenged.level || 0) * 2
         const p1Wins = p1Score > p2Score
-
         const winnerId = p1Wins ? userId : mentioned.id
         const winnerName = p1Wins ? senderName : targetName
         const loserId = p1Wins ? mentioned.id : userId
         const loserName = p1Wins ? targetName : senderName
+        const { data: winnerData, user: winner } = getUser(winnerId, winnerName)
+        const { data: loserData, user: loser } = getUser(loserId, loserName)
+        winner.coins += amount
+        loser.coins = Math.max(0, loser.coins - amount)
+        winner.stats = winner.stats || {}
+        winner.stats.duelsWon = (winner.stats.duelsWon || 0) + 1
+        saveEconomy(winnerData)
+        saveEconomy(loserData)
 
-        const { data: wData, user: wUser } = getUser(winnerId, winnerName)
-        const { data: lData, user: lUser } = getUser(loserId, loserName)
-
-        wUser.coins += amount
-        lUser.coins = Math.max(0, lUser.coins - amount)
-        wUser.stats = wUser.stats || {}
-        wUser.stats.duelsWon = (wUser.stats.duelsWon || 0) + 1
-        saveEconomy(wData)
-        saveEconomy(lData)
-
-        await createSafeMessage(message.channel,
-            `⚔️ **DUEL: ${senderName} vs ${targetName}** (${amount} coins)\n\n` +
-            `🎲 ${senderName}: ${Math.floor(p1Score)} pts | ${targetName}: ${Math.floor(p2Score)} pts\n\n` +
-            `🏆 **${winnerName}** wins **${amount} coins** from **${loserName}**!`)
+        await sendEmbed(message, gameResult("Duel", `${winnerName} won the duel.`, [
+            { name: senderName, value: `${Math.floor(p1Score)} points`, inline: true },
+            { name: targetName, value: `${Math.floor(p2Score)} points`, inline: true },
+            { name: "Transfer", value: `${formatCoins(amount)} coins from ${loserName} to ${winnerName}`, inline: false },
+        ]))
         return true
     }
 
-    // ── !treasure ──────────────────────────────────────────────────────────────
     if (msgLower === "!treasure") {
-        const cd = checkCooldown(userId, "treasure", 4 * 60 * 60 * 1000) // 4 hours
+        const cd = checkCooldown(userId, "treasure", 4 * 60 * 60 * 1000)
         if (!cd.ok) {
-            await createSafeMessage(message.channel, `🗺️ The treasure respawns in **${Math.floor(cd.remaining / 60)}m**. Come back later!`)
+            await sendSafe(message, cooldownMessage(senderName, cd.remaining, "!treasure"))
             return true
         }
 
         const outcomes = [
-            { emoji: "💎", name: "Diamond Cache",  coins: 500, xp: 100, chance: 0.05 },
-            { emoji: "🥇", name: "Gold Chest",     coins: 200, xp: 60,  chance: 0.15 },
-            { emoji: "🪙", name: "Silver Pouch",   coins: 100, xp: 30,  chance: 0.30 },
-            { emoji: "🪨", name: "Empty Cave",     coins: 10,  xp: 5,   chance: 0.50 },
+            { name: "Diamond Cache", coins: 500, xp: 100, chance: 0.05 },
+            { name: "Gold Chest", coins: 200, xp: 60, chance: 0.15 },
+            { name: "Silver Pouch", coins: 100, xp: 30, chance: 0.30 },
+            { name: "Empty Cave", coins: 10, xp: 5, chance: 0.50 },
         ]
-
         const roll = Math.random()
         let cumulative = 0
         let found = outcomes[outcomes.length - 1]
-        for (const o of outcomes) {
-            cumulative += o.chance
-            if (roll < cumulative) { found = o; break }
+        for (const outcome of outcomes) {
+            cumulative += outcome.chance
+            if (roll < cumulative) {
+                found = outcome
+                break
+            }
         }
 
         const { data, user } = getUser(userId, senderName)
         user.coins += found.coins
         saveEconomy(data)
         addXP(userId, senderName, found.xp)
-
-        await createSafeMessage(message.channel,
-            `🗺️ **${senderName}** went treasure hunting and found...\n\n` +
-            `${found.emoji} **${found.name}!** +${found.coins} coins | +${found.xp} XP\n` +
-            `💰 Balance: **${user.coins} coins**`)
+        await sendEmbed(message, gameResult("Treasure hunt", found.name, [
+            { name: "Coins", value: `+${formatCoins(found.coins)}`, inline: true },
+            { name: "XP", value: `+${found.xp}`, inline: true },
+            { name: "Balance", value: `${formatCoins(user.coins)} coins`, inline: true },
+        ]))
         return true
     }
 
     return false
 }
 
-module.exports = { handle }
+module.exports = {
+    handle,
+    __testing: process.env.NODE_ENV === "test" ? { activeGuessGames, activeBlackjack, handValue, buildDeck } : undefined,
+}
