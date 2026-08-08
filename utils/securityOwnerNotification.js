@@ -1,4 +1,4 @@
-const { EmbedBuilder } = require("discord.js")
+const { buildEmbed, COLORS } = require("./responseBuilder")
 
 const DASHBOARD_URL = "https://cursed-discord-bot-dashboard.vercel.app/dashboard/security"
 
@@ -46,28 +46,30 @@ function buildBotAddEmbed(parsed) {
         ? `${parsed.bot}\n\`${parsed.botId}\``
         : parsed.bot
 
-    return new EmbedBuilder()
-        .setColor(0x57F287)
-        .setTitle("🚨 Unauthorized Bot Blocked")
-        .setDescription(`CURSED protected **${parsed.server}** from an unauthorized bot.`)
-        .addFields(
-            { name: "Added bot", value: botValue.slice(0, 1024), inline: true },
-            { name: "Invited by", value: parsed.inviter.slice(0, 1024), inline: true },
-            { name: "Bot action", value: parsed.botAction.slice(0, 1024), inline: true },
-            { name: "Inviter action", value: parsed.inviterAction.slice(0, 1024), inline: true },
-        )
-        .setFooter({ text: "View full details in your Server Protection dashboard." })
-        .setTimestamp()
+    return buildEmbed({
+        color: COLORS.security,
+        title: "Security alert • Unauthorized bot blocked",
+        description: `An unauthorized bot addition was blocked in **${parsed.server}**.`,
+        fields: [
+            { name: "Bot", value: botValue.slice(0, 1024), inline: true },
+            { name: "Added by", value: parsed.inviter.slice(0, 1024), inline: true },
+            { name: "Bot response", value: parsed.botAction.slice(0, 1024), inline: true },
+            { name: "Inviter response", value: parsed.inviterAction.slice(0, 1024), inline: true },
+        ],
+        footer: "CURSED • Server Protection",
+        timestamp: true,
+    })
 }
 
 function buildGenericEmbed(guild, message) {
-    return new EmbedBuilder()
-        .setColor(0xE53935)
-        .setTitle("🚨 CURSED Security Alert")
-        .setDescription(String(message || "A critical security incident was detected.").slice(0, 4000))
-        .addFields({ name: "Server", value: String(guild?.name || "Unknown server").slice(0, 1024) })
-        .setFooter({ text: "View full details in your Server Protection dashboard." })
-        .setTimestamp()
+    return buildEmbed({
+        color: COLORS.security,
+        title: "Security alert",
+        description: String(message || "A critical security incident was detected.").slice(0, 4000),
+        fields: [{ name: "Server", value: String(guild?.name || "Unknown server").slice(0, 1024) }],
+        footer: "CURSED • Server Protection",
+        timestamp: true,
+    })
 }
 
 function buildOwnerNotification(guild, message) {
