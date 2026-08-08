@@ -1,34 +1,32 @@
-const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType } = require("discord.js")
+const { Client, Events, GatewayIntentBits, REST, Routes } = require("discord.js")
 require("dotenv/config")
 const mongoose = require("mongoose")
 
-// ── Environment validation ─────────────────────────────────────────────────────
 const REQUIRED_ENV = ["BOT_TOKEN"]
-const missingEnv = REQUIRED_ENV.filter(k => !process.env[k])
+const missingEnv = REQUIRED_ENV.filter(key => !process.env[key])
 if (missingEnv.length) {
-    console.error(`❌ Missing required environment variables: ${missingEnv.join(", ")}`)
+    console.error(`Missing required environment variables: ${missingEnv.join(", ")}`)
     process.exit(1)
 }
 
 if (process.env.MONGO_URI) {
     mongoose.connect(process.env.MONGO_URI)
-        .then(() => console.log("✅ MongoDB Connected"))
-        .catch(err => console.error("❌ MongoDB error:", err.message))
+        .then(() => console.log("MongoDB connected"))
+        .catch(error => console.error("MongoDB connection error:", error.message))
 } else {
-    console.warn("⚠️  MONGO_URI not set — using in-memory fallback for all data stores")
+    console.warn("MONGO_URI not set — persistent stores will use their configured fallback behavior")
 }
 
-// ── Optional feature availability ─────────────────────────────────────────────
 if (!process.env.HF_TOKEN) {
-    console.warn("⚠️  HF_TOKEN not set — !imagine and !meme commands will be disabled")
+    console.warn("HF_TOKEN not set — image generation commands will be unavailable")
 }
 if (!process.env.DISCORD_REDIRECT_URI) {
-    console.warn("⚠️  DISCORD_REDIRECT_URI not set — dashboard OAuth login will not work")
+    console.warn("DISCORD_REDIRECT_URI not set — dashboard OAuth login will be unavailable")
 }
 
 const { callAI, getStatus: getAIStatus } = require("./utils/ai")
 const { getUserMemory, appendUserMemory, cleanupMemory } = require("./utils/memory")
-require("./utils/antiSpam") // side-effect: registers the 30s messageLog cleanup interval
+require("./utils/antiSpam")
 const { getUser, saveEconomy, addXP, incrementStat, updateQuestProgress } = require("./utils/economy")
 const { checkRateLimit } = require("./utils/cooldowns")
 const { getProfile } = require("./utils/profiles")
@@ -38,6 +36,8 @@ const { startWebhookServer, setClient } = require("./webhook")
 const { setClient: setModLogClient } = require("./utils/modlog")
 const { runAutoMod } = require("./utils/automod")
 const { sendSafe, replySafe } = require("./utils/mentionSanitizer")
+const { statusLine, commandDisabled, SAFE_MENTIONS } = require("./utils/responseBuilder")
+const { recordTiming } = require("./utils/runtimeMetrics")
 const { sanitizeUserInput, sanitizeAIOutput, sanitizeName } = require("./utils/sanitizer")
 const { buildSystemPrompt } = require("./utils/prompts")
 const { getUserPersonality } = require("./utils/personalities")
@@ -59,7 +59,6 @@ const MODERATION_SLASH_COMMANDS = new Set([
 ])
 const LEVELING_SLASH_COMMANDS = new Set(["rank", "levels", "leveling"])
 
-// Load all command modules once at startup
 const commandModules = loadCommands()
 
 const client = new Client({
@@ -69,72 +68,61 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildVoiceStates,
-    ]
+    ],
 })
 
-client.once(Events.ClientReady, async (clientUser) => {
-    console.log(`Logged in as ${clientUser.user.tag}`)
-    console.log(`Serving ${clientUser.guilds.cache.size} server(s)`)
+client.once(Events.ClientReady, async clientUser => {
+    log.info(`Ready as ${clientUser.user.tag} in ${clientUser.guilds.cache.size} server(s)`)
 
     const ai = getAIStatus()
-    console.log(`AI: Groq=${ai.groqConfigured} | Gemini=${ai.geminiConfigured}`)
-
-    try {
-        await clientUser.user.setUsername("CURSED")
-        console.log("Bot name set to CURSED")
-    } catch (err) {
-        console.error("Could not change username:", err.message)
-    }
+    log.info(`AI providers: Gemini=${ai.geminiConfigured} Groq=${ai.groqConfigured} OpenRouter=${ai.openRouterConfigured}`)
 
     const inviteLink = `https://discord.com/oauth2/authorize?client_id=${clientUser.user.id}&permissions=8&scope=bot%20applications.commands`
-    console.log(`\n=== BOT INVITE LINK ===\n${inviteLink}\n======================\n`)
+    log.info(`Invite link: ${inviteLink}`)
 
     setModLogClient(client)
 
-    // ── Register slash commands globally ──────────────────────────────────────
     try {
         const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN)
-        const commandData = moderationCmd.commands.map(c => c.toJSON())
+        const commandData = moderationCmd.commands.map(command => command.toJSON())
         const existingCommands = await rest.get(Routes.applicationCommands(clientUser.user.id))
-        const entryPoint = existingCommands.find(cmd => cmd.type === 4)
+        const entryPoint = existingCommands.find(command => command.type === 4)
         const commandsToRegister = entryPoint ? [...commandData, entryPoint] : commandData
 
-        await rest.put(Routes.applicationCommands(clientUser.user.id), {
-            body: commandsToRegister,
-        })
-        console.log(`✅ Registered ${commandData.length} slash command(s)`)
-    } catch (err) {
-        console.error("Slash command registration error:", err.message)
+        await rest.put(Routes.applicationCommands(clientUser.user.id), { body: commandsToRegister })
+        log.info(`Registered ${commandData.length} slash command(s)`)
+    } catch (error) {
+        log.error(`Slash command registration failed: ${error.message}`)
     }
 
     cleanupMemory()
-    setInterval(cleanupMemory, 60 * 60 * 1000)
-    log.info("Startup cleanup complete. Periodic cleanup intervals registered.")
+    const cleanupTimer = setInterval(cleanupMemory, 60 * 60 * 1000)
+    cleanupTimer.unref?.()
+    log.info("Startup cleanup complete")
 })
 
-client.on(Events.GuildCreate, async (guild) => {
-    log.info(`Joined new server: ${guild.name} (${guild.memberCount} members)`)
+client.on(Events.GuildCreate, async guild => {
+    log.info(`Joined server ${guild.id} (${guild.memberCount} members)`)
 
     try {
         const { data } = getServerConfig(guild.id)
         saveConfig(data)
-    } catch (err) {
-        log.error(`Failed to initialize server config for ${guild.id}: ${err.message}`)
+    } catch (error) {
+        log.error(`Failed to initialize server config for ${guild.id}: ${error.message}`)
     }
 
     const channel = guild.systemChannel
-        || guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has("SendMessages"))
-    if (channel) {
-        await sendSafe(channel,
-            `👹 **CURSED has arrived.** I'm your AI-powered Discord companion with roasting energy and a kind heart.\n\n` +
-            `📖 Type \`!help\` to see all **${require("./utils/helpGenerator").getTotalCommandCount()} commands**.\n` +
-            `⚙️ Admins: use \`!addchannel\` to limit me to specific channels.\n` +
-            `💎 Set up Premium: \`!setpremiumrole @role\` and \`!setpayment kofi/patreon/bmc [url]\`.`
-        ).catch(() => {})
-    }
+        || guild.channels.cache.find(candidate => candidate.isTextBased() && candidate.permissionsFor(guild.members.me)?.has("SendMessages"))
+    if (!channel) return
+
+    const totalCommands = require("./utils/helpGenerator").getTotalCommandCount()
+    await sendSafe(
+        channel,
+        `**CURSED is ready.**\nAI, server protection, moderation, community systems, economy and games.\n\nUse \`!help\` to browse **${totalCommands} commands**. Server managers can use \`!addchannel\` to restrict where CURSED responds.`
+    ).catch(() => {})
 })
 
-client.on(Events.GuildMemberAdd, async (member) => {
+client.on(Events.GuildMemberAdd, async member => {
     const rawConfig = getServerConfig(member.guild.id).config
 
     const { autoroleId } = getAutorole(member.guild.id)
@@ -144,41 +132,38 @@ client.on(Events.GuildMemberAdd, async (member) => {
         try {
             await member.roles.add(roleToAdd)
             assignedRoleId = roleToAdd
-        } catch (err) {
-            log.warn(`[${member.guild.name}] Autorole ${roleToAdd} was not assigned: ${err.message}`)
+        } catch (error) {
+            log.warn(`[${member.guild.id}] Autorole ${roleToAdd} was not assigned: ${error.message}`)
         }
     }
 
-    // An explicit dashboard or slash-command disable must not fall back to the
-    // default AI welcome.
     if (rawConfig.welcomeEnabled === false) return
 
     const welcomeConfig = getWelcome(member.guild.id)
     if (welcomeConfig.welcomeChannelId) {
         const welcomeArgs = [member, welcomeConfig, callAI]
         if (assignedRoleId) welcomeArgs.push(assignedRoleId)
-        sendWelcome(...welcomeArgs).catch(err =>
-            log.error(`[Welcome] Error: ${err.message}`)
-        )
-    } else {
-        const channel = member.guild.systemChannel
-            || member.guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(member.guild.members.me)?.has("SendMessages"))
-        if (!channel) return
+        sendWelcome(...welcomeArgs).catch(error => log.error(`[Welcome] ${error.message}`))
+        return
+    }
 
-        const name = sanitizeName(member.displayName || member.user.username)
-        try {
-            const result = await callAI([
-                {
-                    role: "system",
-                    content: "You are CURSED, a Discord bot. Welcome new members warmly but roast them gently. Keep it to 2-3 sentences, funny but not mean. Never use @mentions or Discord IDs."
-                },
-                { role: "user", content: `Welcome this new member: ${name}` }
-            ], { maxTokens: 150 })
-            const safeWelcome = sanitizeAIOutput(result.content)
-            await sendSafe(channel, `👋 **Welcome, ${name}!** ${safeWelcome}`)
-        } catch {
-            await sendSafe(channel, `👋 **Welcome to the server, ${name}!** CURSED is watching you. 👀`)
-        }
+    const channel = member.guild.systemChannel
+        || member.guild.channels.cache.find(candidate => candidate.isTextBased() && candidate.permissionsFor(member.guild.members.me)?.has("SendMessages"))
+    if (!channel) return
+
+    const name = sanitizeName(member.displayName || member.user.username)
+    try {
+        const result = await callAI([
+            {
+                role: "system",
+                content: "You are CURSED, a professional Discord community bot. Welcome a new member warmly in one or two short sentences. Friendly personality is fine, but avoid insults, exaggerated wording, @mentions, and Discord IDs.",
+            },
+            { role: "user", content: `Welcome this new member: ${name}` },
+        ], { maxTokens: 120 })
+        const safeWelcome = sanitizeAIOutput(result.content)
+        await sendSafe(channel, `**Welcome, ${name}.** ${safeWelcome}`)
+    } catch {
+        await sendSafe(channel, `**Welcome, ${name}.** Glad to have you here.`)
     }
 })
 
@@ -194,18 +179,14 @@ client.on(Events.VoiceStateUpdate, (oldState, newState) => {
     if (joinedChannel) {
         startVoiceSession(guildId, userId)
     } else if (leftChannel) {
-        endVoiceSession(guildId, userId).catch(err =>
-            log.error(`endVoiceSession (leave) failed: ${err.message}`)
-        )
+        endVoiceSession(guildId, userId).catch(error => log.error(`Voice session close failed: ${error.message}`))
     } else if (switchedChannel) {
-        endVoiceSession(guildId, userId).catch(err =>
-            log.error(`endVoiceSession (switch) failed: ${err.message}`)
-        )
+        endVoiceSession(guildId, userId).catch(error => log.error(`Voice session switch close failed: ${error.message}`))
         startVoiceSession(guildId, userId)
     }
 })
 
-client.on(Events.InteractionCreate, async (interaction) => {
+client.on(Events.InteractionCreate, async interaction => {
     try {
         if (interaction.inGuild() && interaction.isChatInputCommand()) {
             const control = normalizeControlConfig(getServerConfig(interaction.guildId).config)
@@ -217,29 +198,32 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
             if (!isCommandEnabled(control, slashName) || levelingDisabled || moderationDisabled) {
                 await interaction.reply({
-                    content: "⛔ That command is disabled in this server.",
+                    content: commandDisabled(),
                     ephemeral: true,
-                    allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
+                    allowedMentions: SAFE_MENTIONS,
                 }).catch(() => {})
                 return
             }
         }
 
         await moderationCmd.handleInteraction(interaction)
-    } catch (err) {
-        console.error("Interaction error:", err.message)
-        const reply = { content: "❌ An error occurred while processing that command.", ephemeral: true }
+    } catch (error) {
+        log.error(`Interaction error: ${error.message}`)
+        const payload = {
+            content: statusLine("error", "The command could not be completed. No partial action will be reported as successful."),
+            ephemeral: true,
+            allowedMentions: SAFE_MENTIONS,
+        }
         if (interaction.replied || interaction.deferred) {
-            await interaction.followUp(reply).catch(() => {})
+            await interaction.followUp(payload).catch(() => {})
         } else {
-            await interaction.reply(reply).catch(() => {})
+            await interaction.reply(payload).catch(() => {})
         }
     }
 })
 
-client.on(Events.MessageCreate, async (message) => {
-    if (message.author.bot) return
-    if (!message.guild) return
+client.on(Events.MessageCreate, async message => {
+    if (message.author.bot || !message.guild) return
 
     const guildId = message.guild.id
     const channelId = message.channel.id
@@ -247,14 +231,14 @@ client.on(Events.MessageCreate, async (message) => {
 
     try {
         if (await runAutoMod(message)) return
-    } catch (err) {
-        log.error(`runAutoMod failed: ${err.message}`, { stack: err.stack, guildId, channelId })
+    } catch (error) {
+        log.error(`AutoMod failed: ${error.message}`, { guildId, channelId })
     }
 
     try {
         if (await moderationCmd.handlePrefixCommand(message)) return
-    } catch (err) {
-        log.error(`handlePrefixCommand failed: ${err.message}`, { stack: err.stack, guildId, channelId })
+    } catch (error) {
+        log.error(`Prefix moderation failed: ${error.message}`, { guildId, channelId })
     }
 
     if (!isChannelAllowed(guildId, channelId)) return
@@ -262,24 +246,22 @@ client.on(Events.MessageCreate, async (message) => {
     const senderName = sanitizeName(message.member?.displayName || message.author.username)
     const userId = message.author.id
 
-    trackMessage(guildId, message.author.id).catch(() => {})
+    trackMessage(guildId, userId).catch(() => {})
 
     const handled = await dispatchCommand(message, commandModules)
     if (handled) {
-        trackCommand(guildId, message.author.id).catch(() => {})
+        trackCommand(guildId, userId).catch(() => {})
         return
     }
 
     const botMentioned = message.mentions.users.has(client.user.id)
     const repliedToBot = message.reference?.messageId
-        ? await message.fetchReference()
-            .then(ref => ref.author.id === client.user.id)
-            .catch(() => false)
+        ? await message.fetchReference().then(reference => reference.author.id === client.user.id).catch(() => false)
         : false
 
     if (!botMentioned && !repliedToBot) return
     if (!control.aiEnabled) {
-        await replySafe(message, "⛔ AI chat is disabled in this server.")
+        await replySafe(message, statusLine("error", "AI chat is disabled in this server."))
         return
     }
 
@@ -290,45 +272,42 @@ client.on(Events.MessageCreate, async (message) => {
         : message.content
 
     if (!aiInput) {
-        await replySafe(message, "You called? What do you need?")
+        await replySafe(message, "What can I help with?")
         return
     }
 
     const msgLower = aiInput.toLowerCase()
-    const rl = checkRateLimit(userId, {
+    const rateLimit = checkRateLimit(userId, {
         limit: control.aiRateLimit,
         windowMs: control.aiRateWindowSeconds * 1000,
         scope: guildId,
     })
-    if (!rl.ok) {
-        await replySafe(message,
-            `⏳ **${senderName}**, slow down! Wait **${rl.remaining}s** before sending another message. 😤`)
+    if (!rateLimit.ok) {
+        await replySafe(message, statusLine("cooldown", `AI rate limit reached. Try again in **${rateLimit.remaining}s**.`))
         return
     }
 
     const { safe, sanitized: sanitizedInput } = sanitizeUserInput(aiInput)
     if (!safe) {
-        await replySafe(message, `🛡️ Nice try, **${senderName}**. I see what you're doing. 😏`)
+        await replySafe(message, statusLine("warning", "I can't process that request safely."))
         return
     }
 
-    const isRageMode = RAGE_TRIGGERS.some(t => msgLower.includes(t))
-    if (isRageMode) log.info("RAGE MODE ACTIVATED")
+    const isRageMode = RAGE_TRIGGERS.some(trigger => msgLower.includes(trigger))
+    if (isRageMode) log.debug("AI rage personality trigger matched")
 
-    const { data: ecoData, user: ecoUser } = getUser(userId, senderName)
-    const hasShield = (ecoUser.roastShield || 0) > 0
+    const { data: economyData, user: economyUser } = getUser(userId, senderName)
+    const hasShield = (economyUser.roastShield || 0) > 0
     if (hasShield) {
-        ecoUser.roastShield--
-        ecoUser.stats = ecoUser.stats || {}
-        ecoUser.stats.shieldUsed = (ecoUser.stats.shieldUsed || 0) + 1
-        saveEconomy(ecoData)
+        economyUser.roastShield--
+        economyUser.stats = economyUser.stats || {}
+        economyUser.stats.shieldUsed = (economyUser.stats.shieldUsed || 0) + 1
+        saveEconomy(economyData)
     }
 
     const userProfile = getProfile(userId)
     const personality = await getUserPersonality(userId)
-    const memoryContext = control.aiLongTermMemoryEnabled
-        ? await buildMemoryContext(userId)
-        : ""
+    const memoryContext = control.aiLongTermMemoryEnabled ? await buildMemoryContext(userId) : ""
 
     let systemPrompt = buildSystemPrompt({
         personality,
@@ -345,12 +324,12 @@ client.on(Events.MessageCreate, async (message) => {
         try {
             const selfActivity = await getActivity(guildId, userId)
             const mentionedMember = message.mentions.members?.first()
-            const mentionedActivity = (mentionedMember && mentionedMember.id !== userId)
+            const mentionedActivity = mentionedMember && mentionedMember.id !== userId
                 ? await getActivity(guildId, mentionedMember.id)
                 : null
             systemPrompt += buildDiscordContext({ message, selfActivity, mentionedActivity })
-        } catch (err) {
-            log.error(`Discord context injection failed: ${err.message}`)
+        } catch (error) {
+            log.error(`Discord context injection failed: ${error.message}`)
         }
     }
 
@@ -359,21 +338,21 @@ client.on(Events.MessageCreate, async (message) => {
     const currentUserMsg = `${senderName}: ${sanitizedInput}`
     chatMessages.push({ role: "user", content: currentUserMsg })
 
-    log.info(`[${message.guild.name}] #${message.channel.name} | ${senderName}: ${message.content.slice(0, 50)}`)
+    // Do not log message or generated content. Runtime diagnostics only need IDs,
+    // provider health and latency — not user conversations.
+    log.debug(`AI request guild=${guildId} channel=${channelId} user=${userId}`)
 
     let safeOutput = null
+    const aiStartedAt = Date.now()
     try {
         const result = await callAI(chatMessages, { maxTokens: control.aiMaxTokens })
-        log.info(`[${result.provider}] response: ${result.content.slice(0, 60)}...`)
-
+        recordTiming("ai.chat.total", Date.now() - aiStartedAt)
+        log.debug(`AI response provider=${result.provider} latency=${result.latencyMs ?? "unknown"}ms`)
         safeOutput = sanitizeAIOutput(result.content)
         await replySafe(message, safeOutput)
-    } catch (err) {
-        const userMessage = formatError(err, "ai-chat", {
-            guildId,
-            channelId,
-            userId,
-        })
+    } catch (error) {
+        recordTiming("ai.chat.failure", Date.now() - aiStartedAt)
+        const userMessage = formatError(error, "ai-chat", { guildId, channelId, userId })
         await replySafe(message, userMessage)
         return
     }
@@ -381,53 +360,50 @@ client.on(Events.MessageCreate, async (message) => {
     if (control.aiMemoryEnabled) {
         try {
             appendUserMemory(guildId, userId, currentUserMsg, safeOutput)
-        } catch (err) {
-            log.error(`appendUserMemory failed: ${err.message}`, { stack: err.stack, userId })
+        } catch (error) {
+            log.error(`Short-term memory update failed: ${error.message}`, { userId })
         }
     }
 
     if (control.aiLongTermMemoryEnabled) {
-        extractAndStoreMemories(userId, sanitizedInput, safeOutput).catch(err => {
-            log.error(`extractAndStoreMemories failed: ${err.message}`, { stack: err.stack, userId })
+        extractAndStoreMemories(userId, sanitizedInput, safeOutput).catch(error => {
+            log.error(`Long-term memory extraction failed: ${error.message}`, { userId })
         })
     }
 
     try {
         incrementStat(userId, senderName, "chat")
         updateQuestProgress(userId, senderName, "chat")
-    } catch (err) {
-        log.error(`chat stat/quest update failed: ${err.message}`, { stack: err.stack, userId })
+    } catch (error) {
+        log.error(`AI activity update failed: ${error.message}`, { userId })
     }
 
     if (control.legacyEconomyXpEnabled) {
         try {
             let xpGain = Math.floor(Math.random() * 11) + 5
-            const freshEco = getUser(userId, senderName)
-            if ((freshEco.user.xpBoost || 0) > 0) {
+            const freshEconomy = getUser(userId, senderName)
+            if ((freshEconomy.user.xpBoost || 0) > 0) {
                 xpGain *= 2
-                freshEco.user.xpBoost--
-                freshEco.user.stats = freshEco.user.stats || {}
-                freshEco.user.stats.xpBoostUsed = (freshEco.user.stats.xpBoostUsed || 0) + 1
-                saveEconomy(freshEco.data)
+                freshEconomy.user.xpBoost--
+                freshEconomy.user.stats = freshEconomy.user.stats || {}
+                freshEconomy.user.stats.xpBoostUsed = (freshEconomy.user.stats.xpBoostUsed || 0) + 1
+                saveEconomy(freshEconomy.data)
             }
             addXP(userId, senderName, xpGain)
-        } catch (err) {
-            log.error(`XP post-processing failed: ${err.message}`, { stack: err.stack, userId })
+        } catch (error) {
+            log.error(`Legacy XP update failed: ${error.message}`, { userId })
         }
     }
 })
 
 async function shutdown(signal) {
-    log.info(`Received ${signal} — shutting down gracefully...`)
+    log.info(`Received ${signal}; shutting down gracefully`)
     try {
         client.destroy()
-        log.info("Discord client destroyed")
-        if (mongoose.connection.readyState === 1) {
-            await mongoose.connection.close()
-            log.info("MongoDB connection closed")
-        }
-    } catch (err) {
-        log.error(`Shutdown error: ${err.message}`)
+        if (mongoose.connection.readyState === 1) await mongoose.connection.close()
+        log.info("Shutdown complete")
+    } catch (error) {
+        log.error(`Shutdown error: ${error.message}`)
     }
     process.exit(0)
 }
@@ -435,15 +411,14 @@ async function shutdown(signal) {
 process.on("SIGTERM", () => shutdown("SIGTERM"))
 process.on("SIGINT", () => shutdown("SIGINT"))
 
-process.on("unhandledRejection", (err) => {
-    log.error(`Unhandled rejection: ${err?.message || err}`, { stack: err?.stack })
+process.on("unhandledRejection", error => {
+    log.error(`Unhandled rejection: ${error?.message || error}`, { stack: error?.stack })
 })
 
-process.on("uncaughtException", (err) => {
-    log.error(`Uncaught exception: ${err?.message || err}`, { stack: err?.stack })
+process.on("uncaughtException", error => {
+    log.error(`Uncaught exception: ${error?.message || error}`, { stack: error?.stack })
 })
 
 setClient(client)
 startWebhookServer()
-
 client.login(process.env.BOT_TOKEN)
