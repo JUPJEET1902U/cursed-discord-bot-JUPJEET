@@ -95,7 +95,7 @@ function validateConfig(body, channels) {
         if (!expected.has(key)) errors[key] = ["Unknown logging category."]
     }
 
-    const channelIds = new Set(channels.map(channel => channel.id))
+    const channelMap = new Map(channels.map(channel => [channel.id, channel]))
     for (const key of LOG_CATEGORY_KEYS) {
         const category = body[key]
         if (!isRecord(category)) {
@@ -117,12 +117,17 @@ function validateConfig(body, channels) {
         }
 
         const channelId = category.channelId == null ? null : String(category.channelId)
-        if (channelId !== null && !channelIds.has(channelId)) {
+        const channel = channelId ? channelMap.get(channelId) : null
+        if (channelId !== null && !channel) {
             errors[key] = ["Choose a text channel where CURSED can send messages."]
             continue
         }
         if (category.enabled === true && !channelId) {
             errors[key] = ["Choose a log channel before enabling this category."]
+            continue
+        }
+        if (category.enabled === true && category.embed === true && channel?.canEmbed === false) {
+            errors[key] = ["CURSED needs Embed Links in that channel, or turn off Post as embed."]
         }
     }
 
