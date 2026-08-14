@@ -87,10 +87,12 @@ async function fetchCurrentMember(guild) {
 }
 
 function serializeAppearance(guild, member, config = {}) {
-    const avatarUrl = member?.displayAvatarURL?.({ size: 512 }) || guild.client.user?.displayAvatarURL?.({ size: 512 }) || null
+    const globalAvatarUrl = guild.client.user?.displayAvatarURL?.({ size: 512 }) || null
+    const globalBannerUrl = guild.client.user?.bannerURL?.({ size: 1024 }) || null
+    const avatarUrl = member?.displayAvatarURL?.({ size: 512 }) || globalAvatarUrl
     const customAvatarUrl = member?.avatarURL?.({ size: 512 }) || null
     const customBannerUrl = member?.bannerURL?.({ size: 1024 }) || null
-    const effectiveBannerUrl = member?.displayBannerURL?.({ size: 1024 }) || customBannerUrl
+    const effectiveBannerUrl = member?.displayBannerURL?.({ size: 1024 }) || customBannerUrl || globalBannerUrl
     const bio = typeof config.serverAppearanceBio === "string" && config.serverAppearanceBio.length
         ? config.serverAppearanceBio
         : null
@@ -100,6 +102,8 @@ function serializeAppearance(guild, member, config = {}) {
         profile: {
             avatarUrl,
             bannerUrl: effectiveBannerUrl || null,
+            globalAvatarUrl,
+            globalBannerUrl,
             customAvatarUrl,
             customBannerUrl,
             bio,
