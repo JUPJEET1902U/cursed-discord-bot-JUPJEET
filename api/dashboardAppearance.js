@@ -123,7 +123,7 @@ async function rollbackBio(guildId, previousBio) {
 }
 
 function createDashboardAppearanceRouter(getClient) {
-    const router = express.Router()
+    const router = express.Router({ mergeParams: true })
     const readLimiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false })
     const writeLimiter = rateLimit({
         windowMs: 15 * 60_000,
@@ -137,7 +137,7 @@ function createDashboardAppearanceRouter(getClient) {
     router.use(readLimiter)
     router.use(dashboardAuth)
 
-    router.get("/guilds/:guildId/appearance", async (req, res, next) => {
+    router.get("/", async (req, res, next) => {
         try {
             const guild = getGuildOrResponse(getClient, req.params.guildId, res)
             if (!guild) return
@@ -147,7 +147,7 @@ function createDashboardAppearanceRouter(getClient) {
         } catch (err) { next(err) }
     })
 
-    router.put("/guilds/:guildId/appearance", writeLimiter, async (req, res, next) => {
+    router.put("/", writeLimiter, async (req, res, next) => {
         try {
             const guild = getGuildOrResponse(getClient, req.params.guildId, res)
             if (!guild) return
@@ -170,9 +170,7 @@ function createDashboardAppearanceRouter(getClient) {
 
             const previousConfig = getGuildConfig(guild.id)
             const previousBio = previousConfig.serverAppearanceBio || null
-            if ("bio" in req.body) {
-                await updateGuildConfigAndWait(guild.id, { serverAppearanceBio: options.bio || null })
-            }
+            if ("bio" in req.body) await updateGuildConfigAndWait(guild.id, { serverAppearanceBio: options.bio || null })
 
             let member
             try {
@@ -182,12 +180,11 @@ function createDashboardAppearanceRouter(getClient) {
                 throw err
             }
 
-            const config = getGuildConfig(guild.id)
-            return res.json({ data: serializeAppearance(guild, member, config) })
+            return res.json({ data: serializeAppearance(guild, member, getGuildConfig(guild.id)) })
         } catch (err) { next(err) }
     })
 
-    router.delete("/guilds/:guildId/appearance", writeLimiter, async (req, res, next) => {
+    router.delete("/", writeLimiter, async (req, res, next) => {
         try {
             const guild = getGuildOrResponse(getClient, req.params.guildId, res)
             if (!guild) return
