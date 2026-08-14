@@ -69,6 +69,9 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildModeration,
+        GatewayIntentBits.GuildInvites,
+        GatewayIntentBits.GuildExpressions,
     ]
 })
 
@@ -443,7 +446,10 @@ process.on("uncaughtException", (err) => {
     log.error(`Uncaught exception: ${err?.message || err}`, { stack: err?.stack })
 })
 
-setClient(client)
 startWebhookServer()
+setClient(client)
 
-client.login(process.env.BOT_TOKEN)
+client.login(process.env.BOT_TOKEN).catch(err => {
+    console.error("Login error:", err.message)
+    process.exit(1)
+})
