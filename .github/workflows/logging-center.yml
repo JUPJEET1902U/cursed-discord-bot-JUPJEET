@@ -1,0 +1,46 @@
+name: Unified Logging CI
+
+on:
+  pull_request:
+    paths:
+      - "api/dashboardLogging.js"
+      - "utils/loggingConfig.js"
+      - "utils/loggingRuntime.js"
+      - "utils/moderationAuditLogger.js"
+      - "utils/modlog.js"
+      - "webhook.js"
+      - "test/logging-center.test.js"
+      - ".github/workflows/logging-center.yml"
+  push:
+    branches: [main]
+    paths:
+      - "api/dashboardLogging.js"
+      - "utils/loggingConfig.js"
+      - "utils/loggingRuntime.js"
+      - "utils/moderationAuditLogger.js"
+      - "utils/modlog.js"
+      - "webhook.js"
+      - "test/logging-center.test.js"
+      - ".github/workflows/logging-center.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Syntax check logging runtime
+        run: |
+          node --check api/dashboardLogging.js
+          node --check utils/loggingConfig.js
+          node --check utils/loggingRuntime.js
+          node --check utils/moderationAuditLogger.js
+          node --check utils/modlog.js
+          node --check webhook.js
+      - name: Unified logging regression tests
+        run: node --test test/logging-center.test.js
