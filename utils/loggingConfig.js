@@ -70,6 +70,7 @@ function categoryDefaults(key) {
         embed: true,
         color: DEFAULT_COLORS[key] || "#8B5CF6",
         ignoreBots: true,
+        includeContent: false,
     }
 }
 
@@ -84,6 +85,7 @@ function normalizeCategory(value, key) {
         embed: input.embed !== false,
         color: HEX_COLOR.test(color) ? color.toUpperCase() : defaults.color,
         ignoreBots: input.ignoreBots !== false,
+        includeContent: key === "messageDelete" && input.includeContent === true,
     }
 }
 
@@ -104,6 +106,7 @@ function legacyCategory(rawConfig, key) {
             ...defaults,
             enabled: phase2Logging.messageDeleteEnabled === true,
             channelId: phase2Logging.messageLogChannelId || null,
+            includeContent: phase2Logging.storeDeletedMessageContent === true,
         }, key)
     }
     if (key === "messageEdit") {
