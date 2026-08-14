@@ -10,6 +10,8 @@ const { getIncidentModeState, setIncidentMode } = require("./securityRecoverySui
 const { fetchMatchingAuditEntry } = require("./securityProtection")
 
 const joinWindows = new Map()
+const roleRecoveryExpectations = new Map()
+const ROLE_RECOVERY_EXPECTATION_TTL_MS = 10_000
 let attached = false
 
 function suspiciousUsername(username) {
@@ -82,10 +84,70 @@ async function latestAuditExecutor(guild, type, targetId) {
     return entry?.executor || null
 }
 
+function roleStateFingerprint(role, positionOverride = null) {
+    if (!role) return ""
+    const position = positionOverride === null ? Number(role.position || 0) : Number(positionOverride || 0)
+    return JSON.stringify({
+        name: String(role.name || ""),
+        color: Number(role.color || 0),
+        hoist: Boolean(role.hoist),
+        permissions: String(role.permissions?.bitfield ?? "0"),
+        mentionable: Boolean(role.mentionable),
+        unicodeEmoji: role.unicodeEmoji || null,
+        position,
+    })
+}
+
+function rememberRoleRecoveryExpectation(role, positionOverride = null) {
+    if (!role?.guild?.id || !role.id) return
+    const key = `${role.guild.id}:${role.id}`
+    const expectations = roleRecoveryExpectations.get(key) || []
+    expectations.push({
+        fingerprint: roleStateFingerprint(role, positionOverride),
+        expiresAt: Date.now() + ROLE_RECOVERY_EXPECTATION_TTL_MS,
+    })
+    roleRecoveryExpectations.set(key, expectations.slice(-4))
+}
+
+function consumeExpectedRoleRecovery(role) {
+    if (!role?.guild?.id || !role.id) return false
+    const key = `${role.guild.id}:${role.id}`
+    const currentTime = Date.now()
+    const expectations = (roleRecoveryExpectations.get(key) || []).filter(item => item.expiresAt > currentTime)
+    const fingerprint = roleStateFingerprint(role)
+    const index = expectations.findIndex(item => item.fingerprint === fingerprint)
+    if (index === -1) {
+        if (expectations.length) roleRecoveryExpectations.set(key, expectations)
+        else roleRecoveryExpectations.delete(key)
+        return false
+    }
+    expectations.splice(index, 1)
+    if (expectations.length) roleRecoveryExpectations.set(key, expectations)
+    else roleRecoveryExpectations.delete(key)
+    return true
+}
+
+async function isTamperExecutorExempt(guild, executor) {
+    if (!executor?.id) return false
+    if (executor.id === guild.ownerId || executor.id === guild.members.me?.id) return true
+    const executorMember = guild.members.cache.get(executor.id)
+        || await guild.members.fetch(executor.id).catch(() => null)
+    return isTrustedForScope({
+        guildId: guild.id,
+        member: executorMember,
+        userId: executor.id,
+        isBot: executor.bot,
+        scope: "tamperProtection",
+    })
+}
+
 async function restoreProtectedRole(oldRole, newRole) {
     if (!oldRole || !newRole || newRole.managed || !newRole.editable) return { ok: false, restored: false }
     const errors = []
     try {
+        // Role.edit does not change position. Record the exact intermediate state
+        // so the resulting gateway event is recognized as CURSED's own rollback.
+        rememberRoleRecoveryExpectation(oldRole, newRole.position)
         await newRole.edit({
             name: oldRole.name,
             color: oldRole.color,
@@ -100,7 +162,9 @@ async function restoreProtectedRole(oldRole, newRole) {
     if (oldRole.position !== newRole.position) {
         try {
             const highestSafePosition = Math.max(1, newRole.guild.members.me.roles.highest.position - 1)
-            await newRole.setPosition(Math.min(oldRole.position, highestSafePosition), "CURSED tamper protection: restore role position")
+            const restoredPosition = Math.min(oldRole.position, highestSafePosition)
+            rememberRoleRecoveryExpectation(oldRole, restoredPosition)
+            await newRole.setPosition(restoredPosition, "CURSED tamper protection: restore role position")
         } catch (err) {
             errors.push(err.message)
         }
@@ -127,17 +191,12 @@ async function restoreRemovedBotRoles(oldMember, newMember) {
 }
 
 async function recordTamper(guild, config, type, summary, executor = null, details = {}) {
-    if (executor?.id === guild.ownerId || executor?.id === guild.members.me?.id) return false
+    // Defense-in-depth: callers must check exemptions before mutating state, and
+    // the recorder repeats the check so trusted actions can never be punished.
+    if (await isTamperExecutorExempt(guild, executor)) return false
     const executorMember = executor?.id
         ? guild.members.cache.get(executor.id) || await guild.members.fetch(executor.id).catch(() => null)
         : null
-    if (executor?.id && isTrustedForScope({
-        guildId: guild.id,
-        member: executorMember,
-        userId: executor.id,
-        isBot: executor.bot,
-        scope: "tamperProtection",
-    })) return false
 
     let neutralization = null
     if (executorMember && config.antiNuke?.enabled && config.antiNuke?.action === "neutralize") {
@@ -193,7 +252,13 @@ function attachSecurityRecoveryListeners(client) {
             || oldRole.name !== newRole.name
         if (!changed) return
 
+        // Ignore only the exact role state CURSED expected from its own rollback.
+        // Unrelated attacker changes during the same time window are still handled.
+        if (consumeExpectedRoleRecovery(newRole)) return
+
         const executor = await latestAuditExecutor(guild, AuditLogEvent.RoleUpdate, newRole.id)
+        if (await isTamperExecutorExempt(guild, executor)) return
+
         const rollback = quarantineProtected
             ? await restoreProtectedRole(oldRole, newRole)
             : { ok: false, restored: false }
@@ -225,6 +290,8 @@ function attachSecurityRecoveryListeners(client) {
         if (!removed.size) return
 
         const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id)
+        if (await isTamperExecutorExempt(guild, executor)) return
+
         const recovery = await restoreRemovedBotRoles(oldMember, newMember)
         const restoredText = recovery.restoredRoleIds.length
             ? ` Restored ${recovery.restoredRoleIds.length} manageable role(s).`
@@ -246,6 +313,10 @@ module.exports = {
     assessJoinRisk,
     suspiciousUsername,
     latestAuditExecutor,
+    isTamperExecutorExempt,
+    roleStateFingerprint,
+    rememberRoleRecoveryExpectation,
+    consumeExpectedRoleRecovery,
     restoreProtectedRole,
     restoreRemovedBotRoles,
 }
