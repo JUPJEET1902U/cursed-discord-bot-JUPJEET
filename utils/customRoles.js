@@ -1,6 +1,7 @@
 const mongoose = require("mongoose")
-const { EmbedBuilder, PermissionFlagsBits } = require("discord.js")
+const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig } = require("./serverConfig")
+const { LOG_COLORS, buildLogEmbed } = require("./logPresentation")
 const {
     BASE_ROLE_COMMANDS,
     normalizeConfig,
@@ -209,16 +210,19 @@ async function sendCustomRoleLog(guild, entry) {
         const channel = guild.channels.cache.get(channelId)
         if (!channel?.isTextBased?.()) return false
         const added = entry.action === "add"
-        const embed = new EmbedBuilder()
-            .setColor(added ? 0x2ECC71 : 0xE67E22)
-            .setTitle(added ? "✅ Custom Role Added" : "➖ Custom Role Removed")
-            .addFields(
-                { name: "Command", value: `\`${entry.commandName}\``, inline: true },
-                { name: "Role", value: `<@&${entry.roleId}>`, inline: true },
-                { name: "Target", value: `<@${entry.targetId}>`, inline: true },
-                { name: "Used by", value: `<@${entry.actorId}>`, inline: true },
-            )
-            .setTimestamp()
+        const embed = buildLogEmbed({
+            guild,
+            category: "Role",
+            event: added ? "Role Added" : "Role Removed",
+            icon: added ? "➕" : "➖",
+            color: added ? LOG_COLORS.success : LOG_COLORS.danger,
+            description: `<@${entry.targetId}> ${added ? "received" : "lost"} <@&${entry.roleId}>`,
+            fields: [
+                { name: "COMMAND", value: `\`${entry.commandName}\``, inline: true },
+                { name: "USED BY", value: `<@${entry.actorId}>`, inline: true },
+            ],
+            footerMeta: `Target ID: ${entry.targetId} • Role ID: ${entry.roleId} • Actor ID: ${entry.actorId}`,
+        })
         await channel.send({ embeds: [embed], allowedMentions: { parse: [] } })
         return true
     } catch (error) {
