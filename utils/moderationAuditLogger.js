@@ -1,5 +1,11 @@
-const { EmbedBuilder, Events } = require("discord.js")
+const { Events } = require("discord.js")
 const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config")
+const {
+    LOG_COLORS,
+    buildLogEmbed,
+    quoteBlock,
+    userAvatar,
+} = require("./logPresentation")
 const logger = require("./logger")
 
 const log = logger.child("ModerationAudit")
@@ -33,28 +39,39 @@ async function onMessageDelete(message) {
     })
     if (whitelist && config.whitelist.exemptFromAutomod) return
 
-    const embed = new EmbedBuilder()
-        .setColor(0xED4245)
-        .setTitle("🗑️ Message Deleted")
-        .addFields(
-            { name: "Author", value: message.author ? `${message.author.tag} (${message.author.id})` : "Unknown", inline: true },
-            { name: "Channel", value: `<#${message.channelId}>`, inline: true },
-            { name: "Message ID", value: message.id, inline: true },
-        )
-        .setTimestamp()
+    const authorId = message.author?.id || null
+    const authorDisplay = authorId ? `<@${authorId}>` : "**Unknown author**"
+    const fields = [{
+        name: "MESSAGE CONTENT",
+        value: config.logging.storeDeletedMessageContent && message.content
+            ? quoteBlock(message.content)
+            : "*Content storage is disabled for this server.*",
+        inline: false,
+    }]
 
-    if (config.logging.storeDeletedMessageContent && message.content) {
-        embed.addFields({ name: "Content", value: truncate(message.content, 1000), inline: false })
-    } else {
-        embed.addFields({ name: "Content", value: "Content storage is disabled.", inline: false })
-    }
     if (message.attachments?.size) {
-        embed.addFields({
-            name: "Attachments",
+        fields.push({
+            name: "ATTACHMENTS",
             value: truncate([...message.attachments.values()].map(item => item.url).join("\n"), 1000),
             inline: false,
         })
     }
+
+    const embed = buildLogEmbed({
+        guild: message.guild,
+        category: "Message",
+        event: "Message Deleted",
+        icon: "🗑️",
+        color: LOG_COLORS.danger,
+        description: `${authorDisplay} • <#${message.channelId}>`,
+        fields,
+        thumbnail: userAvatar(message.author),
+        footerMeta: [
+            authorId ? `User ID: ${authorId}` : null,
+            `Message ID: ${message.id}`,
+        ].filter(Boolean).join(" • "),
+    })
+
     await sendConfiguredLog(message.guild, config.logging.messageLogChannelId, embed)
 }
 
@@ -75,17 +92,21 @@ async function onMessageUpdate(oldMessage, newMessage) {
     })
     if (whitelist && config.whitelist.exemptFromAutomod) return
 
-    const embed = new EmbedBuilder()
-        .setColor(0xFEE75C)
-        .setTitle("✏️ Message Edited")
-        .addFields(
-            { name: "Author", value: `${newMessage.author.tag} (${newMessage.author.id})`, inline: true },
-            { name: "Channel", value: `<#${newMessage.channelId}>`, inline: true },
-            { name: "Jump", value: `[Open message](${newMessage.url})`, inline: true },
-            { name: "Before", value: truncate(before, 1000), inline: false },
-            { name: "After", value: truncate(after, 1000), inline: false },
-        )
-        .setTimestamp()
+    const embed = buildLogEmbed({
+        guild: newMessage.guild,
+        category: "Message",
+        event: "Message Edited",
+        icon: "✏️",
+        color: LOG_COLORS.warning,
+        description: `<@${newMessage.author.id}> edited a message in <#${newMessage.channelId}> • [Open message](${newMessage.url})`,
+        fields: [
+            { name: "BEFORE", value: quoteBlock(before), inline: false },
+            { name: "AFTER", value: quoteBlock(after), inline: false },
+        ],
+        thumbnail: userAvatar(newMessage.author),
+        footerMeta: `User ID: ${newMessage.author.id} • Message ID: ${newMessage.id}`,
+    })
+
     await sendConfiguredLog(newMessage.guild, config.logging.messageLogChannelId, embed)
 }
 
@@ -93,24 +114,48 @@ async function onGuildMemberUpdate(oldMember, newMember) {
     const config = getPhase2Config(newMember.guild.id)
     if (!config.logging.memberUpdateEnabled) return
 
-    const changes = []
+    const fields = []
     if (oldMember.nickname !== newMember.nickname) {
-        changes.push(`Nickname: **${oldMember.nickname || oldMember.user.username}** → **${newMember.nickname || newMember.user.username}**`)
+        fields.push({
+            name: "NICKNAME CHANGED",
+            value: `${oldMember.nickname || oldMember.user.username}\n**→ ${newMember.nickname || newMember.user.username}**`,
+            inline: false,
+        })
     }
+
     const oldRoles = new Set(oldMember.roles.cache.keys())
     const newRoles = new Set(newMember.roles.cache.keys())
     const added = [...newRoles].filter(id => !oldRoles.has(id) && id !== newMember.guild.id)
     const removed = [...oldRoles].filter(id => !newRoles.has(id) && id !== newMember.guild.id)
-    if (added.length) changes.push(`Roles added: ${added.map(id => `<@&${id}>`).join(", ")}`)
-    if (removed.length) changes.push(`Roles removed: ${removed.map(id => `<@&${id}>`).join(", ")}`)
-    if (!changes.length) return
 
-    const embed = new EmbedBuilder()
-        .setColor(0x5865F2)
-        .setTitle("👤 Member Updated")
-        .setDescription(truncate(changes.join("\n"), 3500))
-        .addFields({ name: "Member", value: `${newMember.user.tag} (${newMember.id})` })
-        .setTimestamp()
+    if (added.length) {
+        fields.push({
+            name: "ROLES ADDED",
+            value: truncate(added.map(id => `+ <@&${id}>`).join("\n"), 1024),
+            inline: false,
+        })
+    }
+    if (removed.length) {
+        fields.push({
+            name: "ROLES REMOVED",
+            value: truncate(removed.map(id => `− <@&${id}>`).join("\n"), 1024),
+            inline: false,
+        })
+    }
+    if (!fields.length) return
+
+    const embed = buildLogEmbed({
+        guild: newMember.guild,
+        category: "Member",
+        event: "Member Updated",
+        icon: "👤",
+        color: LOG_COLORS.info,
+        description: `<@${newMember.id}>`,
+        fields,
+        thumbnail: userAvatar(newMember),
+        footerMeta: `User ID: ${newMember.id}`,
+    })
+
     await sendConfiguredLog(newMember.guild, config.logging.memberLogChannelId, embed)
 }
 
