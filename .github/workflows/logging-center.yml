@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "api/dashboardLogging.js"
+      - "index.js"
       - "utils/loggingConfig.js"
       - "utils/loggingRuntime.js"
       - "utils/moderationAuditLogger.js"
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "api/dashboardLogging.js"
+      - "index.js"
       - "utils/loggingConfig.js"
       - "utils/loggingRuntime.js"
       - "utils/moderationAuditLogger.js"
@@ -37,6 +39,7 @@ jobs:
       - name: Syntax check logging runtime
         run: |
           node --check api/dashboardLogging.js
+          node --check index.js
           node --check utils/loggingConfig.js
           node --check utils/loggingRuntime.js
           node --check utils/moderationAuditLogger.js
