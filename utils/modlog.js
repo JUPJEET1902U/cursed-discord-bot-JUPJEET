@@ -5,6 +5,7 @@
 
 const { LOG_COLORS, buildLogEmbed, userAvatar } = require("./logPresentation")
 const { createCase } = require("./moderationCases")
+const { hasExplicitLogsConfig, normalizeLogsConfig } = require("./loggingConfig")
 
 const ACTION_COLORS = {
     WARN: LOG_COLORS.warning,
@@ -163,7 +164,12 @@ async function logAction(guild, {
     try {
         const { getServerConfig } = require("./serverConfig")
         const { config } = getServerConfig(guild.id)
-        channelId = config.modLogChannelId || process.env.MOD_LOG_CHANNEL_ID || null
+        if (hasExplicitLogsConfig(config)) {
+            const category = normalizeLogsConfig(config).moderationAction
+            channelId = category.enabled ? category.channelId : null
+        } else {
+            channelId = config.modLogChannelId || process.env.MOD_LOG_CHANNEL_ID || null
+        }
     } catch {
         channelId = process.env.MOD_LOG_CHANNEL_ID || null
     }
