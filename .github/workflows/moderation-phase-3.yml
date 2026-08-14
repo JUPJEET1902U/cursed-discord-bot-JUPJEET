@@ -22,6 +22,7 @@ on:
       - "api/dashboardSecuritySuite.js"
       - "api/server.ts"
       - "api/middleware/auth.ts"
+      - "api/routes/auth.ts"
       - "api/services/sessions.ts"
       - "test/moderation-hardening.test.js"
       - "test/security-owner-notification.test.js"
@@ -29,6 +30,7 @@ on:
       - "test/security-runtime-hardening.test.js"
       - "test/webhook-security.test.js"
       - "test/api-session-hardening.test.ts"
+      - "test/api-security-typescript.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-3.yml"
   push:
@@ -73,7 +75,10 @@ jobs:
           node --check test/security-recovery-suite.test.js
           node --check test/security-runtime-hardening.test.js
           node --check test/webhook-security.test.js
+          node --check test/api-security-typescript.test.js
           node --check webhook.js
+      - name: Validate hardened API TypeScript syntax
+        run: node test/api-security-typescript.test.js
       - name: Run moderation hardening test
         run: node test/moderation-hardening.test.js
       - name: Run owner notification test
