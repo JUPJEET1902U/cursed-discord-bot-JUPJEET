@@ -93,6 +93,13 @@ function setClient(client) {
     } catch (err) {
         console.error("Ticket System setup error:", err.message)
     }
+
+    try {
+        const { attachLoggingCenter } = require("./loggingCenter")
+        attachLoggingCenter(client)
+    } catch (err) {
+        console.error("Unified logging setup error:", err.message)
+    }
 }
 
 function inferDurationMs(extra) {
