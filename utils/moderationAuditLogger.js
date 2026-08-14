@@ -1,6 +1,6 @@
 const { Events } = require("discord.js")
 const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config")
-const { guildHasExplicitLogsConfig } = require("./loggingConfig")
+const { getLogCategory, guildHasExplicitLogsConfig } = require("./loggingConfig")
 const { sendLogCategory } = require("./loggingCenter")
 const {
     LOG_COLORS,
@@ -43,11 +43,14 @@ async function onMessageDelete(message) {
     })
     if (whitelist && config.whitelist.exemptFromAutomod) return
 
+    const includeContent = unified
+        ? getLogCategory(message.guild.id, "messageDelete")?.includeContent === true
+        : config.logging.storeDeletedMessageContent === true
     const authorId = message.author?.id || null
     const authorDisplay = authorId ? `<@${authorId}>` : "**Unknown author**"
     const fields = [{
         name: "MESSAGE CONTENT",
-        value: config.logging.storeDeletedMessageContent && message.content
+        value: includeContent && message.content
             ? quoteBlock(message.content)
             : "*Content storage is disabled for this server.*",
         inline: false,
