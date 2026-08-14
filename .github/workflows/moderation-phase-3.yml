@@ -11,6 +11,8 @@ on:
       - "utils/securityOwnerNotification.js"
       - "utils/securityMessageShield.js"
       - "utils/securityRecoverySuite.js"
+      - "utils/securityRecoveryListeners.js"
+      - "utils/securityRuntimeHardening.js"
       - "utils/securityIncidents.js"
       - "utils/quarantineState.js"
       - "utils/lockdownState.js"
@@ -18,9 +20,17 @@ on:
       - "utils/modlog.js"
       - "api/dashboardSecurity.js"
       - "api/dashboardSecuritySuite.js"
+      - "api/server.ts"
+      - "api/middleware/auth.ts"
+      - "api/routes/auth.ts"
+      - "api/services/sessions.ts"
       - "test/moderation-hardening.test.js"
       - "test/security-owner-notification.test.js"
       - "test/security-recovery-suite.test.js"
+      - "test/security-runtime-hardening.test.js"
+      - "test/webhook-security.test.js"
+      - "test/api-session-hardening.test.ts"
+      - "test/api-security-typescript.test.js"
       - "webhook.js"
       - ".github/workflows/moderation-phase-3.yml"
   push:
@@ -52,6 +62,8 @@ jobs:
           node --check utils/securityOwnerNotification.js
           node --check utils/securityMessageShield.js
           node --check utils/securityRecoverySuite.js
+          node --check utils/securityRecoveryListeners.js
+          node --check utils/securityRuntimeHardening.js
           node --check utils/securityProtection.js
           node --check utils/securityPhase3Bootstrap.js
           node --check utils/automod.js
@@ -61,13 +73,24 @@ jobs:
           node --check test/moderation-hardening.test.js
           node --check test/security-owner-notification.test.js
           node --check test/security-recovery-suite.test.js
+          node --check test/security-runtime-hardening.test.js
+          node --check test/webhook-security.test.js
+          node --check test/api-security-typescript.test.js
           node --check webhook.js
+      - name: Type-check hardened API TypeScript
+        run: node test/api-security-typescript.test.js
       - name: Run moderation hardening test
         run: node test/moderation-hardening.test.js
       - name: Run owner notification test
         run: node test/security-owner-notification.test.js
       - name: Run recovery suite test
         run: node test/security-recovery-suite.test.js
+      - name: Run runtime watchdog test
+        run: node test/security-runtime-hardening.test.js
+      - name: Run webhook security test
+        run: node test/webhook-security.test.js
+      - name: Run dashboard session hardening test
+        run: npx tsx test/api-session-hardening.test.ts
       - name: Validate hardened security contracts
         run: |
           node - <<'NODE'
@@ -81,8 +104,11 @@ jobs:
           const notifications = require('./utils/securityOwnerNotification')
           const shield = require('./utils/securityMessageShield')
           const recovery = require('./utils/securityRecoverySuite')
+          const recoveryListeners = require('./utils/securityRecoveryListeners')
+          const runtime = require('./utils/securityRuntimeHardening')
           const protection = require('./utils/securityProtection')
           const bootstrap = require('./utils/securityPhase3Bootstrap')
+          const webhook = require('./webhook')
           const api = require('./api/dashboardSecurity')
           const suiteApi = require('./api/dashboardSecuritySuite')
           if (!Array.isArray(commands.commands) || commands.commands.length !== 4) throw new Error('security commands missing')
@@ -100,8 +126,11 @@ jobs:
           if (typeof notifications.buildOwnerNotification !== 'function') throw new Error('owner notification formatter missing')
           if (typeof shield.runSecurityMessageShield !== 'function') throw new Error('message shield missing')
           if (typeof recovery.createSecuritySnapshot !== 'function' || typeof recovery.setIncidentMode !== 'function') throw new Error('recovery suite missing')
+          if (typeof recoveryListeners.restoreRemovedBotRoles !== 'function' || typeof recoveryListeners.isTamperExecutorExempt !== 'function') throw new Error('tamper recovery missing')
+          if (typeof runtime.startSecurityRuntimeHardening !== 'function') throw new Error('runtime watchdog missing')
           if (typeof protection.attachSecurityProtection !== 'function') throw new Error('security listeners missing')
           if (typeof bootstrap.initializeSecurityPhase3 !== 'function') throw new Error('security bootstrap missing')
+          if (typeof webhook.verifyKofiToken !== 'function' || typeof webhook.beginWebhookEvent !== 'function' || typeof webhook.isPatreonPaidEntitlement !== 'function' || typeof webhook.isBmcPremiumGrantEvent !== 'function') throw new Error('webhook hardening missing')
           if (typeof api.createDashboardSecurityRouter !== 'function') throw new Error('security dashboard router missing')
           if (typeof suiteApi.createDashboardSecuritySuiteRouter !== 'function') throw new Error('security suite dashboard router missing')
           NODE

@@ -2,6 +2,9 @@ import type { Response, NextFunction } from 'express'
 import type { AuthenticatedRequest } from '../types/index.js'
 import { getSession } from '../services/sessions.js'
 
+const SESSION_TOKEN_PATTERN = /^[a-f0-9]{64}$/i
+const SNOWFLAKE_PATTERN = /^\d{17,20}$/
+
 /**
  * Middleware: require a valid session token.
  * Attaches req.user if valid. Also performs immediate expiry check and
@@ -9,10 +12,11 @@ import { getSession } from '../services/sessions.js'
  * of the periodic cleanup in sessions.ts).
  */
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  res.setHeader('Cache-Control', 'no-store')
   const authHeader = req.headers.authorization
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
 
-  if (!token) {
+  if (!token || !SESSION_TOKEN_PATTERN.test(token)) {
     res.status(401).json({ success: false, error: 'Authentication required' })
     return
   }
@@ -48,15 +52,22 @@ export async function requireGuildAdmin(
 ) {
   // Support both /:guildId and /:id route param names
   const guildId = req.params.guildId ?? req.params.id
-  if (!guildId || !req.user) {
-    res.status(400).json({ success: false, error: 'Guild ID required' })
+  if (!guildId || !SNOWFLAKE_PATTERN.test(guildId) || !req.user) {
+    res.status(400).json({ success: false, error: 'Valid guild ID required' })
+    return
+  }
+
+  const session = getSession(req.user.token)
+  if (!session?.accessToken) {
+    res.status(401).json({ success: false, error: 'Invalid or expired session' })
     return
   }
 
   try {
-    // Fetch user's guilds from Discord to verify admin permission
+    // Fetch user's guilds from Discord to verify admin permission. This check is
+    // deliberately performed server-side for every protected guild operation.
     const guildsRes = await fetch('https://discord.com/api/v10/users/@me/guilds', {
-      headers: { Authorization: `Bearer ${getSession(req.user.token)?.accessToken}` },
+      headers: { Authorization: `Bearer ${session.accessToken}` },
     })
 
     if (!guildsRes.ok) {
@@ -72,9 +83,9 @@ export async function requireGuildAdmin(
       return
     }
 
-    // Check for Administrator permission (bit 3 = 0x8)
+    // Check for Administrator permission (bit 3 = 0x8) or Manage Guild (0x20).
     const perms = BigInt(guild.permissions)
-    const isAdmin = (perms & 0x8n) === 0x8n || (perms & 0x20n) === 0x20n // Administrator or Manage Guild
+    const isAdmin = (perms & 0x8n) === 0x8n || (perms & 0x20n) === 0x20n
 
     if (!isAdmin) {
       res.status(403).json({ success: false, error: 'Administrator or Manage Server permission required' })
@@ -82,7 +93,7 @@ export async function requireGuildAdmin(
     }
 
     next()
-  } catch (err) {
+  } catch {
     res.status(500).json({ success: false, error: 'Permission check failed' })
   }
 }

@@ -13,6 +13,11 @@ import guildsRouter from './routes/guilds.js'
 import healthRouter from './routes/health.js'
 
 const app = express()
+app.disable('x-powered-by')
+// Railway terminates TLS at a trusted proxy. One hop is enough for accurate
+// client IPs without trusting arbitrary X-Forwarded-For chains.
+app.set('trust proxy', 1)
+
 // API_PORT takes precedence. In production (Railway) set API_PORT=$PORT so the
 // API is reachable on the single externally-exposed port. Falls back to PORT+1
 // for local development where the webhook server occupies PORT.
@@ -50,6 +55,11 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }))
 
+app.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store')
+  next()
+})
+
 // ── Request logging middleware ─────────────────────────────────────────────────
 app.use((req: express.Request, _res: express.Response, next: express.NextFunction) => {
   // Redact Authorization header value to prevent token leakage in logs
@@ -71,12 +81,14 @@ const globalLimiter = rateLimit({
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: { success: false, error: 'Too many auth attempts, please try again later.' },
 })
 
 app.use(globalLimiter)
-app.use(express.json({ limit: '1mb' }))
-app.use(express.urlencoded({ extended: true }))
+app.use(express.json({ limit: '256kb', strict: true }))
+app.use(express.urlencoded({ extended: true, limit: '64kb', parameterLimit: 100 }))
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
 app.use('/api/health', healthRouter)
@@ -90,16 +102,26 @@ app.use((_req, res) => {
 
 // ── Error handler ──────────────────────────────────────────────────────────────
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const httpError = err as Error & { status?: number; type?: string }
+  if (httpError.status === 413 || httpError.type === 'entity.too.large') {
+    res.status(413).json({ success: false, error: 'Request body too large' })
+    return
+  }
   console.error('API error:', err.message)
   res.status(500).json({ success: false, error: 'Internal server error' })
 })
 
 // ── Start ──────────────────────────────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🌐 Dashboard API running on port ${PORT}`)
   console.log(`   Health: GET  /api/health`)
   console.log(`   Auth:   POST /api/auth/discord`)
   console.log(`   Guilds: GET  /api/guilds\n`)
 })
+
+// Bound slow or stalled clients so they cannot hold connections indefinitely.
+server.requestTimeout = 15_000
+server.headersTimeout = 20_000
+server.keepAliveTimeout = 5_000
 
 export default app

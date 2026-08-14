@@ -5,6 +5,7 @@ const suiteCommands = require("../commands/securitySuite")
 const { attachSecurityProtection } = require("./securityProtection")
 const { attachSecurityRecoveryListeners } = require("./securityRecoveryListeners")
 const { startSecurityRecoveryScheduler } = require("./securityRecoverySuite")
+const { startSecurityRuntimeHardening } = require("./securityRuntimeHardening")
 
 const log = logger.child("SecurityPhase3")
 let initialized = false
@@ -88,8 +89,9 @@ function initializeSecurityPhase3(client) {
     attachSecurityRecoveryListeners(client)
     attachSecurityProtection(client)
     startSecurityRecoveryScheduler(client)
+    startSecurityRuntimeHardening(client)
     scheduleRegistration(client)
-    log.info("Moderation Phase 3 Server Protection and Recovery Suite initialized")
+    log.info("Moderation Phase 3 Server Protection, Recovery Suite, and Runtime Watchdog initialized")
 }
 
 module.exports = {
