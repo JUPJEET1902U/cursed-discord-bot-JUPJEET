@@ -38,7 +38,7 @@ const profileSchema = new mongoose.Schema({
     updatedAt:     { type: Date, default: Date.now },
 })
 
-// ── Quests ─────────────────────────────────────────────────────────────────────
+// ── Quests ──────────────────────────────────────────────────────────────────────
 const questSchema = new mongoose.Schema({
     userId:      { type: String, required: true, index: true },
     questId:     { type: String, required: true },
@@ -112,6 +112,7 @@ const guildConfigSchema = new mongoose.Schema({
     allowedChannels: { type: [String], default: [] },
     premiumRoleId:   { type: String, default: null },
     paymentLinks:    { type: Map, of: String, default: {} },
+    serverAppearanceBio: { type: String, default: null, maxlength: 190 },
 
     welcomeChannelId:      { type: String, default: null },
     welcomeMessage:        { type: String, default: null },

@@ -3,6 +3,7 @@ const express = require("express")
 const rateLimit = require("express-rate-limit")
 const { PermissionFlagsBits } = require("discord.js")
 const { getServerConfig, updateGuildConfigAndWait } = require("../utils/serverConfig")
+const { createDashboardAppearanceRouter } = require("./dashboardAppearance")
 const {
     PLAN_LIMITS,
     isBotOwnerId,
@@ -135,6 +136,8 @@ function createDashboardPremiumRouter(getClient) {
         standardHeaders: true,
         legacyHeaders: false,
     })
+
+    router.use("/guilds/:guildId/appearance", createDashboardAppearanceRouter(getClient))
 
     // This router is mounted before the general dashboard router. Restrict
     // owner-only middleware to the Premium path so unrelated endpoints such
