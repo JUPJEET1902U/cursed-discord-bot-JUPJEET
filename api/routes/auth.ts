@@ -18,7 +18,7 @@ if (!REDIRECT_URI) {
   console.error('   Set it to your frontend callback URL, e.g. https://yourdomain.com/auth/callback')
 }
 
-async function discordFetch(url: string, init: RequestInit = {}): Promise<Response> {
+async function discordFetch(url: string, init: RequestInit = {}): Promise<globalThis.Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), OAUTH_TIMEOUT_MS)
   try {
