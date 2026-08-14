@@ -10,6 +10,7 @@ const DISCORD_API = 'https://discord.com/api/v10'
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID || ''
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || ''
 const REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || ''
+const OAUTH_TIMEOUT_MS = 8_000
 
 // Validate DISCORD_REDIRECT_URI is set — required for OAuth to work in any environment
 if (!REDIRECT_URI) {
@@ -17,14 +18,26 @@ if (!REDIRECT_URI) {
   console.error('   Set it to your frontend callback URL, e.g. https://yourdomain.com/auth/callback')
 }
 
+async function discordFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), OAUTH_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * POST /api/auth/discord
  * Exchange OAuth code for session token.
  */
 router.post('/discord', async (req: Request, res: Response) => {
-  const { code } = req.body as { code?: string }
+  res.setHeader('Cache-Control', 'no-store')
+  const rawCode = (req.body as { code?: unknown })?.code
+  const code = typeof rawCode === 'string' ? rawCode : ''
 
-  if (!code) {
+  if (!code || code.length > 2048) {
     res.status(400).json({ success: false, error: 'Authorization code required' })
     return
   }
@@ -35,8 +48,9 @@ router.post('/discord', async (req: Request, res: Response) => {
   }
 
   try {
-    // Exchange code for access token
-    const tokenRes = await fetch(`${DISCORD_API}/oauth2/token`, {
+    // Exchange code for access token. Never log Discord's raw response body;
+    // upstream error payloads do not belong in application logs.
+    const tokenRes = await discordFetch(`${DISCORD_API}/oauth2/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -49,16 +63,19 @@ router.post('/discord', async (req: Request, res: Response) => {
     })
 
     if (!tokenRes.ok) {
-      const err = await tokenRes.text()
-      console.error('Discord token exchange failed:', err)
+      console.error(`Discord token exchange failed with status ${tokenRes.status}`)
       res.status(401).json({ success: false, error: 'Invalid authorization code' })
       return
     }
 
     const tokenData = await tokenRes.json() as { access_token: string; token_type: string }
+    if (!tokenData.access_token) {
+      res.status(401).json({ success: false, error: 'Discord returned no access token' })
+      return
+    }
 
     // Fetch user info
-    const userRes = await fetch(`${DISCORD_API}/users/@me`, {
+    const userRes = await discordFetch(`${DISCORD_API}/users/@me`, {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     })
 
@@ -96,7 +113,8 @@ router.post('/discord', async (req: Request, res: Response) => {
       },
     })
   } catch (err) {
-    console.error('Auth error:', err)
+    const message = err instanceof Error ? err.message : 'unknown error'
+    console.error(`Auth error: ${message}`)
     res.status(500).json({ success: false, error: 'Authentication failed' })
   }
 })
