@@ -77,7 +77,7 @@ jobs:
           node --check test/webhook-security.test.js
           node --check test/api-security-typescript.test.js
           node --check webhook.js
-      - name: Validate hardened API TypeScript syntax
+      - name: Type-check hardened API TypeScript
         run: node test/api-security-typescript.test.js
       - name: Run moderation hardening test
         run: node test/moderation-hardening.test.js
@@ -126,11 +126,11 @@ jobs:
           if (typeof notifications.buildOwnerNotification !== 'function') throw new Error('owner notification formatter missing')
           if (typeof shield.runSecurityMessageShield !== 'function') throw new Error('message shield missing')
           if (typeof recovery.createSecuritySnapshot !== 'function' || typeof recovery.setIncidentMode !== 'function') throw new Error('recovery suite missing')
-          if (typeof recoveryListeners.restoreRemovedBotRoles !== 'function') throw new Error('tamper recovery missing')
+          if (typeof recoveryListeners.restoreRemovedBotRoles !== 'function' || typeof recoveryListeners.isTamperExecutorExempt !== 'function') throw new Error('tamper recovery missing')
           if (typeof runtime.startSecurityRuntimeHardening !== 'function') throw new Error('runtime watchdog missing')
           if (typeof protection.attachSecurityProtection !== 'function') throw new Error('security listeners missing')
           if (typeof bootstrap.initializeSecurityPhase3 !== 'function') throw new Error('security bootstrap missing')
-          if (typeof webhook.verifyKofiToken !== 'function' || typeof webhook.markWebhookEventOnce !== 'function') throw new Error('webhook hardening missing')
+          if (typeof webhook.verifyKofiToken !== 'function' || typeof webhook.beginWebhookEvent !== 'function' || typeof webhook.isPatreonPaidEntitlement !== 'function' || typeof webhook.isBmcPremiumGrantEvent !== 'function') throw new Error('webhook hardening missing')
           if (typeof api.createDashboardSecurityRouter !== 'function') throw new Error('security dashboard router missing')
           if (typeof suiteApi.createDashboardSecuritySuiteRouter !== 'function') throw new Error('security suite dashboard router missing')
           NODE
