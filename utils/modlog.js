@@ -96,7 +96,7 @@ function setClient(client) {
     }
 
     try {
-        const { attachLoggingCenter } = require("./loggingCenter")
+        const { attachLoggingCenter } = require("./loggingRuntime")
         attachLoggingCenter(client)
     } catch (err) {
         console.error("Unified logging setup error:", err.message)
