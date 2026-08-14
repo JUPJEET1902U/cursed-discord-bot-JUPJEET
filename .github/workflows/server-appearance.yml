@@ -1,0 +1,41 @@
+name: Premium Server Appearance CI
+
+on:
+  pull_request:
+    paths:
+      - "api/dashboardAppearance.js"
+      - "api/dashboardPremium.js"
+      - "utils/serverAppearanceMedia.js"
+      - "database/schemas.js"
+      - "test/server-appearance.test.js"
+      - ".github/workflows/server-appearance.yml"
+  push:
+    branches: [main]
+    paths:
+      - "api/dashboardAppearance.js"
+      - "api/dashboardPremium.js"
+      - "utils/serverAppearanceMedia.js"
+      - "database/schemas.js"
+      - "test/server-appearance.test.js"
+      - ".github/workflows/server-appearance.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Syntax check appearance files
+        run: |
+          node --check api/dashboardAppearance.js
+          node --check api/dashboardPremium.js
+          node --check utils/serverAppearanceMedia.js
+          node --check database/schemas.js
+          node --check test/server-appearance.test.js
+      - name: Premium server appearance regression tests
+        run: node --test test/server-appearance.test.js
