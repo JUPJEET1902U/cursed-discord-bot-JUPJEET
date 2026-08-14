@@ -1,7 +1,7 @@
 const { Events } = require("discord.js")
 const { getPhase2Config, getWhitelistMatch } = require("./moderationPhase2Config")
 const { getLogCategory, guildHasExplicitLogsConfig } = require("./loggingConfig")
-const { sendLogCategory } = require("./loggingCenter")
+const { sendLogCategory } = require("./loggingRuntime")
 const {
     LOG_COLORS,
     buildLogEmbed,
