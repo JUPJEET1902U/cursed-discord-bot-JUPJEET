@@ -135,9 +135,9 @@ function buildTicketMessage(ticket, guild) {
 
 function ticketLogIcon(action) {
     const value = String(action || "").toLowerCase()
+    if (value.includes("reopen")) return "🔓"
     if (value.includes("open")) return "📩"
     if (value.includes("close")) return "🔒"
-    if (value.includes("reopen")) return "🔓"
     if (value.includes("claim") && !value.includes("unclaim")) return "🙋"
     if (value.includes("unclaim")) return "↩️"
     if (value.includes("priority")) return "⚡"
