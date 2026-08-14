@@ -12,10 +12,11 @@ const files = [
 
 const compilerOptions = {
     target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
     esModuleInterop: true,
     allowSyntheticDefaultImports: true,
+    allowImportingTsExtensions: true,
     skipLibCheck: true,
     strict: false,
     noEmit: true,
