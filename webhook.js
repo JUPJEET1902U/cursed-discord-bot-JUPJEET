@@ -1,5 +1,6 @@
 const express = require("express")
 const crypto = require("crypto")
+const rateLimit = require("express-rate-limit")
 require("./utils/serverPremium")
 const { createDashboardRouter } = require("./api/dashboard")
 const { createDashboardControlRouter } = require("./api/dashboardControl")
@@ -24,13 +25,18 @@ function setClient(client) {
 }
 
 const DISCORD_EPOCH_MS = 1420070400000
+const WEBHOOK_REPLAY_TTL_MS = 24 * 60 * 60 * 1000
+const WEBHOOK_REPLAY_MAX = 5000
+const processedWebhookEvents = new Map()
+const missingSecretWarnings = new Set()
 
-function prepareDashboardApiRequest(req, _res, next) {
+function prepareDashboardApiRequest(req, res, next) {
     // /api/dashboard is a private server-to-server API. Vercel deployment
     // origins are not stable and CORS is not an authentication mechanism.
     // Remove Origin before the individual routers run; every router still
     // requires the timing-safe DASHBOARD_API_SECRET bearer token.
     delete req.headers.origin
+    res.set("Cache-Control", "no-store")
     next()
 }
 
@@ -46,33 +52,41 @@ function extractDiscordId(text) {
     return matches.find(isValidDiscordId) || null
 }
 
-function verifyKofiToken(token) {
-    const secret = process.env.KOFI_WEBHOOK_SECRET
-    if (!secret) {
-        console.warn("⚠️  KOFI_WEBHOOK_SECRET not set — skipping Ko-fi signature verification")
-        return true
-    }
-    if (!token) return false
+function warnMissingSecretOnce(name) {
+    if (missingSecretWarnings.has(name)) return
+    missingSecretWarnings.add(name)
+    console.warn(`⚠️  ${name} is not set — the corresponding payment webhook is disabled and will fail closed`)
+}
+
+function safeEqual(left, right) {
     try {
-        const a = Buffer.from(String(token))
-        const b = Buffer.from(String(secret))
-        if (a.length !== b.length) return false
-        return crypto.timingSafeEqual(a, b)
+        const a = Buffer.from(String(left || ""))
+        const b = Buffer.from(String(right || ""))
+        return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b)
     } catch {
         return false
     }
 }
 
+function verifyKofiToken(token) {
+    const secret = process.env.KOFI_WEBHOOK_SECRET
+    if (!secret) {
+        warnMissingSecretOnce("KOFI_WEBHOOK_SECRET")
+        return false
+    }
+    return safeEqual(token, secret)
+}
+
 function verifyPatreonSignature(rawBody, signature) {
     const secret = process.env.PATREON_WEBHOOK_SECRET
     if (!secret) {
-        console.warn("⚠️  PATREON_WEBHOOK_SECRET not set — skipping Patreon signature verification")
-        return true
+        warnMissingSecretOnce("PATREON_WEBHOOK_SECRET")
+        return false
     }
-    if (!signature || !rawBody) return false
+    if (!signature || !rawBody || !/^[a-f0-9]{32}$/i.test(String(signature))) return false
     try {
         const expected = crypto.createHmac("md5", secret).update(rawBody).digest("hex")
-        return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+        return safeEqual(String(signature).toLowerCase(), expected)
     } catch {
         return false
     }
@@ -81,17 +95,46 @@ function verifyPatreonSignature(rawBody, signature) {
 function verifyBmcSignature(rawBody, signature) {
     const secret = process.env.BMC_WEBHOOK_SECRET
     if (!secret) {
-        console.warn("⚠️  BMC_WEBHOOK_SECRET not set — skipping BMC signature verification")
-        return true
+        warnMissingSecretOnce("BMC_WEBHOOK_SECRET")
+        return false
     }
     if (!signature || !rawBody) return false
     try {
         const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex")
-        const sig = signature.startsWith("sha256=") ? signature.slice(7) : signature
-        return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))
+        const sig = String(signature).startsWith("sha256=") ? String(signature).slice(7) : String(signature)
+        if (!/^[a-f0-9]{64}$/i.test(sig)) return false
+        return safeEqual(sig.toLowerCase(), expected)
     } catch {
         return false
     }
+}
+
+function pruneWebhookReplayCache(currentTime = Date.now()) {
+    const cutoff = currentTime - WEBHOOK_REPLAY_TTL_MS
+    for (const [key, timestamp] of processedWebhookEvents) {
+        if (timestamp < cutoff) processedWebhookEvents.delete(key)
+    }
+    while (processedWebhookEvents.size > WEBHOOK_REPLAY_MAX) {
+        const oldest = processedWebhookEvents.keys().next().value
+        if (!oldest) break
+        processedWebhookEvents.delete(oldest)
+    }
+}
+
+function webhookReplayKey(platform, explicitId, rawBody, body) {
+    const stableId = explicitId ? String(explicitId) : ""
+    const material = stableId
+        || (rawBody && Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : "")
+        || JSON.stringify(body || {})
+    return `${String(platform).toLowerCase()}:${crypto.createHash("sha256").update(material).digest("hex")}`
+}
+
+function markWebhookEventOnce(key, currentTime = Date.now()) {
+    pruneWebhookReplayCache(currentTime)
+    if (!key) return false
+    if (processedWebhookEvents.has(key)) return false
+    processedWebhookEvents.set(key, currentTime)
+    return true
 }
 
 async function grantPremiumByDiscordId(discordId, platform) {
@@ -123,25 +166,43 @@ async function grantPremiumByDiscordId(discordId, platform) {
 function startWebhookServer() {
     const port = Number(process.env.PORT || 3000)
     const app = express()
+    app.disable("x-powered-by")
     app.set("trust proxy", 1)
 
     app.use(express.json({
-        verify: (req, _res, buf) => { req.rawBody = buf },
+        limit: "256kb",
+        strict: true,
+        verify: (req, _res, buf) => { req.rawBody = Buffer.from(buf) },
     }))
-    app.use(express.urlencoded({ extended: true }))
+    app.use(express.urlencoded({ extended: true, limit: "128kb", parameterLimit: 100 }))
+
+    const webhookLimiter = rateLimit({
+        windowMs: 60_000,
+        max: 60,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: "Too many webhook requests",
+    })
+    app.use("/webhook", webhookLimiter)
 
     app.get("/", (_req, res) => res.send("👹 CURSED Bot is alive!"))
-    app.get("/health", (_req, res) => res.json({
-        status: "ok",
-        bot: discordClient?.isReady() ?? false,
-        guilds: discordClient?.guilds.cache.size ?? 0,
-        uptime: Math.floor(process.uptime()),
-        memory: {
-            heapUsed: process.memoryUsage().heapUsed,
-            heapTotal: process.memoryUsage().heapTotal,
-        },
-        timestamp: new Date().toISOString(),
-    }))
+    app.get("/health", (_req, res) => {
+        res.set("Cache-Control", "no-store")
+        const payload = {
+            status: "ok",
+            bot: discordClient?.isReady() ?? false,
+            timestamp: new Date().toISOString(),
+        }
+        if (process.env.NODE_ENV !== "production") {
+            payload.guilds = discordClient?.guilds.cache.size ?? 0
+            payload.uptime = Math.floor(process.uptime())
+            payload.memory = {
+                heapUsed: process.memoryUsage().heapUsed,
+                heapTotal: process.memoryUsage().heapTotal,
+            }
+        }
+        return res.json(payload)
+    })
 
     app.use("/api/dashboard", prepareDashboardApiRequest)
     app.use("/api/dashboard", createDashboardPremiumRouter(() => discordClient))
@@ -164,8 +225,14 @@ function startWebhookServer() {
             const data = typeof raw === "string" ? JSON.parse(raw) : raw
 
             if (!verifyKofiToken(data.verification_token)) {
-                console.warn("⚠️  Ko-fi webhook rejected: invalid verification token")
+                console.warn("⚠️  Ko-fi webhook rejected: verification unavailable or token invalid")
                 return res.status(401).send("Unauthorized")
+            }
+
+            const replayKey = webhookReplayKey("kofi", data.kofi_transaction_id || data.transaction_id, req.rawBody, data)
+            if (!markWebhookEventOnce(replayKey)) {
+                console.warn("⚠️  Ko-fi duplicate webhook ignored")
+                return res.status(200).send("OK")
             }
 
             console.log(`☕ Ko-fi donation from ${data.from_name} (${data.type})`)
@@ -189,12 +256,17 @@ function startWebhookServer() {
         try {
             const signature = req.headers["x-patreon-signature"]
             if (!verifyPatreonSignature(req.rawBody, signature)) {
-                console.warn("⚠️  Patreon webhook rejected: invalid signature")
+                console.warn("⚠️  Patreon webhook rejected: verification unavailable or signature invalid")
                 return res.status(401).send("Unauthorized")
             }
 
             const event = req.headers["x-patreon-event"]
             const body = req.body
+            const replayKey = webhookReplayKey("patreon", null, req.rawBody, body)
+            if (!markWebhookEventOnce(replayKey)) {
+                console.warn("⚠️  Patreon duplicate webhook ignored")
+                return res.status(200).send("OK")
+            }
             console.log(`🎨 Patreon webhook event: ${event}`)
 
             if (["members:pledge:create", "members:create"].includes(event)) {
@@ -219,11 +291,16 @@ function startWebhookServer() {
         try {
             const signature = req.headers["x-bmc-signature"]
             if (!verifyBmcSignature(req.rawBody, signature)) {
-                console.warn("⚠️  BMC webhook rejected: invalid signature")
+                console.warn("⚠️  BMC webhook rejected: verification unavailable or signature invalid")
                 return res.status(401).send("Unauthorized")
             }
 
             const data = req.body
+            const replayKey = webhookReplayKey("bmc", data?.support_id || data?.id, req.rawBody, data)
+            if (!markWebhookEventOnce(replayKey)) {
+                console.warn("⚠️  Buy Me a Coffee duplicate webhook ignored")
+                return res.status(200).send("OK")
+            }
             console.log(`☕ Buy Me a Coffee webhook from ${data?.supporter_name}`)
             const searchText = `${data?.support_note || ""} ${data?.supporter_name || ""}`
             const discordId = extractDiscordId(searchText)
@@ -252,4 +329,9 @@ module.exports = {
     setClient,
     grantPremiumByDiscordId,
     prepareDashboardApiRequest,
+    verifyKofiToken,
+    verifyPatreonSignature,
+    verifyBmcSignature,
+    webhookReplayKey,
+    markWebhookEventOnce,
 }
