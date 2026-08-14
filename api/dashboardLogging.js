@@ -197,8 +197,10 @@ function createDashboardLoggingRouter(getClient) {
             if (!guild) return
             const rawConfig = getServerConfig(guild.id).config
             return res.json({
-                config: normalizeLogsConfig(rawConfig),
-                channels: textChannels(guild),
+                data: {
+                    config: normalizeLogsConfig(rawConfig),
+                    channels: textChannels(guild),
+                },
             })
         } catch (err) {
             next(err)
@@ -227,8 +229,10 @@ function createDashboardLoggingRouter(getClient) {
             )
 
             return res.json({
-                config: normalizeLogsConfig(saved),
-                channels,
+                data: {
+                    config: normalizeLogsConfig(saved),
+                    channels,
+                },
             })
         } catch (err) {
             next(err)
