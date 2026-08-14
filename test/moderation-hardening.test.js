@@ -5,6 +5,7 @@ const configModule = require("../utils/securityPhase3Config")
 const response = require("../utils/securityResponse")
 const shield = require("../utils/securityMessageShield")
 const protection = require("../utils/securityProtection")
+const recoveryListeners = require("../utils/securityRecoveryListeners")
 
 const defaults = configModule.normalizeSecurityPhase3Config({})
 assert.equal(defaults.enabled, false)
@@ -23,6 +24,8 @@ assert.equal(typeof protection.attachSecurityProtection, "function")
 assert.equal(typeof protection.processUnauthorizedBotAdd, "function")
 assert.equal(typeof protection.removeUnauthorizedAddedBot, "function")
 assert.equal(typeof protection.fetchMatchingAuditEntry, "function")
+assert.equal(typeof recoveryListeners.isTamperExecutorExempt, "function")
+assert.equal(typeof recoveryListeners.consumeExpectedRoleRecovery, "function")
 
 const legacy = configModule.normalizeSecurityPhase3Config({
     securityPhase3: {
@@ -95,9 +98,68 @@ async function testDelayedAuditLogMatching() {
     assert.equal(calls, 3, "audit lookup must not stop on unrelated or temporarily empty audit logs")
 }
 
+async function testTamperRecoveryExemptions() {
+    const guild = {
+        id: "523456789012345678",
+        ownerId: "owner-id",
+        members: {
+            me: { id: "cursed-id" },
+            cache: new Map(),
+            fetch: async () => null,
+        },
+    }
+
+    assert.equal(
+        await recoveryListeners.isTamperExecutorExempt(guild, { id: "owner-id", bot: false }),
+        true,
+        "server owner actions must be exempt before any rollback"
+    )
+    assert.equal(
+        await recoveryListeners.isTamperExecutorExempt(guild, { id: "cursed-id", bot: true }),
+        true,
+        "CURSED's own recovery actions must be exempt before any rollback"
+    )
+}
+
+function testExpectedRoleRecoverySuppression() {
+    const role = {
+        id: "role-id",
+        guild: { id: "623456789012345678" },
+        name: "Protected Role",
+        color: 123,
+        hoist: false,
+        permissions: { bitfield: 8n },
+        mentionable: false,
+        unicodeEmoji: null,
+        position: 5,
+    }
+
+    recoveryListeners.rememberRoleRecoveryExpectation(role, 5)
+    assert.equal(
+        recoveryListeners.consumeExpectedRoleRecovery({ ...role, permissions: { bitfield: 8n } }),
+        true,
+        "the exact state produced by CURSED's rollback must be suppressed"
+    )
+
+    recoveryListeners.rememberRoleRecoveryExpectation(role, 5)
+    const attackerState = { ...role, name: "Attacker Edit", permissions: { bitfield: 8n } }
+    assert.equal(
+        recoveryListeners.consumeExpectedRoleRecovery(attackerState),
+        false,
+        "a different attacker change must not be hidden by the recovery suppression window"
+    )
+    assert.equal(
+        recoveryListeners.consumeExpectedRoleRecovery({ ...role, permissions: { bitfield: 8n } }),
+        true,
+        "the original expected rollback state must remain suppressible after an unrelated event"
+    )
+}
+
 async function run() {
     await testAddedBotRemoval()
     await testDelayedAuditLogMatching()
+    await testTamperRecoveryExemptions()
+    testExpectedRoleRecoverySuppression()
     console.log("moderation hardening contracts passed")
 }
 
