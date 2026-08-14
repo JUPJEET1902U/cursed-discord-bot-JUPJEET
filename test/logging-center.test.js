@@ -75,9 +75,27 @@ test("dashboard validation requires a sendable channel for enabled logs", () => 
     const config = fullConfig({
         memberJoin: { enabled: true, channelId: null },
     })
-    const channels = [{ id: "72345678901234567" }]
+    const channels = [{ id: "72345678901234567", canEmbed: true }]
     const errors = validateConfig(config, channels)
     assert.match(errors.memberJoin[0], /Choose a log channel/i)
+})
+
+test("dashboard validation rejects embed delivery where Embed Links is missing", () => {
+    const channelId = "82345678901234567"
+    const config = fullConfig({
+        memberJoin: { enabled: true, channelId, embed: true },
+    })
+    const errors = validateConfig(config, [{ id: channelId, canEmbed: false }])
+    assert.match(errors.memberJoin[0], /Embed Links/i)
+})
+
+test("dashboard validation accepts plain text without Embed Links", () => {
+    const channelId = "82345678901234567"
+    const config = fullConfig({
+        memberJoin: { enabled: true, channelId, embed: false },
+    })
+    const errors = validateConfig(config, [{ id: channelId, canEmbed: false }])
+    assert.deepEqual(errors, {})
 })
 
 test("dashboard validation accepts complete unified config", () => {
@@ -86,7 +104,7 @@ test("dashboard validation accepts complete unified config", () => {
         memberJoin: { enabled: true, channelId },
         messageDelete: { enabled: true, channelId, includeContent: true },
     })
-    const errors = validateConfig(config, [{ id: channelId }])
+    const errors = validateConfig(config, [{ id: channelId, canEmbed: true }])
     assert.deepEqual(errors, {})
 })
 
