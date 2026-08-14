@@ -1,5 +1,4 @@
 const assert = require("node:assert/strict")
-const fs = require("node:fs")
 const path = require("node:path")
 const ts = require("typescript")
 
@@ -9,26 +8,35 @@ const files = [
     "api/routes/auth.ts",
     "api/services/sessions.ts",
     "test/api-session-hardening.test.ts",
-]
+].map(relativePath => path.resolve(process.cwd(), relativePath))
 
-for (const relativePath of files) {
-    const filename = path.resolve(process.cwd(), relativePath)
-    const source = fs.readFileSync(filename, "utf8")
-    const result = ts.transpileModule(source, {
-        fileName: relativePath,
-        reportDiagnostics: true,
-        compilerOptions: {
-            target: ts.ScriptTarget.ES2022,
-            module: ts.ModuleKind.CommonJS,
-            esModuleInterop: true,
-        },
-    })
-    const errors = (result.diagnostics || []).filter(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error)
-    assert.equal(
-        errors.length,
-        0,
-        `${relativePath} TypeScript syntax errors: ${errors.map(error => ts.flattenDiagnosticMessageText(error.messageText, " ")).join("; ")}`
-    )
+const compilerOptions = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    esModuleInterop: true,
+    allowSyntheticDefaultImports: true,
+    skipLibCheck: true,
+    strict: false,
+    noEmit: true,
 }
 
-console.log("hardened API TypeScript syntax passed")
+const program = ts.createProgram({ rootNames: files, options: compilerOptions })
+const errors = ts.getPreEmitDiagnostics(program)
+    .filter(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error)
+
+const formatted = errors.map(diagnostic => {
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")
+    if (!diagnostic.file || diagnostic.start === undefined) return message
+    const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
+    const relative = path.relative(process.cwd(), diagnostic.file.fileName)
+    return `${relative}:${position.line + 1}:${position.character + 1} ${message}`
+})
+
+assert.equal(
+    errors.length,
+    0,
+    `Hardened API TypeScript type errors:\n${formatted.join("\n")}`
+)
+
+console.log("hardened API TypeScript typecheck passed")
