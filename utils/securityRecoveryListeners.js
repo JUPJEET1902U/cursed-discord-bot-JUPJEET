@@ -5,8 +5,9 @@ const {
 const { getSecurityPhase3Config, isTrustedForScope } = require("./securityPhase3Config")
 const { createSecurityIncident } = require("./securityIncidents")
 const { quarantineMember } = require("./quarantineState")
-const { notifyOwner } = require("./securityResponse")
+const { notifyOwner, neutralizeExecutor } = require("./securityResponse")
 const { getIncidentModeState, setIncidentMode } = require("./securityRecoverySuite")
+const { fetchMatchingAuditEntry } = require("./securityProtection")
 
 const joinWindows = new Map()
 let attached = false
@@ -77,21 +78,76 @@ async function processAdvancedJoin(member) {
 }
 
 async function latestAuditExecutor(guild, type, targetId) {
-    try {
-        const logs = await guild.fetchAuditLogs({ type, limit: 6 })
-        const entry = [...logs.entries.values()]
-            .filter(item => Date.now() - item.createdTimestamp < 20_000)
-            .find(item => !targetId || String(item.targetId || item.target?.id || "") === String(targetId))
-        return entry?.executor || null
-    } catch {
-        return null
-    }
+    const entry = await fetchMatchingAuditEntry(guild, type, targetId).catch(() => null)
+    return entry?.executor || null
 }
 
-async function recordTamper(guild, config, type, summary, executor = null) {
-    if (executor?.id === guild.ownerId || executor?.id === guild.members.me?.id) return false
-    if (executor?.id && isTrustedForScope({ guildId: guild.id, userId: executor.id, isBot: executor.bot, scope: "tamperProtection" })) return false
+async function restoreProtectedRole(oldRole, newRole) {
+    if (!oldRole || !newRole || newRole.managed || !newRole.editable) return { ok: false, restored: false }
+    const errors = []
+    try {
+        await newRole.edit({
+            name: oldRole.name,
+            color: oldRole.color,
+            hoist: oldRole.hoist,
+            permissions: oldRole.permissions.bitfield,
+            mentionable: oldRole.mentionable,
+            unicodeEmoji: oldRole.unicodeEmoji || undefined,
+        }, "CURSED tamper protection: restore protected role")
+    } catch (err) {
+        errors.push(err.message)
+    }
+    if (oldRole.position !== newRole.position) {
+        try {
+            const highestSafePosition = Math.max(1, newRole.guild.members.me.roles.highest.position - 1)
+            await newRole.setPosition(Math.min(oldRole.position, highestSafePosition), "CURSED tamper protection: restore role position")
+        } catch (err) {
+            errors.push(err.message)
+        }
+    }
+    return { ok: errors.length === 0, restored: errors.length === 0, errors }
+}
 
+async function restoreRemovedBotRoles(oldMember, newMember) {
+    const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
+    const restorable = [...removed.values()].filter(role => role.id !== newMember.guild.id && !role.managed && role.editable)
+    if (!restorable.length) return { removedCount: removed.size, restoredRoleIds: [], errors: [] }
+
+    const restoredRoleIds = []
+    const errors = []
+    for (const role of restorable) {
+        try {
+            await newMember.roles.add(role.id, "CURSED tamper protection: restore removed bot role")
+            restoredRoleIds.push(role.id)
+        } catch (err) {
+            errors.push(`${role.id}: ${err.message}`)
+        }
+    }
+    return { removedCount: removed.size, restoredRoleIds, errors }
+}
+
+async function recordTamper(guild, config, type, summary, executor = null, details = {}) {
+    if (executor?.id === guild.ownerId || executor?.id === guild.members.me?.id) return false
+    const executorMember = executor?.id
+        ? guild.members.cache.get(executor.id) || await guild.members.fetch(executor.id).catch(() => null)
+        : null
+    if (executor?.id && isTrustedForScope({
+        guildId: guild.id,
+        member: executorMember,
+        userId: executor.id,
+        isBot: executor.bot,
+        scope: "tamperProtection",
+    })) return false
+
+    let neutralization = null
+    if (executorMember && config.antiNuke?.enabled && config.antiNuke?.action === "neutralize") {
+        neutralization = await neutralizeExecutor(guild, executorMember, config, {
+            reason: `CURSED tamper protection: ${summary}`,
+            actor: { id: guild.members.me?.id, tag: "CURSED Tamper Protection" },
+        }).catch(err => ({ ok: false, error: err.message }))
+    }
+
+    const actionTaken = neutralization?.ok ? "neutralized + owner alerted" : "owner alerted"
     await createSecurityIncident({
         guildId: guild.id,
         type,
@@ -100,13 +156,13 @@ async function recordTamper(guild, config, type, summary, executor = null) {
         executorTag: executor?.tag || executor?.username || "Unknown executor",
         targetId: guild.members.me?.id || guild.id,
         targetTag: "CURSED protection state",
-        actionTaken: "owner alerted",
-        details: { summary },
-    })
-    await notifyOwner(guild, {
-        content: `🚨 **CURSED security tamper warning**\n${summary}\nReview the Server Protection dashboard and Discord Audit Log immediately.`,
-        allowedMentions: { parse: [] },
-    })
+        actionTaken,
+        details: { summary, neutralization, ...details },
+    }).catch(() => null)
+    await notifyOwner(
+        guild,
+        `🚨 CURSED security tamper warning in **${guild.name}**. ${summary} Response: ${actionTaken}. Review the Security dashboard and Discord Audit Log.`
+    ).catch(() => false)
     if (config.tamperProtection.autoIncidentMode) {
         await setIncidentMode(guild, true, config, {
             reason: summary,
@@ -136,8 +192,20 @@ function attachSecurityRecoveryListeners(client) {
             || oldRole.position !== newRole.position
             || oldRole.name !== newRole.name
         if (!changed) return
+
         const executor = await latestAuditExecutor(guild, AuditLogEvent.RoleUpdate, newRole.id)
-        await recordTamper(guild, config, "SECURITY_ROLE_TAMPER", `Protected role **${newRole.name}** was modified.`, executor)
+        const rollback = quarantineProtected
+            ? await restoreProtectedRole(oldRole, newRole)
+            : { ok: false, restored: false }
+        const suffix = rollback.restored ? " The role was restored automatically." : ""
+        await recordTamper(
+            guild,
+            config,
+            "SECURITY_ROLE_TAMPER",
+            `Protected role **${newRole.name}** was modified.${suffix}`,
+            executor,
+            { rollback }
+        )
     })
 
     client.on(Events.GuildRoleDelete, async role => {
@@ -155,8 +223,20 @@ function attachSecurityRecoveryListeners(client) {
         if (!config.enabled || !config.tamperProtection.enabled || !config.tamperProtection.protectBotRole) return
         const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
         if (!removed.size) return
+
         const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id)
-        await recordTamper(guild, config, "CURSED_ROLE_REMOVED", `CURSED lost ${removed.size} role(s). Protection permissions may have been reduced.`, executor)
+        const recovery = await restoreRemovedBotRoles(oldMember, newMember)
+        const restoredText = recovery.restoredRoleIds.length
+            ? ` Restored ${recovery.restoredRoleIds.length} manageable role(s).`
+            : ""
+        await recordTamper(
+            guild,
+            config,
+            "CURSED_ROLE_REMOVED",
+            `CURSED lost ${removed.size} role(s).${restoredText} Protection permissions may have been reduced.`,
+            executor,
+            { recovery }
+        )
     })
 }
 
@@ -165,4 +245,7 @@ module.exports = {
     processAdvancedJoin,
     assessJoinRisk,
     suspiciousUsername,
+    latestAuditExecutor,
+    restoreProtectedRole,
+    restoreRemovedBotRoles,
 }
