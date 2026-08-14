@@ -26,8 +26,10 @@ function setClient(client) {
 
 const DISCORD_EPOCH_MS = 1420070400000
 const WEBHOOK_REPLAY_TTL_MS = 24 * 60 * 60 * 1000
+const WEBHOOK_PROCESSING_TTL_MS = 2 * 60 * 1000
 const WEBHOOK_REPLAY_MAX = 5000
 const processedWebhookEvents = new Map()
+const processingWebhookEvents = new Map()
 const missingSecretWarnings = new Set()
 
 function prepareDashboardApiRequest(req, res, next) {
@@ -110,10 +112,16 @@ function verifyBmcSignature(rawBody, signature) {
 }
 
 function pruneWebhookReplayCache(currentTime = Date.now()) {
-    const cutoff = currentTime - WEBHOOK_REPLAY_TTL_MS
+    const completedCutoff = currentTime - WEBHOOK_REPLAY_TTL_MS
     for (const [key, timestamp] of processedWebhookEvents) {
-        if (timestamp < cutoff) processedWebhookEvents.delete(key)
+        if (timestamp < completedCutoff) processedWebhookEvents.delete(key)
     }
+
+    const processingCutoff = currentTime - WEBHOOK_PROCESSING_TTL_MS
+    for (const [key, timestamp] of processingWebhookEvents) {
+        if (timestamp < processingCutoff) processingWebhookEvents.delete(key)
+    }
+
     while (processedWebhookEvents.size > WEBHOOK_REPLAY_MAX) {
         const oldest = processedWebhookEvents.keys().next().value
         if (!oldest) break
@@ -129,12 +137,91 @@ function webhookReplayKey(platform, explicitId, rawBody, body) {
     return `${String(platform).toLowerCase()}:${crypto.createHash("sha256").update(material).digest("hex")}`
 }
 
-function markWebhookEventOnce(key, currentTime = Date.now()) {
+function beginWebhookEvent(key, currentTime = Date.now()) {
     pruneWebhookReplayCache(currentTime)
+    if (!key) return "invalid"
+    if (processedWebhookEvents.has(key)) return "completed"
+    if (processingWebhookEvents.has(key)) return "processing"
+    processingWebhookEvents.set(key, currentTime)
+    return "reserved"
+}
+
+function completeWebhookEvent(key, currentTime = Date.now()) {
     if (!key) return false
-    if (processedWebhookEvents.has(key)) return false
+    processingWebhookEvents.delete(key)
     processedWebhookEvents.set(key, currentTime)
+    pruneWebhookReplayCache(currentTime)
     return true
+}
+
+function releaseWebhookEvent(key) {
+    if (!key) return false
+    return processingWebhookEvents.delete(key)
+}
+
+// Backward-compatible helper used by tests/contracts. Runtime routes use the
+// explicit reserve/process/complete lifecycle so failed processing can retry.
+function markWebhookEventOnce(key, currentTime = Date.now()) {
+    if (beginWebhookEvent(key, currentTime) !== "reserved") return false
+    completeWebhookEvent(key, currentTime)
+    return true
+}
+
+function extractPatreonDiscordId(body) {
+    const patreonUserId = String(body?.data?.relationships?.user?.data?.id || "")
+    const included = Array.isArray(body?.included) ? body.included : []
+    const user = included.find(item => (
+        item?.type === "user"
+        && (!patreonUserId || String(item.id || "") === patreonUserId)
+    ))
+    const discordId = user?.attributes?.social_connections?.discord?.user_id
+    return discordId && isValidDiscordId(String(discordId)) ? String(discordId) : null
+}
+
+function isPatreonPaidEntitlement(body, event) {
+    if (!["members:pledge:create", "members:create"].includes(String(event || ""))) return false
+    const attributes = body?.data?.attributes || {}
+    const amountCents = Number(attributes.currently_entitled_amount_cents)
+    const patronStatus = String(attributes.patron_status || "").toLowerCase()
+    const chargeStatus = String(attributes.last_charge_status || "").toLowerCase()
+
+    if (!Number.isFinite(amountCents) || amountCents <= 0) return false
+    if (patronStatus !== "active_patron") return false
+    if (chargeStatus && chargeStatus !== "paid") return false
+
+    // members:create also fires for free members. Require an actual successful
+    // charge for that broader event; pledge:create already excludes free/gift joins.
+    if (event === "members:create" && chargeStatus !== "paid") return false
+    return true
+}
+
+function isBmcPremiumGrantEvent(body) {
+    if (!body || body.live_mode !== true || !body.data) return false
+    const type = String(body.type || "")
+    const data = body.data
+
+    if (type === "donation.created") {
+        return String(data.status || "").toLowerCase() === "succeeded"
+            && String(data.refunded || "false").toLowerCase() !== "true"
+    }
+
+    if (["membership.started", "recurring_donation.started"].includes(type)) {
+        return String(data.status || "").toLowerCase() === "active"
+            && String(data.canceled || "false").toLowerCase() !== "true"
+            && String(data.paused || "false").toLowerCase() !== "true"
+    }
+
+    return false
+}
+
+function extractBmcDiscordId(body) {
+    const data = body?.data || {}
+    return extractDiscordId(`${data.support_note || ""} ${data.supporter_name || ""} ${data.message || ""}`)
+}
+
+function bmcReplayId(body) {
+    const data = body?.data || {}
+    return body?.event_id || data.transaction_id || data.psp_id || data.id || null
 }
 
 async function grantPremiumByDiscordId(discordId, platform) {
@@ -219,6 +306,8 @@ function startWebhookServer() {
     app.use("/api/dashboard", createDashboardRouter(() => discordClient))
 
     app.post("/webhook/kofi", async (req, res) => {
+        let replayKey = null
+        let reserved = false
         try {
             const raw = req.body?.data
             if (!raw) return res.status(400).send("No data")
@@ -229,11 +318,14 @@ function startWebhookServer() {
                 return res.status(401).send("Unauthorized")
             }
 
-            const replayKey = webhookReplayKey("kofi", data.kofi_transaction_id || data.transaction_id, req.rawBody, data)
-            if (!markWebhookEventOnce(replayKey)) {
+            replayKey = webhookReplayKey("kofi", data.kofi_transaction_id || data.transaction_id, req.rawBody, data)
+            const reservation = beginWebhookEvent(replayKey)
+            if (reservation === "completed") {
                 console.warn("⚠️  Ko-fi duplicate webhook ignored")
                 return res.status(200).send("OK")
             }
+            if (reservation !== "reserved") return res.status(503).send("Webhook already processing")
+            reserved = true
 
             console.log(`☕ Ko-fi donation from ${data.from_name} (${data.type})`)
             const searchText = `${data.message || ""} ${data.from_name || ""}`
@@ -241,18 +333,28 @@ function startWebhookServer() {
 
             if (discordId) {
                 const granted = await grantPremiumByDiscordId(discordId, "Ko-fi")
-                if (!granted) console.log(`⚠️ Could not activate Premium for Discord ID ${discordId}`)
+                if (!granted) {
+                    releaseWebhookEvent(replayKey)
+                    reserved = false
+                    return res.status(503).send("Premium activation unavailable")
+                }
             } else {
                 console.log("⚠️ Ko-fi donation received but no valid Discord ID found in message. Manual grant needed.")
             }
-            res.status(200).send("OK")
+
+            completeWebhookEvent(replayKey)
+            reserved = false
+            return res.status(200).send("OK")
         } catch {
+            if (reserved) releaseWebhookEvent(replayKey)
             console.error("Ko-fi webhook error: request failed")
-            res.status(500).send("Error")
+            return res.status(500).send("Error")
         }
     })
 
     app.post("/webhook/patreon", async (req, res) => {
+        let replayKey = null
+        let reserved = false
         try {
             const signature = req.headers["x-patreon-signature"]
             if (!verifyPatreonSignature(req.rawBody, signature)) {
@@ -260,56 +362,96 @@ function startWebhookServer() {
                 return res.status(401).send("Unauthorized")
             }
 
-            const event = req.headers["x-patreon-event"]
+            const event = String(req.headers["x-patreon-event"] || "")
             const body = req.body
-            const replayKey = webhookReplayKey("patreon", null, req.rawBody, body)
-            if (!markWebhookEventOnce(replayKey)) {
+            replayKey = webhookReplayKey(`patreon:${event}`, null, req.rawBody, body)
+            const reservation = beginWebhookEvent(replayKey)
+            if (reservation === "completed") {
                 console.warn("⚠️  Patreon duplicate webhook ignored")
                 return res.status(200).send("OK")
             }
+            if (reservation !== "reserved") return res.status(503).send("Webhook already processing")
+            reserved = true
+
             console.log(`🎨 Patreon webhook event: ${event}`)
 
             if (["members:pledge:create", "members:create"].includes(event)) {
-                const rawDiscordId = body?.included?.find(item => item.type === "user")
-                    ?.attributes?.social_connections?.discord?.user_id
-                    || body?.data?.relationships?.user?.data?.id
-
-                if (rawDiscordId && isValidDiscordId(String(rawDiscordId))) {
-                    await grantPremiumByDiscordId(String(rawDiscordId), "Patreon")
+                if (!isPatreonPaidEntitlement(body, event)) {
+                    console.log(`ℹ️ Patreon ${event} ignored: member has no verified paid entitlement.`)
                 } else {
-                    console.log("⚠️ Patreon webhook: no valid Discord ID found. User may need to connect Discord on Patreon.")
+                    const discordId = extractPatreonDiscordId(body)
+                    if (discordId) {
+                        const granted = await grantPremiumByDiscordId(discordId, "Patreon")
+                        if (!granted) {
+                            releaseWebhookEvent(replayKey)
+                            reserved = false
+                            return res.status(503).send("Premium activation unavailable")
+                        }
+                    } else {
+                        console.log("⚠️ Patreon webhook: no valid connected Discord ID found. User may need to connect Discord on Patreon.")
+                    }
                 }
             }
-            res.status(200).send("OK")
+
+            completeWebhookEvent(replayKey)
+            reserved = false
+            return res.status(200).send("OK")
         } catch {
+            if (reserved) releaseWebhookEvent(replayKey)
             console.error("Patreon webhook error: request failed")
-            res.status(500).send("Error")
+            return res.status(500).send("Error")
         }
     })
 
     app.post("/webhook/bmc", async (req, res) => {
+        let replayKey = null
+        let reserved = false
         try {
-            const signature = req.headers["x-bmc-signature"]
+            const signature = req.headers["x-signature-sha256"]
             if (!verifyBmcSignature(req.rawBody, signature)) {
                 console.warn("⚠️  BMC webhook rejected: verification unavailable or signature invalid")
                 return res.status(401).send("Unauthorized")
             }
 
-            const data = req.body
-            const replayKey = webhookReplayKey("bmc", data?.support_id || data?.id, req.rawBody, data)
-            if (!markWebhookEventOnce(replayKey)) {
+            const body = req.body
+            const event = String(body?.type || "")
+            const data = body?.data || {}
+            replayKey = webhookReplayKey(`bmc:${event}`, bmcReplayId(body), req.rawBody, body)
+            const reservation = beginWebhookEvent(replayKey)
+            if (reservation === "completed") {
                 console.warn("⚠️  Buy Me a Coffee duplicate webhook ignored")
                 return res.status(200).send("OK")
             }
-            console.log(`☕ Buy Me a Coffee webhook from ${data?.supporter_name}`)
-            const searchText = `${data?.support_note || ""} ${data?.supporter_name || ""}`
-            const discordId = extractDiscordId(searchText)
-            if (discordId) await grantPremiumByDiscordId(discordId, "Buy Me a Coffee")
-            else console.log("⚠️ BMC donation received but no valid Discord ID in note.")
-            res.status(200).send("OK")
+            if (reservation !== "reserved") return res.status(503).send("Webhook already processing")
+            reserved = true
+
+            if (!isBmcPremiumGrantEvent(body)) {
+                console.log(`ℹ️ Buy Me a Coffee event ${event || "unknown"} acknowledged without Premium grant.`)
+                completeWebhookEvent(replayKey)
+                reserved = false
+                return res.status(200).send("OK")
+            }
+
+            console.log(`☕ Buy Me a Coffee webhook from ${data.supporter_name}`)
+            const discordId = extractBmcDiscordId(body)
+            if (discordId) {
+                const granted = await grantPremiumByDiscordId(discordId, "Buy Me a Coffee")
+                if (!granted) {
+                    releaseWebhookEvent(replayKey)
+                    reserved = false
+                    return res.status(503).send("Premium activation unavailable")
+                }
+            } else {
+                console.log("⚠️ BMC payment received but no valid Discord ID in supporter note/message.")
+            }
+
+            completeWebhookEvent(replayKey)
+            reserved = false
+            return res.status(200).send("OK")
         } catch {
+            if (reserved) releaseWebhookEvent(replayKey)
             console.error("BMC webhook error: request failed")
-            res.status(500).send("Error")
+            return res.status(500).send("Error")
         }
     })
 
@@ -333,5 +475,13 @@ module.exports = {
     verifyPatreonSignature,
     verifyBmcSignature,
     webhookReplayKey,
+    beginWebhookEvent,
+    completeWebhookEvent,
+    releaseWebhookEvent,
     markWebhookEventOnce,
+    extractPatreonDiscordId,
+    isPatreonPaidEntitlement,
+    isBmcPremiumGrantEvent,
+    extractBmcDiscordId,
+    bmcReplayId,
 }
