@@ -291,9 +291,13 @@ function attachRuntimeListeners(client) {
         runGuildSecurityWatchdog(newMember.guild).catch(() => {})
     })
 
+    // Any role creation/update can change hierarchy or dangerous permissions,
+    // so check immediately rather than waiting up to 60 seconds for the timer.
+    client.on(Events.GuildRoleCreate, role => {
+        runGuildSecurityWatchdog(role.guild).catch(() => {})
+    })
+
     client.on(Events.GuildRoleUpdate, (_oldRole, newRole) => {
-        const me = newRole.guild.members.me
-        if (!me?.roles?.cache?.has(newRole.id)) return
         runGuildSecurityWatchdog(newRole.guild).catch(() => {})
     })
 
