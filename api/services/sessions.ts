@@ -15,11 +15,13 @@ export function tokenDigest(token: string): string | null {
 }
 
 function limitUserSessions(userId: string): void {
+  // Map preserves insertion order, so this remains deterministic even when
+  // several sessions are created during the same millisecond.
   const sessions = [...sessionStore.entries()]
     .filter(([, session]) => session.userId === userId)
-    .sort((a, b) => b[1].createdAt - a[1].createdAt)
+  const excess = Math.max(0, sessions.length - MAX_SESSIONS_PER_USER)
 
-  for (const [digest] of sessions.slice(MAX_SESSIONS_PER_USER)) {
+  for (const [digest] of sessions.slice(0, excess)) {
     sessionStore.delete(digest)
   }
 }
