@@ -27,6 +27,8 @@ const processedAuditIds = new Set()
 const processingAddedBots = new Set()
 let attached = false
 
+const AUDIT_LOOKUP_DELAYS_MS = Object.freeze([0, 150, 300, 600, 1000])
+
 const EVENT_DEFINITIONS = Object.freeze({
     bans: { thresholdKey: "bans", scope: "massModeration", severity: "critical", label: "Mass bans" },
     kicks: { thresholdKey: "kicks", scope: "massModeration", severity: "critical", label: "Mass kicks" },
@@ -188,7 +190,7 @@ async function processJoin(member) {
     return true
 }
 
-async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null) {
+async function fetchMatchingAuditEntryOnce(guild, auditTypes, targetId = null) {
     const types = Array.isArray(auditTypes) ? auditTypes : [auditTypes]
     const candidates = []
     for (const type of types) {
@@ -201,6 +203,17 @@ async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null) {
         .filter(entry => now() - entry.createdTimestamp < 20000)
         .filter(entry => !targetId || String(entry.targetId || entry.target?.id || "") === String(targetId))
         .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0] || null
+}
+
+async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null, retryDelays = AUDIT_LOOKUP_DELAYS_MS) {
+    const delays = Array.isArray(retryDelays) && retryDelays.length ? retryDelays : AUDIT_LOOKUP_DELAYS_MS
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+        const delay = Math.max(0, Number(delays[attempt]) || 0)
+        if (delay > 0) await sleep(delay)
+        const entry = await fetchMatchingAuditEntryOnce(guild, auditTypes, targetId)
+        if (entry) return entry
+    }
+    return null
 }
 
 async function removeUnauthorizedAddedBot(member, reason) {
@@ -495,6 +508,7 @@ module.exports = {
     processAuditEvent,
     processUnauthorizedBotAdd,
     removeUnauthorizedAddedBot,
+    fetchMatchingAuditEntry,
     dangerousPermissionsAdded,
     staffLimitDefinition,
 }
