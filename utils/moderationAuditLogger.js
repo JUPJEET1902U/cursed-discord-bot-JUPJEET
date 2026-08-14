@@ -29,9 +29,10 @@ async function sendConfiguredLog(guild, channelId, embed) {
 }
 
 async function onMessageDelete(message) {
-    if (!message.guild || message.author?.bot) return
+    if (!message.guild) return
     const config = getPhase2Config(message.guild.id)
     const unified = guildHasExplicitLogsConfig(message.guild.id)
+    if (!unified && message.author?.bot) return
     if (!unified && !config.logging.messageDeleteEnabled) return
 
     const whitelist = getWhitelistMatch({
@@ -99,13 +100,14 @@ async function onMessageDelete(message) {
 }
 
 async function onMessageUpdate(oldMessage, newMessage) {
-    if (!newMessage.guild || newMessage.author?.bot) return
+    if (!newMessage.guild) return
     const before = oldMessage.content || ""
     const after = newMessage.content || ""
     if (!before || before === after) return
 
     const config = getPhase2Config(newMessage.guild.id)
     const unified = guildHasExplicitLogsConfig(newMessage.guild.id)
+    if (!unified && newMessage.author?.bot) return
     if (!unified && !config.logging.messageEditEnabled) return
 
     const whitelist = getWhitelistMatch({
