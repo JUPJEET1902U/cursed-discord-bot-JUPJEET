@@ -5,6 +5,7 @@ const {
     EmbedBuilder,
     StringSelectMenuBuilder,
 } = require("discord.js")
+const { buildLogEmbed: buildBrandedLogEmbed } = require("./logPresentation")
 
 const PURPLE = 0x8B5CF6
 const PRIORITY_COLORS = { low: 0x22C55E, normal: 0x8B5CF6, high: 0xF97316, urgent: 0xEF4444 }
@@ -132,20 +133,35 @@ function buildTicketMessage(ticket, guild) {
     }
 }
 
+function ticketLogIcon(action) {
+    const value = String(action || "").toLowerCase()
+    if (value.includes("reopen")) return "🔓"
+    if (value.includes("open")) return "📩"
+    if (value.includes("close")) return "🔒"
+    if (value.includes("claim") && !value.includes("unclaim")) return "🙋"
+    if (value.includes("unclaim")) return "↩️"
+    if (value.includes("priority")) return "⚡"
+    if (value.includes("delete")) return "🗑️"
+    if (value.includes("transcript")) return "📄"
+    return "🎫"
+}
+
 function buildLogEmbed(ticket, action, actor, detail) {
-    return new EmbedBuilder()
-        .setColor(PRIORITY_COLORS[ticket.priority] || PURPLE)
-        .setTitle(`🎫 Ticket ${action}`)
-        .addFields(
-            { name: "Ticket", value: `#${ticket.ticketNumber}`, inline: true },
-            { name: "Creator", value: `<@${ticket.creatorId}>`, inline: true },
-            { name: "Actor", value: actor?.id ? `<@${actor.id}>` : "System", inline: true },
-            { name: "Category", value: ticket.categoryLabel, inline: true },
-            { name: "Status", value: STATUS_LABELS[ticket.status] || ticket.status, inline: true },
-            { name: "Detail", value: String(detail || "No additional details").slice(0, 1024), inline: false },
-        )
-        .setFooter({ text: "CURSED Ticket Logs" })
-        .setTimestamp()
+    const number = String(ticket.ticketNumber).padStart(4, "0")
+    return buildBrandedLogEmbed({
+        category: "Ticket",
+        event: `Ticket ${action}`,
+        icon: ticketLogIcon(action),
+        color: PRIORITY_COLORS[ticket.priority] || PURPLE,
+        description: `**Ticket #${number}** • ${ticket.categoryLabel || "General Support"}`,
+        fields: [
+            { name: "CREATOR", value: `<@${ticket.creatorId}>`, inline: true },
+            { name: "ACTOR", value: actor?.id ? `<@${actor.id}>` : "System", inline: true },
+            { name: "STATUS", value: STATUS_LABELS[ticket.status] || ticket.status, inline: true },
+            { name: "DETAILS", value: String(detail || "No additional details").slice(0, 1024), inline: false },
+        ],
+        footerMeta: `Ticket #${number} • Priority: ${String(ticket.priority || "normal").toUpperCase()}`,
+    })
 }
 
 function feedbackComponents(ticketId) {

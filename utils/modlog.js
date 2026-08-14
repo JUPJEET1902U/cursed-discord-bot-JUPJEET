@@ -3,36 +3,64 @@
  * A moderation case is persisted even when no log channel is configured.
  */
 
-const { buildEmbed, COLORS } = require("./responseBuilder")
+const { LOG_COLORS, buildLogEmbed, userAvatar } = require("./logPresentation")
 const { createCase } = require("./moderationCases")
 
 const ACTION_COLORS = {
-    WARN: COLORS.warning,
-    CLEAR_WARNINGS: COLORS.admin,
+    WARN: LOG_COLORS.warning,
+    CLEAR_WARNINGS: LOG_COLORS.moderation,
     TIMEOUT: 0xF0B232,
     MUTE: 0xF0B232,
-    UNTIMEOUT: COLORS.success,
-    UNMUTE: COLORS.success,
-    KICK: COLORS.error,
-    BAN: 0x992D22,
-    UNBAN: COLORS.success,
-    TEMPBAN: 0xD9822B,
-    SOFTBAN: 0xD9822B,
-    PURGE: COLORS.moderation,
-    LOCK: 0x9B59B6,
-    UNLOCK: COLORS.success,
-    SLOWMODE: COLORS.moderation,
-    NICKNAME: COLORS.info,
-    NOTE: COLORS.admin,
-    QUARANTINE: 0xE67E22,
-    UNQUARANTINE: COLORS.success,
-    LOCKDOWN_ENABLE: COLORS.error,
-    LOCKDOWN_DISABLE: COLORS.success,
-    ANTI_LINK: 0x9B59B6,
-    ANTI_INVITE: 0xC45AA0,
-    ANTI_SPAM: 0xE67E22,
-    MESSAGE_SHIELD: COLORS.security,
+    UNTIMEOUT: LOG_COLORS.success,
+    UNMUTE: LOG_COLORS.success,
+    KICK: LOG_COLORS.danger,
+    BAN: 0x991B1B,
+    UNBAN: LOG_COLORS.success,
+    TEMPBAN: 0xD97706,
+    SOFTBAN: 0xD97706,
+    PURGE: LOG_COLORS.moderation,
+    LOCK: 0x7C3AED,
+    UNLOCK: LOG_COLORS.success,
+    SLOWMODE: LOG_COLORS.info,
+    NICKNAME: LOG_COLORS.info,
+    NOTE: LOG_COLORS.neutral,
+    QUARANTINE: LOG_COLORS.securityHigh,
+    UNQUARANTINE: LOG_COLORS.success,
+    LOCKDOWN_ENABLE: LOG_COLORS.critical,
+    LOCKDOWN_DISABLE: LOG_COLORS.success,
+    ANTI_LINK: 0x7C3AED,
+    ANTI_INVITE: 0xC026D3,
+    ANTI_SPAM: LOG_COLORS.securityHigh,
+    MESSAGE_SHIELD: LOG_COLORS.critical,
 }
+
+const ACTION_ICONS = Object.freeze({
+    WARN: "⚠️",
+    CLEAR_WARNINGS: "🧹",
+    TIMEOUT: "⏱️",
+    MUTE: "🔇",
+    UNTIMEOUT: "✅",
+    UNMUTE: "🔊",
+    KICK: "👢",
+    BAN: "🔨",
+    UNBAN: "✅",
+    TEMPBAN: "⏳",
+    SOFTBAN: "🧹",
+    PURGE: "🗑️",
+    LOCK: "🔒",
+    UNLOCK: "🔓",
+    SLOWMODE: "🐢",
+    NICKNAME: "📝",
+    NOTE: "📌",
+    QUARANTINE: "🛡️",
+    UNQUARANTINE: "✅",
+    LOCKDOWN_ENABLE: "🚨",
+    LOCKDOWN_DISABLE: "✅",
+    ANTI_LINK: "🔗",
+    ANTI_INVITE: "📨",
+    ANTI_SPAM: "🚫",
+    MESSAGE_SHIELD: "🛡️",
+})
 
 let _client = null
 
@@ -140,30 +168,39 @@ async function logAction(guild, {
 
     const targetType = metadata?.targetType === "channel" ? "channel" : "user"
     const targetDisplay = targetType === "channel"
-        ? `<#${target.id}> (${target.tag || "Unknown channel"})`
-        : `<@${target.id}> (${target.tag || "Unknown user"})`
+        ? `<#${target.id}>`
+        : `<@${target.id}>`
+    const targetName = target.tag || (targetType === "channel" ? "Unknown channel" : "Unknown user")
 
-    const fields = [
-        { name: targetType === "channel" ? "Channel" : "User", value: targetDisplay, inline: true },
-        { name: "Target ID", value: String(target.id), inline: true },
-    ]
-
-    if (caseRecord) fields.push({ name: "Case", value: `#${caseRecord.caseNumber}`, inline: true })
+    const fields = []
+    if (caseRecord) fields.push({ name: "CASE", value: `#${caseRecord.caseNumber}`, inline: true })
     fields.push({
-        name: moderator ? "Moderator" : "Source",
-        value: moderator ? `<@${moderator.id}> (${moderator.tag || "Unknown"})` : "AutoMod",
+        name: moderator ? "MODERATOR" : "SOURCE",
+        value: moderator ? `<@${moderator.id}>` : "AutoMod",
         inline: true,
     })
-    if (reason) fields.push({ name: "Reason", value: String(reason).slice(0, 1024), inline: false })
-    if (extra) fields.push({ name: "Details", value: String(extra).slice(0, 1024), inline: false })
-    if (evidenceUrl) fields.push({ name: "Evidence", value: String(evidenceUrl).slice(0, 1024), inline: false })
+    if (reason) fields.push({ name: "REASON", value: String(reason).slice(0, 1024), inline: false })
+    if (extra) fields.push({ name: "DETAILS", value: String(extra).slice(0, 1024), inline: false })
+    if (evidenceUrl) fields.push({ name: "EVIDENCE", value: `[Open evidence](${String(evidenceUrl).slice(0, 950)})`, inline: false })
 
-    const embed = buildEmbed({
-        title: `Moderation • ${actionLabel(normalizedAction)}`,
-        color: ACTION_COLORS[normalizedAction] ?? COLORS.admin,
+    const targetUser = targetType === "user"
+        ? guild.members.cache.get(target.id)?.user || guild.client?.users?.cache?.get(target.id) || null
+        : null
+
+    const embed = buildLogEmbed({
+        guild,
+        category: "Moderation",
+        event: actionLabel(normalizedAction),
+        icon: ACTION_ICONS[normalizedAction] || "⚖️",
+        color: ACTION_COLORS[normalizedAction] ?? LOG_COLORS.moderation,
+        description: `${targetDisplay} • **${targetName}**`,
         fields,
-        footer: "CURSED • Moderation",
-        timestamp: true,
+        thumbnail: userAvatar(targetUser),
+        footerMeta: [
+            `Target ID: ${target.id}`,
+            moderator?.id ? `Moderator ID: ${moderator.id}` : null,
+            caseRecord ? `Case #${caseRecord.caseNumber}` : null,
+        ].filter(Boolean).join(" • "),
     })
 
     try {

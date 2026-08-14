@@ -1,9 +1,9 @@
 const {
     AuditLogEvent,
-    EmbedBuilder,
     Events,
     PermissionFlagsBits,
 } = require("discord.js")
+const { LOG_COLORS, buildLogEmbed, userAvatar } = require("./logPresentation")
 const { getSecurityPhase3Config, isTrustedForScope } = require("./securityPhase3Config")
 const { createSecurityIncident } = require("./securityIncidents")
 const { quarantineMember } = require("./quarantineState")
@@ -95,18 +95,43 @@ async function sendSecurityAlert(guild, incident, config) {
     const channelId = config.securityLogChannelId
     const channel = channelId ? guild.channels.cache.get(channelId) : null
     if (!channel?.isTextBased()) return false
-    const executor = incident.executorId ? `<@${incident.executorId}>` : "Unknown"
-    const target = incident.targetId ? `\`${incident.targetId}\`` : "Multiple targets"
-    const embed = new EmbedBuilder()
-        .setColor(incident.severity === "critical" ? 0xE53935 : incident.severity === "high" ? 0xFF7A00 : 0xF5B041)
-        .setTitle(`🛡️ ${String(incident.type || "Security incident").replace(/_/g, " ")}`)
-        .addFields(
-            { name: "Executor", value: executor, inline: true },
-            { name: "Target", value: target, inline: true },
-            { name: "Response", value: String(incident.actionTaken || "alert").slice(0, 1024), inline: true },
-        )
-        .setDescription(String(incident.details?.summary || "CURSED detected suspicious server activity.").slice(0, 4000))
-        .setTimestamp()
+
+    const severity = String(incident.severity || "medium").toLowerCase()
+    const color = severity === "critical"
+        ? LOG_COLORS.critical
+        : severity === "high"
+            ? LOG_COLORS.securityHigh
+            : LOG_COLORS.securityMedium
+    const executor = incident.executorId ? `<@${incident.executorId}>` : "Automated detection"
+    const target = incident.targetId
+        ? incident.targetTag
+            ? `**${String(incident.targetTag).slice(0, 180)}**\n\`${incident.targetId}\``
+            : `\`${incident.targetId}\``
+        : "Multiple targets"
+    const executorUser = incident.executorId
+        ? guild.members.cache.get(incident.executorId)?.user || guild.client?.users?.cache?.get(incident.executorId) || null
+        : null
+
+    const embed = buildLogEmbed({
+        guild,
+        category: "Security",
+        event: String(incident.type || "Security incident").replace(/_/g, " "),
+        icon: severity === "critical" ? "🚨" : "🛡️",
+        color,
+        description: String(incident.details?.summary || "CURSED detected suspicious server activity.").slice(0, 4000),
+        fields: [
+            { name: "SEVERITY", value: severity.toUpperCase(), inline: true },
+            { name: "EXECUTOR", value: executor, inline: true },
+            { name: "RESPONSE", value: String(incident.actionTaken || "alert").slice(0, 1024), inline: true },
+            { name: "TARGET", value: target, inline: false },
+        ],
+        thumbnail: userAvatar(executorUser),
+        footerMeta: [
+            incident.executorId ? `Executor ID: ${incident.executorId}` : null,
+            incident.targetId ? `Target ID: ${incident.targetId}` : null,
+        ].filter(Boolean).join(" • "),
+    })
+
     await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => {})
     return true
 }

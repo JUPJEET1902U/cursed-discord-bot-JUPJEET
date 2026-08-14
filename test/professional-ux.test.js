@@ -52,13 +52,15 @@ test("security commands keep their features while using consistent naming", () =
     assert.match(securitySuiteSource, /CURSED • Server Protection/)
 })
 
-test("moderation logs use clean field labels instead of emoji-heavy labels", () => {
+test("moderation logs use the shared branded presentation with clean field labels", () => {
     assert.doesNotMatch(modlogSource, /ACTION_EMOJIS/)
-    assert.match(modlogSource, /`Moderation • \$\{actionLabel\(normalizedAction\)\}`/)
-    assert.match(modlogSource, /\? "Channel" : "User"/)
-    assert.match(modlogSource, /name: "Target ID"/)
-    assert.match(modlogSource, /\? "Moderator" : "Source"/)
-    assert.match(modlogSource, /name: "Reason"/)
-    assert.match(modlogSource, /name: "Details"/)
-    assert.match(modlogSource, /name: "Evidence"/)
+    assert.match(modlogSource, /buildLogEmbed\(\{/)
+    assert.match(modlogSource, /category: "Moderation"/)
+    assert.match(modlogSource, /event: actionLabel\(normalizedAction\)/)
+    assert.match(modlogSource, /name: "CASE"/)
+    assert.match(modlogSource, /name: moderator \? "MODERATOR" : "SOURCE"/)
+    assert.match(modlogSource, /name: "REASON"/)
+    assert.match(modlogSource, /name: "DETAILS"/)
+    assert.match(modlogSource, /name: "EVIDENCE"/)
+    assert.match(modlogSource, /`Target ID: \$\{target\.id\}`/)
 })
