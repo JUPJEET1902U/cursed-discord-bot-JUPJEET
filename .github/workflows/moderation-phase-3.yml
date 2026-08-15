@@ -13,6 +13,7 @@ on:
       - "utils/securityRecoverySuite.js"
       - "utils/securityRecoveryListeners.js"
       - "utils/securityRuntimeHardening.js"
+      - "utils/securityWindowStore.js"
       - "utils/securityIncidents.js"
       - "utils/quarantineState.js"
       - "utils/lockdownState.js"
@@ -28,6 +29,7 @@ on:
       - "test/security-owner-notification.test.js"
       - "test/security-recovery-suite.test.js"
       - "test/security-runtime-hardening.test.js"
+      - "test/security-resilience-hardening.test.js"
       - "test/webhook-security.test.js"
       - "test/api-session-hardening.test.ts"
       - "test/api-security-typescript.test.js"
@@ -39,6 +41,7 @@ on:
       - feature/wick-level-moderation
       - fix/professional-security-owner-dms
       - feature/security-recovery-suite
+      - replit/security-hardening
 
 jobs:
   syntax-and-contracts:
@@ -64,6 +67,7 @@ jobs:
           node --check utils/securityRecoverySuite.js
           node --check utils/securityRecoveryListeners.js
           node --check utils/securityRuntimeHardening.js
+          node --check utils/securityWindowStore.js
           node --check utils/securityProtection.js
           node --check utils/securityPhase3Bootstrap.js
           node --check utils/automod.js
@@ -74,6 +78,7 @@ jobs:
           node --check test/security-owner-notification.test.js
           node --check test/security-recovery-suite.test.js
           node --check test/security-runtime-hardening.test.js
+          node --check test/security-resilience-hardening.test.js
           node --check test/webhook-security.test.js
           node --check test/api-security-typescript.test.js
           node --check webhook.js
@@ -87,6 +92,8 @@ jobs:
         run: node test/security-recovery-suite.test.js
       - name: Run runtime watchdog test
         run: node test/security-runtime-hardening.test.js
+      - name: Run anti-nuke/anti-raid resilience test
+        run: node test/security-resilience-hardening.test.js
       - name: Run webhook security test
         run: node test/webhook-security.test.js
       - name: Run dashboard session hardening test
@@ -106,6 +113,7 @@ jobs:
           const recovery = require('./utils/securityRecoverySuite')
           const recoveryListeners = require('./utils/securityRecoveryListeners')
           const runtime = require('./utils/securityRuntimeHardening')
+          const windows = require('./utils/securityWindowStore')
           const protection = require('./utils/securityProtection')
           const bootstrap = require('./utils/securityPhase3Bootstrap')
           const webhook = require('./webhook')
@@ -124,11 +132,12 @@ jobs:
           if (typeof lockdown.enableEmergencyLockdown !== 'function' || typeof lockdown.disableEmergencyLockdown !== 'function') throw new Error('lockdown recovery missing')
           if (typeof response.neutralizeExecutor !== 'function' || typeof response.restoreDeletedChannel !== 'function' || typeof response.restoreDeletedRole !== 'function') throw new Error('neutralization or recovery missing')
           if (typeof notifications.buildOwnerNotification !== 'function') throw new Error('owner notification formatter missing')
-          if (typeof shield.runSecurityMessageShield !== 'function') throw new Error('message shield missing')
+          if (typeof shield.runSecurityMessageShield !== 'function' || typeof shield.coordinatedSignalFor !== 'function') throw new Error('message shield hardening missing')
           if (typeof recovery.createSecuritySnapshot !== 'function' || typeof recovery.setIncidentMode !== 'function') throw new Error('recovery suite missing')
           if (typeof recoveryListeners.restoreRemovedBotRoles !== 'function' || typeof recoveryListeners.isTamperExecutorExempt !== 'function') throw new Error('tamper recovery missing')
           if (typeof runtime.startSecurityRuntimeHardening !== 'function') throw new Error('runtime watchdog missing')
-          if (typeof protection.attachSecurityProtection !== 'function') throw new Error('security listeners missing')
+          if (typeof windows.appendExecutorSecurityAction !== 'function' || typeof windows.loadRaidWindow !== 'function') throw new Error('persistent security windows missing')
+          if (typeof protection.attachSecurityProtection !== 'function' || typeof protection.compositeActionRisk !== 'function') throw new Error('security listeners or mixed-action hardening missing')
           if (typeof bootstrap.initializeSecurityPhase3 !== 'function') throw new Error('security bootstrap missing')
           if (typeof webhook.verifyKofiToken !== 'function' || typeof webhook.beginWebhookEvent !== 'function' || typeof webhook.isPatreonPaidEntitlement !== 'function' || typeof webhook.isBmcPremiumGrantEvent !== 'function') throw new Error('webhook hardening missing')
           if (typeof api.createDashboardSecurityRouter !== 'function') throw new Error('security dashboard router missing')
