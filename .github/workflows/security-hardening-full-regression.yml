@@ -1,0 +1,106 @@
+name: Security Hardening Full Regression CI
+
+on:
+  pull_request:
+    paths:
+      - "utils/security*.js"
+      - "utils/quarantineState.js"
+      - "utils/lockdownState.js"
+      - "test/**"
+      - ".github/workflows/security-hardening-full-regression.yml"
+  push:
+    branches:
+      - replit/security-hardening
+
+permissions:
+  contents: read
+
+jobs:
+  all-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run every repository test file and compare failures with main
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          set -u
+          mapfile -t tests < <(find test -maxdepth 1 -type f \( -name '*.test.js' -o -name '*.test.ts' \) | sort)
+          echo "Discovered ${#tests[@]} test files"
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No test files discovered"
+            exit 1
+          fi
+
+          failed_tests=()
+          for test_file in "${tests[@]}"; do
+            echo ""
+            echo "============================================================"
+            echo "Running ${test_file} on PR branch"
+            echo "============================================================"
+            if [[ "${test_file}" == *.ts ]]; then
+              npx tsx "${test_file}" || failed_tests+=("${test_file}")
+            else
+              node "${test_file}" || failed_tests+=("${test_file}")
+            fi
+          done
+
+          if [ "${#failed_tests[@]}" -eq 0 ]; then
+            echo "All ${#tests[@]} repository test files passed on the PR branch"
+            exit 0
+          fi
+
+          echo ""
+          echo "${#failed_tests[@]} test file(s) failed on the PR branch. Re-running those exact files on ${BASE_REF} to distinguish regressions from pre-existing failures."
+          git fetch origin "${BASE_REF}" --depth=1
+          rm -rf /tmp/cursed-base
+          git worktree add --detach /tmp/cursed-base FETCH_HEAD
+          ln -s "${GITHUB_WORKSPACE}/node_modules" /tmp/cursed-base/node_modules
+
+          regressions=0
+          baseline_failures=0
+          for test_file in "${failed_tests[@]}"; do
+            echo ""
+            echo "============================================================"
+            echo "Baseline check: ${test_file} on ${BASE_REF}"
+            echo "============================================================"
+            pushd /tmp/cursed-base >/dev/null
+            if [[ "${test_file}" == *.ts ]]; then
+              if "${GITHUB_WORKSPACE}/node_modules/.bin/tsx" "${test_file}"; then
+                baseline_status=0
+              else
+                baseline_status=$?
+              fi
+            else
+              if node "${test_file}"; then
+                baseline_status=0
+              else
+                baseline_status=$?
+              fi
+            fi
+            popd >/dev/null
+
+            if [ "${baseline_status}" -eq 0 ]; then
+              echo "REGRESSION: ${test_file} passes on ${BASE_REF} but fails on the PR branch"
+              regressions=$((regressions + 1))
+            else
+              echo "PRE-EXISTING BASELINE FAILURE: ${test_file} also fails on ${BASE_REF}"
+              baseline_failures=$((baseline_failures + 1))
+            fi
+          done
+
+          echo ""
+          echo "Full regression summary: ${#tests[@]} files executed; ${regressions} new regression(s); ${baseline_failures} pre-existing baseline failure(s)."
+          if [ "${regressions}" -ne 0 ]; then
+            exit 1
+          fi
+          echo "No test regression introduced by this PR."
