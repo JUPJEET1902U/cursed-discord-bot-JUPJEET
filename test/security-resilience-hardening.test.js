@@ -53,7 +53,7 @@ async function testStaleAuditEntriesAreRejected() {
     assert.equal(found, null, "an unrelated stale audit entry must not be blamed for the current gateway event")
 }
 
-function testMixedActionRisk() {
+function testMixedAndSlowBurnActionRisk() {
     const current = Date.now()
     const mixed = protection.compositeActionRisk([
         { at: current - 500, eventType: "channelDeletes", auditId: "mix-1", weight: 3 },
@@ -69,6 +69,73 @@ function testMixedActionRisk() {
     ], 10_000, current)
     assert.equal(oneDiscordActionClassifiedTwice.score, 4, "the same audit action must use its highest severity weight, not double count")
     assert.equal(oneDiscordActionClassifiedTwice.triggered, false)
+
+    const slowBurn = protection.slowBurnActionRisk([
+        { at: current - 105_000, eventType: "channelDeletes", auditId: "slow-1", weight: 3 },
+        { at: current - 75_000, eventType: "roleDeletes", auditId: "slow-2", weight: 3 },
+        { at: current - 45_000, eventType: "webhookChanges", auditId: "slow-3", weight: 3 },
+        { at: current - 10_000, eventType: "channelDeletes", auditId: "slow-4", weight: 3 },
+    ], 120_000, current)
+    assert.equal(slowBurn.triggered, true, "high-risk actions deliberately spaced outside the burst window must still correlate")
+
+    const ordinaryAdministration = protection.slowBurnActionRisk([
+        { at: current - 100_000, eventType: "roleUpdates", auditId: "admin-1", weight: 1 },
+        { at: current - 70_000, eventType: "channelUpdates", auditId: "admin-2", weight: 1 },
+        { at: current - 40_000, eventType: "roleUpdates", auditId: "admin-3", weight: 1 },
+        { at: current - 10_000, eventType: "guildUpdates", auditId: "admin-4", weight: 2 },
+    ], 120_000, current)
+    assert.equal(ordinaryAdministration.triggered, false, "normal low-volume administration must not trip slow-burn containment")
+}
+
+function testCoordinatedDestructiveRisk() {
+    const current = Date.now()
+    const coordinated = protection.coordinatedDestructiveRisk([
+        { at: current - 1000, executorId: "attacker-a", eventType: "channelDeletes", auditId: "coord-1", weight: 3 },
+        { at: current - 800, executorId: "attacker-b", eventType: "roleDeletes", auditId: "coord-2", weight: 3 },
+        { at: current - 600, executorId: "attacker-a", eventType: "channelDeletes", auditId: "coord-3", weight: 3 },
+        { at: current - 400, executorId: "attacker-b", eventType: "roleDeletes", auditId: "coord-4", weight: 3 },
+    ], 30_000, current)
+    assert.equal(coordinated.triggered, true, "multiple untrusted executors sharing destructive work must aggregate")
+    assert.equal(coordinated.executors.length, 2)
+
+    const singleExecutor = protection.coordinatedDestructiveRisk([
+        { at: current - 1000, executorId: "one-admin", eventType: "channelDeletes", auditId: "one-1", weight: 3 },
+        { at: current - 800, executorId: "one-admin", eventType: "roleDeletes", auditId: "one-2", weight: 3 },
+        { at: current - 600, executorId: "one-admin", eventType: "channelDeletes", auditId: "one-3", weight: 3 },
+        { at: current - 400, executorId: "one-admin", eventType: "roleDeletes", auditId: "one-4", weight: 3 },
+    ], 30_000, current)
+    assert.equal(singleExecutor.triggered, false, "multi-executor containment must not be mislabeled for one executor")
+}
+
+async function testConcurrentExecutorHistoryIsLossless() {
+    const config = {
+        antiNuke: { windowSeconds: 10 },
+        staffLimits: { enabled: false },
+    }
+    const guildId = "executor-history-guild"
+    const executorId = "executor-history-user"
+    const [first, second] = await Promise.all([
+        protection.addExecutorAction(guildId, executorId, "channelDeletes", "concurrent-audit-1", config),
+        protection.addExecutorAction(guildId, executorId, "roleDeletes", "concurrent-audit-2", config),
+    ])
+    const longest = first.length >= second.length ? first : second
+    assert.equal(longest.length, 2, "simultaneous actions for one executor must not overwrite each other in the local rolling window")
+    assert.deepEqual(new Set(longest.map(event => event.auditId)), new Set(["concurrent-audit-1", "concurrent-audit-2"]))
+}
+
+async function testStateMutationSerialization() {
+    const order = []
+    const first = windowStore.runSecurityStateMutation("serial-test", async () => {
+        order.push("first:start")
+        await new Promise(resolve => setTimeout(resolve, 10))
+        order.push("first:end")
+    })
+    const second = windowStore.runSecurityStateMutation("serial-test", async () => {
+        order.push("second:start")
+        order.push("second:end")
+    })
+    await Promise.all([first, second])
+    assert.deepEqual(order, ["first:start", "first:end", "second:start", "second:end"])
 }
 
 function permissionSet(values) {
@@ -151,10 +218,20 @@ function testCoordinatedMessageRaidSignal() {
     const payload = "claim your free reward here now"
     assert.equal(shield.coordinatedSignalFor(makeMessage({ guildId: "guild-coord", authorId: "a", content: payload }), normalShield, { active: false }), null)
     assert.equal(shield.coordinatedSignalFor(makeMessage({ guildId: "guild-coord", authorId: "b", content: payload }), normalShield, { active: false }), null)
-    const signal = shield.coordinatedSignalFor(makeMessage({ guildId: "guild-coord", authorId: "c", content: payload }), normalShield, { active: false })
+    assert.equal(shield.coordinatedSignalFor(makeMessage({ guildId: "guild-coord", authorId: "c", content: payload }), normalShield, { active: false }), null, "three users repeating ordinary text is not enough outside Incident Mode")
+    const signal = shield.coordinatedSignalFor(makeMessage({ guildId: "guild-coord", authorId: "d", content: payload }), normalShield, { active: false })
     assert.ok(signal)
     assert.equal(signal.repeatedTrigger, true)
-    assert.equal(signal.distinctAuthors, 3)
+    assert.equal(signal.distinctAuthors, 4)
+
+    const commonPhrase = "happy birthday"
+    for (const authorId of ["p1", "p2", "p3", "p4", "p5"]) {
+        assert.equal(
+            shield.coordinatedSignalFor(makeMessage({ guildId: "guild-common", authorId, content: commonPhrase }), normalShield, { active: false }),
+            null,
+            "short common phrases must not become a coordinated-raid signal"
+        )
+    }
 
     const healthyShield = shield.effectiveShield(config, { active: false })
     assert.equal(shield.coordinatedSignalFor(makeMessage({ guildId: "guild-healthy", authorId: "x", content: "hello everyone" }), healthyShield, { active: false }), null)
@@ -306,7 +383,10 @@ async function run() {
     await testAuditClaimsAreScopedToClassification()
     await testSimultaneousAuditCandidatesCanBothBeClaimed()
     await testStaleAuditEntriesAreRejected()
-    testMixedActionRisk()
+    testMixedAndSlowBurnActionRisk()
+    testCoordinatedDestructiveRisk()
+    await testConcurrentExecutorHistoryIsLossless()
+    await testStateMutationSerialization()
     testDangerousHierarchyCrossing()
     testRaidFalsePositiveAndBotBurstDecisions()
     testCoordinatedMessageRaidSignal()
