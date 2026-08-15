@@ -75,11 +75,17 @@ jobs:
             echo "============================================================"
             pushd /tmp/cursed-base >/dev/null
             if [[ "${test_file}" == *.ts ]]; then
-              "${GITHUB_WORKSPACE}/node_modules/.bin/tsx" "${test_file}"
-              baseline_status=$?
+              if "${GITHUB_WORKSPACE}/node_modules/.bin/tsx" "${test_file}"; then
+                baseline_status=0
+              else
+                baseline_status=$?
+              fi
             else
-              node "${test_file}"
-              baseline_status=$?
+              if node "${test_file}"; then
+                baseline_status=0
+              else
+                baseline_status=$?
+              fi
             fi
             popd >/dev/null
 
