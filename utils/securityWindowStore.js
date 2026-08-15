@@ -3,6 +3,7 @@ const mongoose = require("mongoose")
 const MAX_EXECUTOR_EVENTS = 200
 const MAX_RAID_EVENTS = 250
 const MAX_PENDING_WRITES = 1000
+const RETRY_DELAYS_MS = Object.freeze([1000, 2500, 5000, 10_000, 30_000])
 
 function getModel(name, schema) {
     try { return mongoose.model(name) }
@@ -42,7 +43,10 @@ const SecurityExecutorWindow = getModel("SecurityExecutorWindow", executorWindow
 const SecurityRaidWindow = getModel("SecurityRaidWindow", raidWindowSchema)
 
 const pendingWrites = []
+const mutationTails = new Map()
 let flushPromise = null
+let retryTimer = null
+let retryAttempt = 0
 
 function mongoReady() {
     return mongoose.connection.readyState === 1
@@ -60,9 +64,48 @@ function pruneSecurityEvents(events, windowMs, currentTime = Date.now()) {
         .filter(event => event.at >= cutoff && event.at <= currentTime + 5000)
 }
 
+async function runSecurityStateMutation(key, work) {
+    const normalizedKey = String(key || "global")
+    const previous = mutationTails.get(normalizedKey) || Promise.resolve()
+    let release
+    const gate = new Promise(resolve => { release = resolve })
+    const tail = previous.catch(() => {}).then(() => gate)
+    mutationTails.set(normalizedKey, tail)
+    await previous.catch(() => {})
+    try {
+        return await work()
+    } finally {
+        release()
+        if (mutationTails.get(normalizedKey) === tail) mutationTails.delete(normalizedKey)
+    }
+}
+
+function scheduleRetry() {
+    if (retryTimer || pendingWrites.length === 0) return
+    const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)]
+    retryAttempt += 1
+    retryTimer = setTimeout(() => {
+        retryTimer = null
+        flushPendingSecurityWindowWrites().catch(err => {
+            console.error(`[SecurityWindowStore] retry flush failed: ${err.message}`)
+            scheduleRetry()
+        })
+    }, delay)
+    if (typeof retryTimer.unref === "function") retryTimer.unref()
+}
+
+function clearRetryState() {
+    retryAttempt = 0
+    if (retryTimer) {
+        clearTimeout(retryTimer)
+        retryTimer = null
+    }
+}
+
 function queuePendingWrite(write) {
     pendingWrites.push(write)
     while (pendingWrites.length > MAX_PENDING_WRITES) pendingWrites.shift()
+    scheduleRetry()
 }
 
 async function persistExecutorAction(write) {
@@ -132,7 +175,10 @@ async function persistWrite(write) {
 }
 
 async function flushPendingSecurityWindowWrites() {
-    if (!mongoReady()) return false
+    if (!mongoReady()) {
+        scheduleRetry()
+        return false
+    }
     if (flushPromise) return flushPromise
     flushPromise = (async () => {
         const batch = pendingWrites.splice(0, pendingWrites.length)
@@ -141,9 +187,12 @@ async function flushPendingSecurityWindowWrites() {
                 await persistWrite(write)
             } catch (err) {
                 console.error(`[SecurityWindowStore] pending ${write.kind} write failed: ${err.message}`)
-                queuePendingWrite(write)
+                pendingWrites.push(write)
             }
         }
+        while (pendingWrites.length > MAX_PENDING_WRITES) pendingWrites.shift()
+        if (pendingWrites.length === 0) clearRetryState()
+        else scheduleRetry()
         return pendingWrites.length === 0
     })().finally(() => { flushPromise = null })
     return flushPromise
@@ -229,6 +278,7 @@ async function loadRaidWindow(guildId, windowMs) {
 mongoose.connection.on("connected", () => {
     flushPendingSecurityWindowWrites().catch(err => {
         console.error(`[SecurityWindowStore] reconnect flush failed: ${err.message}`)
+        scheduleRetry()
     })
 })
 
@@ -236,6 +286,7 @@ module.exports = {
     SecurityExecutorWindow,
     SecurityRaidWindow,
     pruneSecurityEvents,
+    runSecurityStateMutation,
     appendExecutorSecurityAction,
     loadExecutorSecurityWindow,
     appendRaidJoin,
