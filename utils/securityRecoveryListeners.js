@@ -4,12 +4,10 @@ const {
 } = require("discord.js")
 const { getSecurityPhase3Config, isTrustedForScope } = require("./securityPhase3Config")
 const { createSecurityIncident } = require("./securityIncidents")
-const { quarantineMember } = require("./quarantineState")
 const { notifyOwner, neutralizeExecutor } = require("./securityResponse")
-const { getIncidentModeState, setIncidentMode } = require("./securityRecoverySuite")
+const { setIncidentMode } = require("./securityRecoverySuite")
 const { fetchMatchingAuditEntry } = require("./securityProtection")
 
-const joinWindows = new Map()
 const roleRecoveryExpectations = new Map()
 const ROLE_RECOVERY_EXPECTATION_TTL_MS = 10_000
 let attached = false
@@ -32,55 +30,16 @@ function assessJoinRisk(member, config, incidentMode) {
     return { score, signals, accountAgeHours }
 }
 
+// Backward-compatible export for tests/older callers. The live GuildMemberAdd
+// pipeline is intentionally owned by securityProtection.processJoin so a member
+// can never be evaluated or punished by two independent anti-raid windows.
 async function processAdvancedJoin(member) {
-    if (!member?.guild || member.user?.bot) return false
-    const guild = member.guild
-    const config = getSecurityPhase3Config(guild.id)
-    if (!config.enabled || !config.antiRaid.enabled) return false
-    if (isTrustedForScope({ guildId: guild.id, member, userId: member.id, isBot: false, scope: "antiRaid" })) return false
-
-    const mode = await getIncidentModeState(guild.id)
-    const windowMs = config.antiRaid.windowSeconds * 1000
-    const times = (joinWindows.get(guild.id) || []).filter(timestamp => timestamp > Date.now() - windowMs)
-    times.push(Date.now())
-    joinWindows.set(guild.id, times)
-
-    const thresholdReached = times.length >= config.antiRaid.joinThreshold
-    const risk = assessJoinRisk(member, config, mode)
-
-    // Young or unusual accounts are not quarantined during normal traffic.
-    // Join Gate only becomes active during a real burst or an explicit incident.
-    if (!thresholdReached && !mode.active) return false
-    if (!thresholdReached && risk.score < config.antiRaid.riskScoreThreshold) return false
-
-    const result = await quarantineMember(guild, member, config, {
-        reason: `Advanced anti-raid verification: ${risk.signals.join(", ") || `${times.length} joins`}`,
-        moderator: { id: guild.members.me?.id, tag: "CURSED Join Gate" },
-    }).catch(err => ({ ok: false, error: err.message }))
-
-    await createSecurityIncident({
-        guildId: guild.id,
-        type: "ADVANCED_ANTI_RAID",
-        severity: thresholdReached || mode.active ? "critical" : "high",
-        executorId: null,
-        executorTag: "CURSED Join Gate",
-        targetId: member.id,
-        targetTag: member.user.tag || member.user.username,
-        actionTaken: result.ok ? "quarantine" : "alert",
-        details: {
-            summary: `Join Gate risk score ${risk.score}; ${times.length} joins in ${config.antiRaid.windowSeconds}s.`,
-            ...risk,
-            joins: times.length,
-            thresholdReached,
-            incidentMode: mode.active,
-            response: result,
-        },
-    })
-    return result.ok
+    const { processJoin } = require("./securityProtection")
+    return processJoin(member)
 }
 
-async function latestAuditExecutor(guild, type, targetId) {
-    const entry = await fetchMatchingAuditEntry(guild, type, targetId).catch(() => null)
+async function latestAuditExecutor(guild, type, targetId, observedAt = Date.now()) {
+    const entry = await fetchMatchingAuditEntry(guild, type, targetId, undefined, { observedAt }).catch(() => null)
     return entry?.executor || null
 }
 
@@ -235,38 +194,36 @@ function attachSecurityRecoveryListeners(client) {
     if (attached || !client) return
     attached = true
 
-    client.on(Events.GuildMemberAdd, member => {
-        processAdvancedJoin(member).catch(err => console.error("Advanced anti-raid error:", err.message))
-    })
+    // GuildMemberAdd is deliberately NOT registered here. securityProtection
+    // owns the single anti-raid join pipeline and processAdvancedJoin delegates
+    // to it for backward compatibility.
 
     client.on(Events.GuildRoleUpdate, async (oldRole, newRole) => {
+        const observedAt = Date.now()
         const guild = newRole.guild
         const config = getSecurityPhase3Config(guild.id)
         if (!config.enabled || !config.tamperProtection.enabled) return
         const me = guild.members.me
-        const botRoleProtected = config.tamperProtection.protectBotRole && newRole.id === me?.roles.highest.id
+        const botRoleProtected = config.tamperProtection.protectBotRole
+            && newRole.id !== guild.id
+            && me?.roles?.cache?.has(newRole.id) === true
         const quarantineProtected = config.tamperProtection.protectQuarantineRole && newRole.id === config.quarantine.roleId
         if (!botRoleProtected && !quarantineProtected) return
-        const changed = oldRole.permissions.bitfield !== newRole.permissions.bitfield
-            || oldRole.position !== newRole.position
-            || oldRole.name !== newRole.name
-        if (!changed) return
+        if (roleStateFingerprint(oldRole) === roleStateFingerprint(newRole)) return
 
         // Ignore only the exact role state CURSED expected from its own rollback.
         // Unrelated attacker changes during the same time window are still handled.
         if (consumeExpectedRoleRecovery(newRole)) return
 
-        const executor = await latestAuditExecutor(guild, AuditLogEvent.RoleUpdate, newRole.id)
+        const executor = await latestAuditExecutor(guild, AuditLogEvent.RoleUpdate, newRole.id, observedAt)
         if (await isTamperExecutorExempt(guild, executor)) return
 
-        const rollback = quarantineProtected
-            ? await restoreProtectedRole(oldRole, newRole)
-            : { ok: false, restored: false }
+        const rollback = await restoreProtectedRole(oldRole, newRole)
         const suffix = rollback.restored ? " The role was restored automatically." : ""
         await recordTamper(
             guild,
             config,
-            "SECURITY_ROLE_TAMPER",
+            botRoleProtected ? "CURSED_ROLE_TAMPER" : "SECURITY_ROLE_TAMPER",
             `Protected role **${newRole.name}** was modified.${suffix}`,
             executor,
             { rollback }
@@ -274,14 +231,17 @@ function attachSecurityRecoveryListeners(client) {
     })
 
     client.on(Events.GuildRoleDelete, async role => {
+        const observedAt = Date.now()
         const guild = role.guild
         const config = getSecurityPhase3Config(guild.id)
         if (!config.enabled || !config.tamperProtection.enabled || !config.tamperProtection.protectQuarantineRole || role.id !== config.quarantine.roleId) return
-        const executor = await latestAuditExecutor(guild, AuditLogEvent.RoleDelete, role.id)
+        const executor = await latestAuditExecutor(guild, AuditLogEvent.RoleDelete, role.id, observedAt)
+        if (await isTamperExecutorExempt(guild, executor)) return
         await recordTamper(guild, config, "QUARANTINE_ROLE_DELETED", `The configured quarantine role **${role.name}** was deleted.`, executor)
     })
 
     client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+        const observedAt = Date.now()
         const guild = newMember.guild
         if (newMember.id !== guild.members.me?.id) return
         const config = getSecurityPhase3Config(guild.id)
@@ -289,7 +249,7 @@ function attachSecurityRecoveryListeners(client) {
         const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
         if (!removed.size) return
 
-        const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id)
+        const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id, observedAt)
         if (await isTamperExecutorExempt(guild, executor)) return
 
         const recovery = await restoreRemovedBotRoles(oldMember, newMember)
