@@ -57,6 +57,8 @@ const SLOW_BURN_SCORE_THRESHOLD = 12
 const COORDINATED_ACTION_SCORE_THRESHOLD = 10
 const MAX_SLOW_BURN_WINDOW_MS = 5 * 60_000
 const MAX_COORDINATED_WINDOW_MS = 60_000
+const HYDRATION_FAILED = Symbol("hydration-failed")
+const HYDRATION_FAILURE_RETRY_MS = 5000
 
 const EVENT_DEFINITIONS = Object.freeze({
     bans: { thresholdKey: "bans", scope: "massModeration", severity: "critical", label: "Mass bans", weight: 1.5 },
@@ -190,10 +192,16 @@ async function hydrateExecutorHistory(guildId, executorId, retentionMs) {
 
     const flight = (async () => {
         const local = executorActionWindows.get(key) || []
-        const persisted = await loadExecutorSecurityWindow(guildId, executorId, retentionMs).catch(() => null)
-        const merged = mergeActionHistory(local, persisted || [], retentionMs, currentTime)
+        const persisted = await loadExecutorSecurityWindow(guildId, executorId, retentionMs).catch(() => HYDRATION_FAILED)
+        const persistedHistory = persisted === HYDRATION_FAILED ? [] : (persisted || [])
+        const merged = mergeActionHistory(local, persistedHistory, retentionMs, currentTime)
         executorActionWindows.set(key, merged)
-        executorHydratedAt.set(key, currentTime)
+        executorHydratedAt.set(
+            key,
+            persisted === HYDRATION_FAILED
+                ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)
+                : currentTime
+        )
         return merged
     })().finally(() => executorHydrationFlights.delete(key))
     executorHydrationFlights.set(key, flight)
@@ -232,10 +240,16 @@ async function hydrateGuildHistory(guildId, windowMs) {
 
     const flight = (async () => {
         const local = guildActionWindows.get(guildId) || []
-        const persisted = await loadGuildSecurityWindow(guildId, windowMs).catch(() => null)
-        const merged = mergeGuildActionHistory(local, persisted || [], windowMs, currentTime)
+        const persisted = await loadGuildSecurityWindow(guildId, windowMs).catch(() => HYDRATION_FAILED)
+        const persistedHistory = persisted === HYDRATION_FAILED ? [] : (persisted || [])
+        const merged = mergeGuildActionHistory(local, persistedHistory, windowMs, currentTime)
         guildActionWindows.set(guildId, merged)
-        guildHydratedAt.set(guildId, currentTime)
+        guildHydratedAt.set(
+            guildId,
+            persisted === HYDRATION_FAILED
+                ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)
+                : currentTime
+        )
         return merged
     })().finally(() => guildHydrationFlights.delete(guildId))
     guildHydrationFlights.set(guildId, flight)
@@ -561,11 +575,17 @@ async function hydrateRaidWindow(guildId, windowMs) {
     if (raidHydrationFlights.has(guildId)) return raidHydrationFlights.get(guildId)
 
     const flight = (async () => {
-        const persisted = await loadRaidWindow(guildId, windowMs).catch(() => null)
-        const merged = mergeRaidRecords(joinWindows.get(guildId) || [], persisted?.events || [], windowMs, currentTime)
+        const persisted = await loadRaidWindow(guildId, windowMs).catch(() => HYDRATION_FAILED)
+        const persistedEvents = persisted === HYDRATION_FAILED ? [] : (persisted?.events || [])
+        const merged = mergeRaidRecords(joinWindows.get(guildId) || [], persistedEvents, windowMs, currentTime)
         joinWindows.set(guildId, merged)
-        if (persisted?.activeUntil > currentTime) activeRaids.set(guildId, persisted.activeUntil)
-        raidHydratedAt.set(guildId, currentTime)
+        if (persisted !== HYDRATION_FAILED && persisted?.activeUntil > currentTime) activeRaids.set(guildId, persisted.activeUntil)
+        raidHydratedAt.set(
+            guildId,
+            persisted === HYDRATION_FAILED
+                ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)
+                : currentTime
+        )
         return merged
     })().finally(() => raidHydrationFlights.delete(guildId))
     raidHydrationFlights.set(guildId, flight)
@@ -690,7 +710,7 @@ async function fetchAuditCandidatesOnce(guild, auditTypes, targetId = null, opti
     const maxPastMs = Math.max(1000, Number(options.maxPastMs) || AUDIT_PAST_TOLERANCE_MS)
     const maxFutureMs = Math.max(0, Number(options.maxFutureMs) || AUDIT_FUTURE_TOLERANCE_MS)
     const lowerBound = observedAt - maxPastMs
-    const upperBound = now() + maxFutureMs
+    const upperBound = observedAt + maxFutureMs
 
     return [...candidatesById.values()]
         .filter(entry => Number(entry.createdTimestamp) >= lowerBound && Number(entry.createdTimestamp) <= upperBound)

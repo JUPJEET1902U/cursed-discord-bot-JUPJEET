@@ -24,6 +24,7 @@ const recoveredChannelIds = new Map()
 const NEUTRALIZATION_REUSE_MS = 5000
 const RECOVERY_REUSE_MS = 60_000
 const RECOVERY_MAPPING_TTL_MS = 10 * 60_000
+const RECOVERY_DEPENDENCY_GRACE_MS = 750
 
 function hasDangerousPermissions(role) {
     return DANGEROUS_PERMISSIONS.some(permission => role?.permissions?.has(permission))
@@ -43,6 +44,17 @@ function pruneStateMap(map, ttlMs, currentTime = Date.now(), maxSize = 5000) {
 
 function neutralizationKey(guild, member) {
     return `${guild.id}:${member.id}`
+}
+
+function neutralizationPolicyKey(config) {
+    const timeoutMinutes = Math.max(1, Math.min(40320, Number(config?.antiNuke?.neutralizeTimeoutMinutes) || 10080))
+    return JSON.stringify({
+        removeDangerousRoles: config?.antiNuke?.removeDangerousRoles !== false,
+        banMaliciousBots: config?.antiNuke?.banMaliciousBots !== false,
+        timeoutMinutes,
+        autoLockdown: config?.antiNuke?.autoLockdown === true,
+        lockdownEnabled: config?.lockdown?.enabled !== false,
+    })
 }
 
 async function neutralizeExecutorInternal(guild, member, config, { reason, actor } = {}) {
@@ -132,21 +144,38 @@ async function neutralizeExecutorInternal(guild, member, config, { reason, actor
 async function neutralizeExecutor(guild, member, config, options = {}) {
     if (!guild || !member) return neutralizeExecutorInternal(guild, member, config, options)
     const key = neutralizationKey(guild, member)
+    const policyKey = neutralizationPolicyKey(config)
     const currentTime = Date.now()
     const recent = recentNeutralizations.get(key)
-    if (recent?.result?.ok && currentTime - recent.at < NEUTRALIZATION_REUSE_MS) {
+    if (
+        recent?.result?.ok
+        && !recent.result.errors?.length
+        && recent.policyKey === policyKey
+        && currentTime - recent.at < NEUTRALIZATION_REUSE_MS
+    ) {
         return { ...recent.result, reused: true }
     }
-    if (neutralizationFlights.has(key)) return neutralizationFlights.get(key)
 
+    const existing = neutralizationFlights.get(key)
+    if (existing) {
+        const existingResult = await existing.promise
+        if (existing.policyKey === policyKey) return existingResult
+    }
+
+    const holder = { policyKey, promise: null }
     const flight = neutralizeExecutorInternal(guild, member, config, options)
         .then(result => {
-            if (result.ok) recentNeutralizations.set(key, { at: Date.now(), result })
+            if (result.ok && !result.errors?.length) {
+  recentNeutralizations.set(key, { at: Date.now(), result, policyKey })
+            }
             pruneStateMap(recentNeutralizations, NEUTRALIZATION_REUSE_MS, Date.now(), 3000)
             return result
         })
-        .finally(() => neutralizationFlights.delete(key))
-    neutralizationFlights.set(key, flight)
+        .finally(() => {
+            if (neutralizationFlights.get(key) === holder) neutralizationFlights.delete(key)
+        })
+    holder.promise = flight
+    neutralizationFlights.set(key, holder)
     return flight
 }
 
@@ -241,17 +270,38 @@ function channelCreateOptions(guild, channel, reason) {
     return options
 }
 
+async function waitForRecoveryDependency(kind, guild, originalId) {
+    const deadline = Date.now() + RECOVERY_DEPENDENCY_GRACE_MS
+    const key = recoveryKey(kind, guild.id, originalId)
+    while (Date.now() <= deadline) {
+        const mapped = kind === "role"
+            ? recoveredId(recoveredRoleIds, guild.id, originalId)
+            : recoveredId(recoveredChannelIds, guild.id, originalId)
+        if (mapped) return true
+        const flight = recoveryFlights.get(key)
+        if (flight) {
+            await Promise.allSettled([flight])
+            return true
+        }
+        await new Promise(resolve => setTimeout(resolve, 25))
+    }
+    return false
+}
+
 async function waitForRecoveryDependencies(guild, channel) {
     const dependencies = []
-    if (channel.parentId && !guild.channels.cache.has(channel.parentId)) {
-        const parentFlight = recoveryFlights.get(recoveryKey("channel", guild.id, channel.parentId))
-        if (parentFlight) dependencies.push(parentFlight)
+    if (
+        channel.parentId
+        && !guild.channels.cache.has(channel.parentId)
+        && !recoveredId(recoveredChannelIds, guild.id, channel.parentId)
+    ) {
+        dependencies.push(waitForRecoveryDependency("channel", guild, channel.parentId))
     }
     if (channel.permissionOverwrites?.cache) {
         for (const overwrite of channel.permissionOverwrites.cache.values()) {
             if (Number(overwrite.type) !== 0 || guild.roles.cache.has(overwrite.id)) continue
-            const roleFlight = recoveryFlights.get(recoveryKey("role", guild.id, overwrite.id))
-            if (roleFlight) dependencies.push(roleFlight)
+            if (recoveredId(recoveredRoleIds, guild.id, overwrite.id)) continue
+            dependencies.push(waitForRecoveryDependency("role", guild, overwrite.id))
         }
     }
     if (dependencies.length) await Promise.allSettled(dependencies)

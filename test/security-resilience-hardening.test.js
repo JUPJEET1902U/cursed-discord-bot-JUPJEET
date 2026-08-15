@@ -379,10 +379,81 @@ function testWindowPruning() {
     assert.equal(pruned[0].eventType, "new")
 }
 
+
+async function testAuditFutureWindowDoesNotDriftDuringRetry() {
+    const targetId = "future-window-target"
+    const observedAt = Date.now()
+    const future = makeAuditEntry("audit-future", targetId, "future-executor", observedAt + 2500)
+    const guild = { fetchAuditLogs: async () => ({ entries: new Map([[future.id, future]]) }) }
+    const found = await protection.fetchMatchingAuditEntry(guild, "CHANNEL_UPDATE", targetId, [1000], { observedAt })
+    assert.equal(found, null, "retry delay must not expand the audit future window")
+}
+
+async function testDifferentNeutralizationPolicyIsNotReused() {
+    let timeoutCalls = 0
+    const member = {
+        id: "policy-member",
+        user: { bot: false },
+        manageable: true,
+        moderatable: true,
+        roles: { cache: new Map() },
+        timeout: async () => { timeoutCalls += 1 },
+    }
+    const guild = {
+        id: "policy-guild",
+        ownerId: "owner-id",
+        members: { me: { id: "cursed-id", permissions: { has: () => false } } },
+    }
+    const first = { antiNuke: { removeDangerousRoles: true, neutralizeTimeoutMinutes: 1, autoLockdown: false }, lockdown: { enabled: false } }
+    const stronger = { antiNuke: { removeDangerousRoles: true, neutralizeTimeoutMinutes: 60, autoLockdown: false }, lockdown: { enabled: false } }
+    await response.neutralizeExecutor(guild, member, first, { reason: "first policy" })
+    await response.neutralizeExecutor(guild, member, stronger, { reason: "stronger policy" })
+    assert.equal(timeoutCalls, 2, "a different neutralization policy must not reuse a previous result")
+}
+
+async function testLateRecoveryDependencyRegistration() {
+    let capturedOptions = null
+    const guild = {
+        id: "late-dependency-guild",
+        members: { me: { roles: { highest: { position: 20 } }, permissions: { has: p => p === PermissionFlagsBits.ManageChannels || p === PermissionFlagsBits.ManageRoles } } },
+        roles: { cache: new Map(), create: async () => ({ id: "late-restored-role", setPosition: async () => {} }) },
+        channels: { cache: new Map(), create: async options => { capturedOptions = options; return { id: "late-restored-channel", setPosition: async () => {} } } },
+    }
+    const oldRole = { id: "late-old-role", name: "Late Role", color: 0, hoist: false, permissions: { bitfield: PermissionFlagsBits.ManageChannels }, mentionable: false, unicodeEmoji: null, position: 5 }
+    const oldChannel = {
+        id: "late-old-channel", name: "late-channel", type: ChannelType.GuildText, parentId: null, topic: null, nsfw: false, rateLimitPerUser: 0, rawPosition: 1,
+        permissionOverwrites: { cache: new Map([["late", { id: oldRole.id, type: 0, allow: { bitfield: 1n }, deny: { bitfield: 0n } }]]) },
+    }
+    const channelPromise = response.restoreDeletedChannel(guild, oldChannel, "late dependency channel")
+    await new Promise(resolve => setTimeout(resolve, 75))
+    const roleResult = await response.restoreDeletedRole(guild, oldRole, "late dependency role")
+    const channelResult = await channelPromise
+    assert.equal(roleResult.ok, true)
+    assert.equal(channelResult.ok, true)
+    assert.equal(capturedOptions.permissionOverwrites[0].id, roleResult.restoredId)
+}
+
+function testDecorativeBotRoleIsNotTamperProtected() {
+    const guild = { id: "role-scope-guild" }
+    const decorative = { id: "decorative-role", guild, permissions: permissionSet([]) }
+    const critical = { id: "critical-role", guild, permissions: permissionSet([PermissionFlagsBits.ManageRoles]) }
+    const member = { guild, roles: { cache: new Map([[decorative.id, decorative], [critical.id, critical]]) } }
+    assert.equal(recoveryListeners.isBotProtectionRole(member, decorative), false)
+    assert.equal(recoveryListeners.isBotProtectionRole(member, critical), true)
+}
+
+function testHydrationFailureShortRetryContract() {
+    const source = require("node:fs").readFileSync(require("node:path").join(__dirname, "../utils/securityProtection.js"), "utf8")
+    assert.match(source, /HYDRATION_FAILED = Symbol/)
+    assert.match(source, /HYDRATION_FAILURE_RETRY_MS = 5000/)
+    assert.match(source, /currentTime - \(60_000 - HYDRATION_FAILURE_RETRY_MS\)/)
+}
+
 async function run() {
     await testAuditClaimsAreScopedToClassification()
     await testSimultaneousAuditCandidatesCanBothBeClaimed()
     await testStaleAuditEntriesAreRejected()
+    await testAuditFutureWindowDoesNotDriftDuringRetry()
     testMixedAndSlowBurnActionRisk()
     testCoordinatedDestructiveRisk()
     await testConcurrentExecutorHistoryIsLossless()
@@ -391,7 +462,11 @@ async function run() {
     testRaidFalsePositiveAndBotBurstDecisions()
     testCoordinatedMessageRaidSignal()
     await testNeutralizationSingleFlight()
+    await testDifferentNeutralizationPolicyIsNotReused()
     await testRecoverySingleFlightAndRoleRemap()
+    await testLateRecoveryDependencyRegistration()
+    testDecorativeBotRoleIsNotTamperProtected()
+    testHydrationFailureShortRetryContract()
     testOnlyOneLiveAntiRaidJoinListener()
     testWindowPruning()
     console.log("security resilience hardening contracts passed")

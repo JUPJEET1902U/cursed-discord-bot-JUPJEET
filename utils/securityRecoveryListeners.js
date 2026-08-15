@@ -1,6 +1,7 @@
 const {
     AuditLogEvent,
     Events,
+    PermissionFlagsBits,
 } = require("discord.js")
 const { getSecurityPhase3Config, isTrustedForScope } = require("./securityPhase3Config")
 const { createSecurityIncident } = require("./securityIncidents")
@@ -10,6 +11,15 @@ const { fetchMatchingAuditEntry } = require("./securityProtection")
 
 const roleRecoveryExpectations = new Map()
 const ROLE_RECOVERY_EXPECTATION_TTL_MS = 10_000
+const BOT_PROTECTION_PERMISSIONS = Object.freeze([
+    PermissionFlagsBits.ViewAuditLog,
+    PermissionFlagsBits.ManageRoles,
+    PermissionFlagsBits.ManageChannels,
+    PermissionFlagsBits.ManageWebhooks,
+    PermissionFlagsBits.ModerateMembers,
+    PermissionFlagsBits.KickMembers,
+    PermissionFlagsBits.BanMembers,
+])
 let attached = false
 
 function suspiciousUsername(username) {
@@ -131,8 +141,13 @@ async function restoreProtectedRole(oldRole, newRole) {
     return { ok: errors.length === 0, restored: errors.length === 0, errors }
 }
 
-async function restoreRemovedBotRoles(oldMember, newMember) {
-    const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
+function isBotProtectionRole(member, role) {
+    if (!member || !role || role.id === member.guild?.id || !member.roles?.cache?.has(role.id)) return false
+    return BOT_PROTECTION_PERMISSIONS.some(permission => role.permissions?.has(permission))
+}
+
+async function restoreRemovedBotRoles(oldMember, newMember, rolesToRestore = null) {
+    const removed = rolesToRestore || oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
     const restorable = [...removed.values()].filter(role => role.id !== newMember.guild.id && !role.managed && role.editable)
     if (!restorable.length) return { removedCount: removed.size, restoredRoleIds: [], errors: [] }
 
@@ -205,8 +220,7 @@ function attachSecurityRecoveryListeners(client) {
         if (!config.enabled || !config.tamperProtection.enabled) return
         const me = guild.members.me
         const botRoleProtected = config.tamperProtection.protectBotRole
-            && newRole.id !== guild.id
-            && me?.roles?.cache?.has(newRole.id) === true
+            && (isBotProtectionRole(me, oldRole) || isBotProtectionRole(me, newRole))
         const quarantineProtected = config.tamperProtection.protectQuarantineRole && newRole.id === config.quarantine.roleId
         if (!botRoleProtected && !quarantineProtected) return
         if (roleStateFingerprint(oldRole) === roleStateFingerprint(newRole)) return
@@ -247,20 +261,21 @@ function attachSecurityRecoveryListeners(client) {
         const config = getSecurityPhase3Config(guild.id)
         if (!config.enabled || !config.tamperProtection.enabled || !config.tamperProtection.protectBotRole) return
         const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
-        if (!removed.size) return
+        const protectedRemoved = removed.filter(role => isBotProtectionRole(oldMember, role))
+        if (!protectedRemoved.size) return
 
         const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id, observedAt)
         if (await isTamperExecutorExempt(guild, executor)) return
 
-        const recovery = await restoreRemovedBotRoles(oldMember, newMember)
+        const recovery = await restoreRemovedBotRoles(oldMember, newMember, protectedRemoved)
         const restoredText = recovery.restoredRoleIds.length
-            ? ` Restored ${recovery.restoredRoleIds.length} manageable role(s).`
+            ? ` Restored ${recovery.restoredRoleIds.length} critical protection role(s).`
             : ""
         await recordTamper(
             guild,
             config,
             "CURSED_ROLE_REMOVED",
-            `CURSED lost ${removed.size} role(s).${restoredText} Protection permissions may have been reduced.`,
+            `CURSED lost ${protectedRemoved.size} critical protection role(s).${restoredText} Protection permissions may have been reduced.`,
             executor,
             { recovery }
         )
@@ -279,4 +294,5 @@ module.exports = {
     consumeExpectedRoleRecovery,
     restoreProtectedRole,
     restoreRemovedBotRoles,
+    isBotProtectionRole,
 }
