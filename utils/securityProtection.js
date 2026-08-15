@@ -21,8 +21,10 @@ const {
     setIncidentMode,
 } = require("./securityRecoverySuite")
 const {
+    runSecurityStateMutation,
     appendExecutorSecurityAction,
     loadExecutorSecurityWindow,
+    loadGuildSecurityWindow,
     appendRaidJoin,
     setRaidActiveUntil,
     loadRaidWindow,
@@ -37,6 +39,9 @@ const raidBurstCooldowns = new Map()
 const executorActionWindows = new Map()
 const executorHydratedAt = new Map()
 const executorHydrationFlights = new Map()
+const guildActionWindows = new Map()
+const guildHydratedAt = new Map()
+const guildHydrationFlights = new Map()
 const triggerCooldowns = new Map()
 const auditClaims = new Map()
 const processingAddedBots = new Set()
@@ -48,6 +53,10 @@ const AUDIT_FUTURE_TOLERANCE_MS = 2000
 const AUDIT_CLAIM_TTL_MS = 2 * 60_000
 const JOIN_EVENT_TTL_MS = 2 * 60_000
 const MIXED_ACTION_SCORE_THRESHOLD = 6
+const SLOW_BURN_SCORE_THRESHOLD = 12
+const COORDINATED_ACTION_SCORE_THRESHOLD = 10
+const MAX_SLOW_BURN_WINDOW_MS = 5 * 60_000
+const MAX_COORDINATED_WINDOW_MS = 60_000
 
 const EVENT_DEFINITIONS = Object.freeze({
     bans: { thresholdKey: "bans", scope: "massModeration", severity: "critical", label: "Mass bans", weight: 1.5 },
@@ -72,11 +81,22 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function slowBurnWindowMs(config) {
+    const antiWindowMs = Math.max(1000, Number(config?.antiNuke?.windowSeconds || 10) * 1000)
+    return Math.min(MAX_SLOW_BURN_WINDOW_MS, Math.max(2 * 60_000, antiWindowMs * 12))
+}
+
+function coordinatedWindowMs(config) {
+    const antiWindowMs = Math.max(1000, Number(config?.antiNuke?.windowSeconds || 10) * 1000)
+    return Math.min(MAX_COORDINATED_WINDOW_MS, Math.max(30_000, antiWindowMs * 3))
+}
+
 function pruneTimedMap(map, ttlMs, currentTime = now(), maxSize = 5000) {
     if (map.size <= maxSize) return
     const cutoff = currentTime - ttlMs
     for (const [key, timestamp] of map) {
-        if (Number(timestamp) < cutoff) map.delete(key)
+        const at = typeof timestamp === "object" && timestamp !== null ? Number(timestamp.at) || 0 : Number(timestamp) || 0
+        if (at < cutoff) map.delete(key)
     }
     while (map.size > maxSize) map.delete(map.keys().next().value)
 }
@@ -137,6 +157,26 @@ function mergeActionHistory(existing, incoming, windowMs, currentTime = now()) {
     return [...merged.values()].sort((a, b) => a.at - b.at).slice(-200)
 }
 
+function mergeGuildActionHistory(existing, incoming, windowMs, currentTime = now()) {
+    const cutoff = currentTime - Math.max(1, windowMs)
+    const merged = new Map()
+    for (const event of [...(existing || []), ...(incoming || [])]) {
+        const at = Number(event.at) || currentTime
+        if (at < cutoff || at > currentTime + 5000) continue
+        const normalized = {
+            at,
+            executorId: String(event.executorId || "unknown"),
+            eventType: String(event.eventType || "unknown"),
+            auditId: event.auditId ? String(event.auditId) : null,
+            weight: Number(event.weight) || 1,
+        }
+        const key = `${normalized.executorId}:${actionIdentity(normalized)}`
+        const previous = merged.get(key)
+        if (!previous || previous.at <= normalized.at) merged.set(key, normalized)
+    }
+    return [...merged.values()].sort((a, b) => a.at - b.at).slice(-500)
+}
+
 async function hydrateExecutorHistory(guildId, executorId, retentionMs) {
     const key = `${guildId}:${executorId}`
     const currentTime = now()
@@ -163,19 +203,60 @@ async function hydrateExecutorHistory(guildId, executorId, retentionMs) {
 async function addExecutorAction(guildId, executorId, eventType, auditId, config) {
     const antiWindowMs = config.antiNuke.windowSeconds * 1000
     const staffWindowMs = config.staffLimits?.enabled ? config.staffLimits.windowSeconds * 1000 : 0
-    const retentionMs = Math.max(60_000, antiWindowMs, staffWindowMs)
+    const retentionMs = Math.max(60_000, antiWindowMs, staffWindowMs, slowBurnWindowMs(config))
     const key = `${guildId}:${executorId}`
-    const history = await hydrateExecutorHistory(guildId, executorId, retentionMs)
-    const event = {
-        at: now(),
-        eventType,
-        auditId: auditId ? String(auditId) : null,
-        weight: EVENT_DEFINITIONS[eventType]?.weight || 1,
+    return runSecurityStateMutation(`executor:${key}`, async () => {
+        const history = await hydrateExecutorHistory(guildId, executorId, retentionMs)
+        const event = {
+            at: now(),
+            eventType,
+            auditId: auditId ? String(auditId) : null,
+            weight: EVENT_DEFINITIONS[eventType]?.weight || 1,
+        }
+        const merged = mergeActionHistory(history, [event], retentionMs)
+        executorActionWindows.set(key, merged)
+        appendExecutorSecurityAction(guildId, executorId, event, retentionMs).catch(() => {})
+        return merged
+    })
+}
+
+async function hydrateGuildHistory(guildId, windowMs) {
+    const currentTime = now()
+    const lastHydrated = guildHydratedAt.get(guildId) || 0
+    if (guildActionWindows.has(guildId) && currentTime - lastHydrated < 60_000) {
+        const pruned = mergeGuildActionHistory(guildActionWindows.get(guildId), [], windowMs, currentTime)
+        guildActionWindows.set(guildId, pruned)
+        return pruned
     }
-    const merged = mergeActionHistory(history, [event], retentionMs)
-    executorActionWindows.set(key, merged)
-    appendExecutorSecurityAction(guildId, executorId, event, retentionMs).catch(() => {})
-    return merged
+    if (guildHydrationFlights.has(guildId)) return guildHydrationFlights.get(guildId)
+
+    const flight = (async () => {
+        const local = guildActionWindows.get(guildId) || []
+        const persisted = await loadGuildSecurityWindow(guildId, windowMs).catch(() => null)
+        const merged = mergeGuildActionHistory(local, persisted || [], windowMs, currentTime)
+        guildActionWindows.set(guildId, merged)
+        guildHydratedAt.set(guildId, currentTime)
+        return merged
+    })().finally(() => guildHydrationFlights.delete(guildId))
+    guildHydrationFlights.set(guildId, flight)
+    return flight
+}
+
+async function addGuildAction(guildId, executorId, eventType, auditId, config) {
+    const windowMs = coordinatedWindowMs(config)
+    return runSecurityStateMutation(`guild-actions:${guildId}`, async () => {
+        const history = await hydrateGuildHistory(guildId, windowMs)
+        const event = {
+            at: now(),
+            executorId: String(executorId),
+            eventType,
+            auditId: auditId ? String(auditId) : null,
+            weight: EVENT_DEFINITIONS[eventType]?.weight || 1,
+        }
+        const merged = mergeGuildActionHistory(history, [event], windowMs)
+        guildActionWindows.set(guildId, merged)
+        return merged
+    })
 }
 
 function countEventActions(history, eventType, windowMs, currentTime = now()) {
@@ -203,7 +284,7 @@ function countStaffActions(history, key, windowMs, currentTime = now()) {
     return uniqueAuditActions.size
 }
 
-function compositeActionRisk(history, windowMs, currentTime = now()) {
+function actionRisk(history, windowMs, currentTime = now()) {
     const cutoff = currentTime - windowMs
     const byAuditAction = new Map()
     const eventTypes = new Set()
@@ -217,11 +298,57 @@ function compositeActionRisk(history, windowMs, currentTime = now()) {
         eventTypes.add(event.eventType)
     }
     const score = [...byAuditAction.values()].reduce((sum, action) => sum + action.weight, 0)
+    return { score, actions: byAuditAction.size, eventTypes: [...eventTypes] }
+}
+
+function compositeActionRisk(history, windowMs, currentTime = now()) {
+    const risk = actionRisk(history, windowMs, currentTime)
     return {
+        ...risk,
+        triggered: risk.score >= MIXED_ACTION_SCORE_THRESHOLD && risk.actions >= 2 && risk.eventTypes.length >= 2,
+    }
+}
+
+function slowBurnActionRisk(history, windowMs, currentTime = now()) {
+    const risk = actionRisk(history, windowMs, currentTime)
+    return {
+        ...risk,
+        triggered: risk.score >= SLOW_BURN_SCORE_THRESHOLD
+            && risk.actions >= 4
+            && (risk.eventTypes.length >= 3 || risk.score >= 15),
+    }
+}
+
+function coordinatedDestructiveRisk(history, windowMs, currentTime = now()) {
+    const cutoff = currentTime - windowMs
+    const byAuditAction = new Map()
+    const executors = new Set()
+    const eventTypes = new Set()
+    for (const event of history || []) {
+        if (event.at < cutoff) continue
+        const key = event.auditId || `${event.executorId}:${event.eventType}:${event.at}`
+        const current = byAuditAction.get(key) || { weight: 0, executors: new Set(), types: new Set() }
+        current.weight = Math.max(current.weight, Number(event.weight) || 1)
+        current.executors.add(String(event.executorId || "unknown"))
+        current.types.add(event.eventType)
+        byAuditAction.set(key, current)
+        executors.add(String(event.executorId || "unknown"))
+        eventTypes.add(event.eventType)
+    }
+    const score = [...byAuditAction.values()].reduce((sum, action) => sum + action.weight, 0)
+    const result = {
         score,
         actions: byAuditAction.size,
+        executors: [...executors],
         eventTypes: [...eventTypes],
-        triggered: score >= MIXED_ACTION_SCORE_THRESHOLD && byAuditAction.size >= 2 && eventTypes.size >= 2,
+        windowMs,
+    }
+    return {
+        ...result,
+        triggered: result.executors.length >= 2
+            && result.actions >= 4
+            && result.score >= COORDINATED_ACTION_SCORE_THRESHOLD
+            && (result.eventTypes.length >= 3 || result.score >= 12),
     }
 }
 
@@ -304,6 +431,31 @@ async function maybeActivateIncidentMode(guild, config, reason, severity) {
         actor: { id: guild.members.me?.id, tag: "CURSED Automatic Incident Mode" },
         durationMinutes: config.incidentMode.durationMinutes,
     }).catch(() => null)
+}
+
+async function maybeHandleCoordinatedDestruction(guild, config, risk) {
+    if (!risk?.triggered) return null
+    if (!shouldTrigger(guild.id, "multi-executor", "coordinated", risk.windowMs)) return null
+    const summary = `Coordinated destructive activity detected: ${risk.actions} audit action(s), risk score ${risk.score}, ${risk.executors.length} distinct executor(s), and ${risk.eventTypes.length} action type(s) within ${Math.round(risk.windowMs / 1000)} seconds.`
+    let actionTaken = "alert"
+    if (config.antiNuke?.autoLockdown === true && config.lockdown?.enabled) {
+        actionTaken = await executeSecurityResponse(guild, config, "lockdown", {
+            reason: `Coordinated anti-nuke containment: ${summary}`,
+            actor: { id: guild.members.me?.id, tag: "CURSED Coordinated Anti-Nuke" },
+        })
+    }
+    await recordAndAlert(guild, config, {
+        type: "ANTI_NUKE_COORDINATED_ACTIVITY",
+        severity: "critical",
+        executorId: null,
+        executorTag: "Multiple untrusted executors",
+        targetId: guild.id,
+        targetTag: guild.name,
+        actionTaken,
+        details: { summary, ...risk },
+    })
+    await maybeActivateIncidentMode(guild, config, summary, "critical")
+    return actionTaken
 }
 
 function suspiciousRaidUsername(username) {
@@ -446,7 +598,6 @@ async function processJoin(member) {
     const raid = config.antiRaid
     const mode = await getIncidentModeState(guild.id).catch(() => ({ active: false }))
     const windowMs = raid.windowSeconds * 1000
-    let records = await hydrateRaidWindow(guild.id, windowMs)
     const risk = assessRaidJoinRisk(member, raid, mode)
     const record = {
         at: now(),
@@ -456,18 +607,28 @@ async function processJoin(member) {
         isYoung: risk.isYoung,
         riskScore: risk.score,
     }
-    records = mergeRaidRecords(records, [record], windowMs)
-    joinWindows.set(guild.id, records)
 
-    let activeUntil = activeRaids.get(guild.id) || 0
-    let decision = raidDecision(records, raid, risk, { incidentModeActive: mode.active, activeUntil })
-    if (decision.highConfidenceBurst) {
-        activeUntil = Math.max(activeUntil, now() + raid.activeRaidSeconds * 1000)
-        activeRaids.set(guild.id, activeUntil)
-        decision = raidDecision(records, raid, risk, { incidentModeActive: mode.active, activeUntil })
-        setRaidActiveUntil(guild.id, activeUntil, Math.max(windowMs, raid.activeRaidSeconds * 1000)).catch(() => {})
-    }
-    appendRaidJoin(guild.id, record, Math.max(windowMs, raid.activeRaidSeconds * 1000), activeUntil || null).catch(() => {})
+    const state = await runSecurityStateMutation(`raid:${guild.id}`, async () => {
+        let records = await hydrateRaidWindow(guild.id, windowMs)
+        records = mergeRaidRecords(records, [record], windowMs)
+        joinWindows.set(guild.id, records)
+
+        let activeUntil = activeRaids.get(guild.id) || 0
+        if (activeUntil <= now()) {
+            activeUntil = 0
+            activeRaids.delete(guild.id)
+        }
+        let decision = raidDecision(records, raid, risk, { incidentModeActive: mode.active, activeUntil })
+        if (decision.highConfidenceBurst) {
+            activeUntil = Math.max(activeUntil, now() + raid.activeRaidSeconds * 1000)
+            activeRaids.set(guild.id, activeUntil)
+            decision = raidDecision(records, raid, risk, { incidentModeActive: mode.active, activeUntil })
+            setRaidActiveUntil(guild.id, activeUntil, Math.max(windowMs, raid.activeRaidSeconds * 1000)).catch(() => {})
+        }
+        appendRaidJoin(guild.id, record, Math.max(windowMs, raid.activeRaidSeconds * 1000), activeUntil || null).catch(() => {})
+        return { decision, activeUntil }
+    })
+    const { decision, activeUntil } = state
 
     const summary = `Anti-raid observed ${decision.total} joins in ${raid.windowSeconds}s: ${decision.young} young account(s), ${decision.bots} bot(s), ${decision.risky} high-risk join(s). Current account risk ${risk.score}/${raid.riskScoreThreshold}.`
 
@@ -647,9 +808,14 @@ async function processUnauthorizedBotAdd(member) {
 
         const antiNuke = config.antiNuke
         const windowMs = antiNuke.windowSeconds * 1000
+        const slowWindowMs = slowBurnWindowMs(config)
+        const guildWindowMs = coordinatedWindowMs(config)
         const history = await addExecutorAction(guild.id, inviterId, "botAdds", entry.id, config)
+        const guildHistory = await addGuildAction(guild.id, inviterId, "botAdds", entry.id, config)
         const count = countEventActions(history, "botAdds", windowMs)
         const mixed = compositeActionRisk(history, windowMs)
+        const slow = slowBurnActionRisk(history, slowWindowMs)
+        const coordinated = coordinatedDestructiveRisk(guildHistory, guildWindowMs)
         const summary = `Unauthorized bot addition: ${userTag(entry.executor)} added ${userTag(member.user)} (${member.id}).`
 
         const botRemoval = await removeUnauthorizedAddedBot(member, `CURSED anti-nuke: ${summary}`)
@@ -662,12 +828,18 @@ async function processUnauthorizedBotAdd(member) {
             targetTag: userTag(member.user),
             actionTaken: botRemoval.action,
             auditLogEntryId: entry.id,
-            details: { summary, botRemoval, mixed },
+            details: { summary, botRemoval, mixed, slow, coordinated },
         })
+        await maybeHandleCoordinatedDestruction(guild, config, coordinated)
 
         const threshold = antiNuke.thresholds.botAdds
         const thresholdTriggered = count >= threshold
-        if ((!thresholdTriggered && !mixed.triggered) || !shouldTrigger(guild.id, inviterId, mixed.triggered ? "mixed" : "botAdds", windowMs)) return botRemoval.ok
+        const individualTriggered = thresholdTriggered || mixed.triggered || slow.triggered
+        const triggerType = slow.triggered && !mixed.triggered && !thresholdTriggered
+            ? "slow-burn"
+            : mixed.triggered && !thresholdTriggered ? "mixed" : "botAdds"
+        const triggerWindowMs = triggerType === "slow-burn" ? slowWindowMs : windowMs
+        if (!individualTriggered || !shouldTrigger(guild.id, inviterId, triggerType, triggerWindowMs)) return botRemoval.ok
 
         const inviterResponse = inviterMember
             ? await executeSecurityResponse(guild, config, antiNuke.action, {
@@ -677,8 +849,11 @@ async function processUnauthorizedBotAdd(member) {
             })
             : "alert (inviter no longer in server)"
 
+        const incidentType = slow.triggered && !thresholdTriggered && !mixed.triggered
+            ? "ANTI_NUKE_SLOW_BURN"
+            : mixed.triggered && !thresholdTriggered ? "ANTI_NUKE_MIXED_ACTIVITY" : "ANTI_NUKE_BOTADDS"
         await recordAndAlert(guild, config, {
-            type: mixed.triggered && !thresholdTriggered ? "ANTI_NUKE_MIXED_ACTIVITY" : "ANTI_NUKE_BOTADDS",
+            type: incidentType,
             severity: "critical",
             executorId: inviterId,
             executorTag: userTag(entry.executor),
@@ -692,13 +867,16 @@ async function processUnauthorizedBotAdd(member) {
                 threshold,
                 windowSeconds: antiNuke.windowSeconds,
                 mixed,
+                slow,
+                coordinated,
                 botRemoval,
             },
         })
         await maybeActivateIncidentMode(guild, config, summary, "critical")
         return botRemoval.ok
     } finally {
-        setTimeout(() => processingAddedBots.delete(processingKey), 30000).unref?.()
+        const timer = setTimeout(() => processingAddedBots.delete(processingKey), 30000)
+        if (typeof timer.unref === "function") timer.unref()
     }
 }
 
@@ -752,9 +930,14 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     const antiNuke = config.antiNuke
     const threshold = antiNuke.thresholds[definition.thresholdKey]
     const windowMs = antiNuke.windowSeconds * 1000
+    const slowWindowMs = slowBurnWindowMs(config)
+    const guildWindowMs = coordinatedWindowMs(config)
     const history = await addExecutorAction(guild.id, executorId, eventType, entry.id, config)
+    const guildHistory = await addGuildAction(guild.id, executorId, eventType, entry.id, config)
     const count = countEventActions(history, eventType, windowMs)
     const mixed = compositeActionRisk(history, windowMs)
+    const slow = slowBurnActionRisk(history, slowWindowMs)
+    const coordinated = coordinatedDestructiveRisk(guildHistory, guildWindowMs)
 
     let staff = null
     if (!entry.executor?.bot && !isTrustedForScope({
@@ -775,13 +958,23 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     const staffTriggered = Boolean(staff && staff.count >= staff.threshold)
     const antiNukeTriggered = count >= threshold
     const mixedTriggered = mixed.triggered
-    const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds} seconds (threshold ${threshold}).${staff ? ` Staff limit: ${staff.count}/${staff.threshold} ${staff.key} in ${staff.windowSeconds}s.` : ""}${mixedTriggered ? ` Mixed-action risk: ${mixed.score} across ${mixed.actions} audit action(s) and ${mixed.eventTypes.length} event type(s).` : ""}`
+    const slowTriggered = slow.triggered
+    const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds} seconds (threshold ${threshold}).${staff ? ` Staff limit: ${staff.count}/${staff.threshold} ${staff.key} in ${staff.windowSeconds}s.` : ""}${mixedTriggered ? ` Mixed-action risk: ${mixed.score} across ${mixed.actions} audit action(s) and ${mixed.eventTypes.length} event type(s).` : ""}${slowTriggered ? ` Slow-burn risk: ${slow.score} across ${slow.actions} audit action(s) over ${Math.round(slowWindowMs / 1000)}s.` : ""}`
+
+    const coordinatedPromise = maybeHandleCoordinatedDestruction(guild, config, coordinated)
     const recovery = await recoveryForEvent(guild, config, eventType, target, summary)
+    await coordinatedPromise
 
-    if (!antiNukeTriggered && !staffTriggered && !mixedTriggered) return Boolean(recovery?.ok)
+    if (!antiNukeTriggered && !staffTriggered && !mixedTriggered && !slowTriggered) return Boolean(recovery?.ok || coordinated.triggered)
 
-    const triggerType = staffTriggered ? `staff:${eventType}` : mixedTriggered && !antiNukeTriggered ? "mixed" : eventType
-    const triggerWindowMs = staffTriggered ? config.staffLimits.windowSeconds * 1000 : windowMs
+    const triggerType = staffTriggered
+        ? `staff:${eventType}`
+        : slowTriggered && !mixedTriggered && !antiNukeTriggered
+            ? "slow-burn"
+            : mixedTriggered && !antiNukeTriggered ? "mixed" : eventType
+    const triggerWindowMs = staffTriggered
+        ? config.staffLimits.windowSeconds * 1000
+        : triggerType === "slow-burn" ? slowWindowMs : windowMs
     if (!shouldTrigger(guild.id, executorId, triggerType, triggerWindowMs)) return Boolean(recovery?.ok)
 
     const responseAction = staffTriggered ? config.staffLimits.action : antiNuke.action
@@ -792,10 +985,12 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     })
     const incidentType = staffTriggered
         ? `STAFF_LIMIT_${eventType.toUpperCase()}`
-        : mixedTriggered && !antiNukeTriggered
-            ? "ANTI_NUKE_MIXED_ACTIVITY"
-            : `ANTI_NUKE_${eventType.toUpperCase()}`
-    const severity = staffTriggered || mixedTriggered ? "critical" : definition.severity
+        : slowTriggered && !antiNukeTriggered && !mixedTriggered
+            ? "ANTI_NUKE_SLOW_BURN"
+            : mixedTriggered && !antiNukeTriggered
+                ? "ANTI_NUKE_MIXED_ACTIVITY"
+                : `ANTI_NUKE_${eventType.toUpperCase()}`
+    const severity = staffTriggered || mixedTriggered || slowTriggered ? "critical" : definition.severity
     await recordAndAlert(guild, config, {
         type: incidentType,
         severity,
@@ -805,7 +1000,7 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
         targetTag: target?.name || target?.tag || entry.target?.name || userTag(entry.target) || null,
         actionTaken: response,
         auditLogEntryId: entry.id,
-        details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, staff, mixed, recovery, ...incidentExtra },
+        details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, staff, mixed, slow, coordinated, recovery, ...incidentExtra },
     })
     await maybeActivateIncidentMode(guild, config, summary, severity)
     return true
@@ -901,7 +1096,10 @@ module.exports = {
     fetchMatchingAuditEntry,
     claimMatchingAuditEntry,
     claimAuditEntry,
+    addExecutorAction,
     compositeActionRisk,
+    slowBurnActionRisk,
+    coordinatedDestructiveRisk,
     raidDecision,
     assessRaidJoinRisk,
     dangerousPermissionsAdded,
