@@ -110,7 +110,10 @@ function coordinatedSignalFor(message, shield, incidentMode = { active: false })
     const minimumAuthors = incidentMode?.active ? 2 : 3
     if (distinctAuthors < minimumAuthors) return null
 
-    const sameContentAuthors = content.length >= 8
+    // Generic repeated phrases are common in healthy chat. Require a longer
+    // payload and more independent senders than invite/link/mention bursts.
+    const repeatAuthorsThreshold = incidentMode?.active ? 3 : 4
+    const sameContentAuthors = content.length >= 16
         ? new Set(records.filter(item => item.content === content).map(item => item.authorId)).size
         : 0
     const inviteAuthors = new Set(records.filter(item => item.invites > 0).map(item => item.authorId)).size
@@ -120,7 +123,6 @@ function coordinatedSignalFor(message, shield, incidentMode = { active: false })
     const totalLinks = records.reduce((sum, item) => sum + item.links, 0)
     const totalMentions = records.reduce((sum, item) => sum + item.mentions, 0)
 
-    const repeatAuthorsThreshold = minimumAuthors
     const inviteThreshold = incidentMode?.active
         ? Math.max(2, shield.inviteThreshold)
         : Math.max(3, shield.inviteThreshold)
