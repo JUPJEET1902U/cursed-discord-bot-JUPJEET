@@ -1,0 +1,57 @@
+name: Security Hardening Full Regression CI
+
+on:
+  pull_request:
+    paths:
+      - "utils/security*.js"
+      - "utils/quarantineState.js"
+      - "utils/lockdownState.js"
+      - "test/**"
+      - ".github/workflows/security-hardening-full-regression.yml"
+  push:
+    branches:
+      - replit/security-hardening
+
+permissions:
+  contents: read
+
+jobs:
+  all-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run every repository test file
+        shell: bash
+        run: |
+          set -u
+          mapfile -t tests < <(find test -maxdepth 1 -type f \( -name '*.test.js' -o -name '*.test.ts' \) | sort)
+          echo "Discovered ${#tests[@]} test files"
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No test files discovered"
+            exit 1
+          fi
+
+          failures=0
+          for test_file in "${tests[@]}"; do
+            echo ""
+            echo "============================================================"
+            echo "Running ${test_file}"
+            echo "============================================================"
+            if [[ "${test_file}" == *.ts ]]; then
+              npx tsx "${test_file}" || failures=$((failures + 1))
+            else
+              node "${test_file}" || failures=$((failures + 1))
+            fi
+          done
+
+          if [ "${failures}" -ne 0 ]; then
+            echo "${failures} test file(s) failed"
+            exit 1
+          fi
+          echo "All ${#tests[@]} repository test files passed"
