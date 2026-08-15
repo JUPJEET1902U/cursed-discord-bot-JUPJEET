@@ -16,32 +16,52 @@ const {
 } = require("./securityResponse")
 const {
     consumeBotApproval,
+    getIncidentModeState,
+    listBotApprovals,
     setIncidentMode,
 } = require("./securityRecoverySuite")
+const {
+    appendExecutorSecurityAction,
+    loadExecutorSecurityWindow,
+    appendRaidJoin,
+    setRaidActiveUntil,
+    loadRaidWindow,
+} = require("./securityWindowStore")
 
 const joinWindows = new Map()
+const raidHydratedAt = new Map()
+const raidHydrationFlights = new Map()
 const activeRaids = new Map()
-const actionWindows = new Map()
+const processedJoinEvents = new Map()
+const raidBurstCooldowns = new Map()
+const executorActionWindows = new Map()
+const executorHydratedAt = new Map()
+const executorHydrationFlights = new Map()
 const triggerCooldowns = new Map()
-const processedAuditIds = new Set()
+const auditClaims = new Map()
 const processingAddedBots = new Set()
 let attached = false
 
 const AUDIT_LOOKUP_DELAYS_MS = Object.freeze([0, 150, 300, 600, 1000])
+const AUDIT_PAST_TOLERANCE_MS = 8000
+const AUDIT_FUTURE_TOLERANCE_MS = 2000
+const AUDIT_CLAIM_TTL_MS = 2 * 60_000
+const JOIN_EVENT_TTL_MS = 2 * 60_000
+const MIXED_ACTION_SCORE_THRESHOLD = 6
 
 const EVENT_DEFINITIONS = Object.freeze({
-    bans: { thresholdKey: "bans", scope: "massModeration", severity: "critical", label: "Mass bans" },
-    kicks: { thresholdKey: "kicks", scope: "massModeration", severity: "critical", label: "Mass kicks" },
-    channelDeletes: { thresholdKey: "channelDeletes", scope: "manageChannels", severity: "critical", label: "Channel deletion" },
-    channelCreates: { thresholdKey: "channelCreates", scope: "manageChannels", severity: "high", label: "Mass channel creation" },
-    channelUpdates: { thresholdKey: "channelUpdates", scope: "manageChannels", severity: "high", label: "Mass channel edits" },
-    roleDeletes: { thresholdKey: "roleDeletes", scope: "manageRoles", severity: "critical", label: "Role deletion" },
-    roleCreates: { thresholdKey: "roleCreates", scope: "manageRoles", severity: "high", label: "Mass role creation" },
-    roleUpdates: { thresholdKey: "roleUpdates", scope: "manageRoles", severity: "high", label: "Mass role edits" },
-    webhookChanges: { thresholdKey: "webhookChanges", scope: "manageWebhooks", severity: "critical", label: "Webhook abuse" },
-    dangerousRoleChanges: { thresholdKey: "dangerousRoleChanges", scope: "manageRoles", severity: "critical", label: "Dangerous role permission changes" },
-    botAdds: { thresholdKey: "botAdds", scope: "addBots", severity: "critical", label: "Unauthorized bot addition" },
-    guildUpdates: { thresholdKey: "guildUpdates", scope: "manageRoles", severity: "high", label: "Mass server setting changes" },
+    bans: { thresholdKey: "bans", scope: "massModeration", severity: "critical", label: "Mass bans", weight: 1.5 },
+    kicks: { thresholdKey: "kicks", scope: "massModeration", severity: "critical", label: "Mass kicks", weight: 1.5 },
+    channelDeletes: { thresholdKey: "channelDeletes", scope: "manageChannels", severity: "critical", label: "Channel deletion", weight: 3 },
+    channelCreates: { thresholdKey: "channelCreates", scope: "manageChannels", severity: "high", label: "Mass channel creation", weight: 1 },
+    channelUpdates: { thresholdKey: "channelUpdates", scope: "manageChannels", severity: "high", label: "Mass channel edits", weight: 1 },
+    roleDeletes: { thresholdKey: "roleDeletes", scope: "manageRoles", severity: "critical", label: "Role deletion", weight: 3 },
+    roleCreates: { thresholdKey: "roleCreates", scope: "manageRoles", severity: "high", label: "Mass role creation", weight: 1 },
+    roleUpdates: { thresholdKey: "roleUpdates", scope: "manageRoles", severity: "high", label: "Mass role edits", weight: 1 },
+    webhookChanges: { thresholdKey: "webhookChanges", scope: "manageWebhooks", severity: "critical", label: "Webhook abuse", weight: 3 },
+    dangerousRoleChanges: { thresholdKey: "dangerousRoleChanges", scope: "manageRoles", severity: "critical", label: "Dangerous role/hierarchy changes", weight: 3 },
+    botAdds: { thresholdKey: "botAdds", scope: "addBots", severity: "critical", label: "Unauthorized bot addition", weight: 4 },
+    guildUpdates: { thresholdKey: "guildUpdates", scope: "manageRoles", severity: "high", label: "Mass server setting changes", weight: 2 },
 })
 
 function now() {
@@ -52,31 +72,33 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-function rememberAuditId(id) {
-    if (!id || processedAuditIds.has(id)) return false
-    processedAuditIds.add(id)
-    if (processedAuditIds.size > 4000) {
-        const first = processedAuditIds.values().next().value
-        processedAuditIds.delete(first)
+function pruneTimedMap(map, ttlMs, currentTime = now(), maxSize = 5000) {
+    if (map.size <= maxSize) return
+    const cutoff = currentTime - ttlMs
+    for (const [key, timestamp] of map) {
+        if (Number(timestamp) < cutoff) map.delete(key)
     }
-    return true
+    while (map.size > maxSize) map.delete(map.keys().next().value)
 }
 
-function pruneTimes(times, windowMs) {
-    const cutoff = now() - windowMs
-    return times.filter(timestamp => timestamp >= cutoff)
+function auditClaimKey(entryId, eventType) {
+    return `${String(eventType || "unknown")}:${String(entryId || "")}`
+}
+
+function claimAuditEntry(entry, eventType) {
+    const id = String(entry?.id || "")
+    if (!id) return false
+    const key = auditClaimKey(id, eventType)
+    const currentTime = now()
+    const claimedAt = auditClaims.get(key) || 0
+    if (currentTime - claimedAt < AUDIT_CLAIM_TTL_MS) return false
+    auditClaims.set(key, currentTime)
+    pruneTimedMap(auditClaims, AUDIT_CLAIM_TTL_MS, currentTime, 10000)
+    return true
 }
 
 function counterKey(guildId, executorId, eventType) {
     return `${guildId}:${executorId}:${eventType}`
-}
-
-function addActionCount(guildId, executorId, eventType, windowMs) {
-    const key = counterKey(guildId, executorId, eventType)
-    const times = pruneTimes(actionWindows.get(key) || [], windowMs)
-    times.push(now())
-    actionWindows.set(key, times)
-    return times.length
 }
 
 function shouldTrigger(guildId, executorId, eventType, windowMs) {
@@ -84,11 +106,123 @@ function shouldTrigger(guildId, executorId, eventType, windowMs) {
     const last = triggerCooldowns.get(key) || 0
     if (now() - last < Math.max(2500, windowMs / 2)) return false
     triggerCooldowns.set(key, now())
+    pruneTimedMap(triggerCooldowns, Math.max(60_000, windowMs * 4), now(), 4000)
     return true
 }
 
 function userTag(user) {
     return user?.tag || user?.username || user?.name || "Unknown user"
+}
+
+function actionIdentity(event) {
+    return `${String(event.auditId || "no-audit")}:${String(event.eventType || "unknown")}`
+}
+
+function mergeActionHistory(existing, incoming, windowMs, currentTime = now()) {
+    const cutoff = currentTime - Math.max(1, windowMs)
+    const merged = new Map()
+    for (const event of [...(existing || []), ...(incoming || [])]) {
+        const at = Number(event.at) || currentTime
+        if (at < cutoff || at > currentTime + 5000) continue
+        const normalized = {
+            at,
+            eventType: String(event.eventType || "unknown"),
+            auditId: event.auditId ? String(event.auditId) : null,
+            weight: Number(event.weight) || 1,
+        }
+        const key = actionIdentity(normalized)
+        const previous = merged.get(key)
+        if (!previous || previous.at <= normalized.at) merged.set(key, normalized)
+    }
+    return [...merged.values()].sort((a, b) => a.at - b.at).slice(-200)
+}
+
+async function hydrateExecutorHistory(guildId, executorId, retentionMs) {
+    const key = `${guildId}:${executorId}`
+    const currentTime = now()
+    const lastHydrated = executorHydratedAt.get(key) || 0
+    if (executorActionWindows.has(key) && currentTime - lastHydrated < 60_000) {
+        const pruned = mergeActionHistory(executorActionWindows.get(key), [], retentionMs, currentTime)
+        executorActionWindows.set(key, pruned)
+        return pruned
+    }
+    if (executorHydrationFlights.has(key)) return executorHydrationFlights.get(key)
+
+    const flight = (async () => {
+        const local = executorActionWindows.get(key) || []
+        const persisted = await loadExecutorSecurityWindow(guildId, executorId, retentionMs).catch(() => null)
+        const merged = mergeActionHistory(local, persisted || [], retentionMs, currentTime)
+        executorActionWindows.set(key, merged)
+        executorHydratedAt.set(key, currentTime)
+        return merged
+    })().finally(() => executorHydrationFlights.delete(key))
+    executorHydrationFlights.set(key, flight)
+    return flight
+}
+
+async function addExecutorAction(guildId, executorId, eventType, auditId, config) {
+    const antiWindowMs = config.antiNuke.windowSeconds * 1000
+    const staffWindowMs = config.staffLimits?.enabled ? config.staffLimits.windowSeconds * 1000 : 0
+    const retentionMs = Math.max(60_000, antiWindowMs, staffWindowMs)
+    const key = `${guildId}:${executorId}`
+    const history = await hydrateExecutorHistory(guildId, executorId, retentionMs)
+    const event = {
+        at: now(),
+        eventType,
+        auditId: auditId ? String(auditId) : null,
+        weight: EVENT_DEFINITIONS[eventType]?.weight || 1,
+    }
+    const merged = mergeActionHistory(history, [event], retentionMs)
+    executorActionWindows.set(key, merged)
+    appendExecutorSecurityAction(guildId, executorId, event, retentionMs).catch(() => {})
+    return merged
+}
+
+function countEventActions(history, eventType, windowMs, currentTime = now()) {
+    const cutoff = currentTime - windowMs
+    return (history || []).filter(event => event.eventType === eventType && event.at >= cutoff).length
+}
+
+function staffEventTypes(key) {
+    if (key === "bans") return new Set(["bans"])
+    if (key === "kicks") return new Set(["kicks"])
+    if (key === "channelChanges") return new Set(["channelDeletes", "channelCreates", "channelUpdates"])
+    if (key === "roleChanges") return new Set(["roleDeletes", "roleCreates", "roleUpdates", "dangerousRoleChanges"])
+    if (key === "webhookChanges") return new Set(["webhookChanges"])
+    return new Set()
+}
+
+function countStaffActions(history, key, windowMs, currentTime = now()) {
+    const types = staffEventTypes(key)
+    const cutoff = currentTime - windowMs
+    const uniqueAuditActions = new Set()
+    for (const event of history || []) {
+        if (event.at < cutoff || !types.has(event.eventType)) continue
+        uniqueAuditActions.add(event.auditId || `${event.eventType}:${event.at}`)
+    }
+    return uniqueAuditActions.size
+}
+
+function compositeActionRisk(history, windowMs, currentTime = now()) {
+    const cutoff = currentTime - windowMs
+    const byAuditAction = new Map()
+    const eventTypes = new Set()
+    for (const event of history || []) {
+        if (event.at < cutoff) continue
+        const key = event.auditId || `${event.eventType}:${event.at}`
+        const current = byAuditAction.get(key) || { weight: 0, types: new Set() }
+        current.weight = Math.max(current.weight, Number(event.weight) || 1)
+        current.types.add(event.eventType)
+        byAuditAction.set(key, current)
+        eventTypes.add(event.eventType)
+    }
+    const score = [...byAuditAction.values()].reduce((sum, action) => sum + action.weight, 0)
+    return {
+        score,
+        actions: byAuditAction.size,
+        eventTypes: [...eventTypes],
+        triggered: score >= MIXED_ACTION_SCORE_THRESHOLD && byAuditAction.size >= 2 && eventTypes.size >= 2,
+    }
 }
 
 async function sendSecurityAlert(guild, incident, config) {
@@ -172,71 +306,259 @@ async function maybeActivateIncidentMode(guild, config, reason, severity) {
     }).catch(() => null)
 }
 
+function suspiciousRaidUsername(username) {
+    const value = String(username || "").toLowerCase()
+    return /(discord[\s_-]*nitro|free[\s_-]*nitro|steam[\s_-]*gift|airdrop|crypto|support[\s_-]*team|moderator[\s_-]*team|admin[\s_-]*team)/i.test(value)
+        || /[a-z0-9]{18,}/i.test(value)
+}
+
+function assessRaidJoinRisk(member, raid, incidentMode = { active: false }) {
+    const accountAgeHours = Math.floor((now() - Number(member?.user?.createdTimestamp || now())) / 3_600_000)
+    const isBot = member?.user?.bot === true
+    const isYoung = accountAgeHours < raid.minAccountAgeHours
+    let score = 0
+    const signals = []
+    if (isBot) { score += 3; signals.push("bot account") }
+    if (isYoung) { score += 2; signals.push(`account age ${accountAgeHours}h`) }
+    if (raid.requireAvatar && !member?.user?.avatar) { score += 1; signals.push("no custom avatar") }
+    if (raid.suspiciousNameCheck && suspiciousRaidUsername(member?.user?.username)) { score += 2; signals.push("suspicious username") }
+    if (incidentMode?.active) { score += 2; signals.push("incident mode active") }
+    return { score, signals, accountAgeHours, isBot, isYoung }
+}
+
+function raidWindowMetrics(records, raid) {
+    const total = records.length
+    const bots = records.filter(record => record.isBot).length
+    const young = records.filter(record => record.isYoung).length
+    const risky = records.filter(record => Number(record.riskScore) >= raid.riskScoreThreshold).length
+    return {
+        total,
+        bots,
+        young,
+        risky,
+        botRatio: total ? bots / total : 0,
+        youngRatio: total ? young / total : 0,
+        riskyRatio: total ? risky / total : 0,
+    }
+}
+
+function raidDecision(records, raid, risk, { incidentModeActive = false, activeUntil = 0, currentTime = now() } = {}) {
+    const metrics = raidWindowMetrics(records, raid)
+    const effectiveThreshold = incidentModeActive
+        ? Math.max(3, Math.ceil(raid.joinThreshold * 0.7))
+        : raid.joinThreshold
+    const thresholdReached = metrics.total >= effectiveThreshold
+    const highConfidenceBurst = thresholdReached && (
+        metrics.botRatio >= 0.5
+        || metrics.youngRatio >= 0.5
+        || metrics.riskyRatio >= 0.5
+    )
+    const raidActive = highConfidenceBurst || incidentModeActive || Number(activeUntil) > currentTime
+    const shouldAct = risk.isBot
+        ? raidActive
+        : raidActive && (
+            risk.score >= raid.riskScoreThreshold
+            || (highConfidenceBurst && risk.isYoung)
+        )
+    return { ...metrics, effectiveThreshold, thresholdReached, highConfidenceBurst, raidActive, shouldAct }
+}
+
+function joinEventKey(member) {
+    return `${member.guild.id}:${member.id}:${Number(member.joinedTimestamp || 0)}`
+}
+
+function rememberJoinEvent(member) {
+    const key = joinEventKey(member)
+    const currentTime = now()
+    const previous = processedJoinEvents.get(key) || 0
+    if (currentTime - previous < JOIN_EVENT_TTL_MS) return false
+    processedJoinEvents.set(key, currentTime)
+    pruneTimedMap(processedJoinEvents, JOIN_EVENT_TTL_MS, currentTime, 10000)
+    return true
+}
+
+function mergeRaidRecords(existing, incoming, windowMs, currentTime = now()) {
+    const cutoff = currentTime - windowMs
+    const merged = new Map()
+    for (const record of [...(existing || []), ...(incoming || [])]) {
+        const at = Number(record.at) || currentTime
+        if (at < cutoff || at > currentTime + 5000) continue
+        const normalized = {
+            at,
+            userId: String(record.userId || "unknown"),
+            joinedTimestamp: Number(record.joinedTimestamp) || 0,
+            isBot: record.isBot === true,
+            isYoung: record.isYoung === true,
+            riskScore: Number(record.riskScore) || 0,
+        }
+        const key = `${normalized.userId}:${normalized.joinedTimestamp || normalized.at}`
+        const previous = merged.get(key)
+        if (!previous || previous.at <= normalized.at) merged.set(key, normalized)
+    }
+    return [...merged.values()].sort((a, b) => a.at - b.at).slice(-250)
+}
+
+async function hydrateRaidWindow(guildId, windowMs) {
+    const currentTime = now()
+    const lastHydrated = raidHydratedAt.get(guildId) || 0
+    if (joinWindows.has(guildId) && currentTime - lastHydrated < 60_000) {
+        const pruned = mergeRaidRecords(joinWindows.get(guildId), [], windowMs, currentTime)
+        joinWindows.set(guildId, pruned)
+        return pruned
+    }
+    if (raidHydrationFlights.has(guildId)) return raidHydrationFlights.get(guildId)
+
+    const flight = (async () => {
+        const persisted = await loadRaidWindow(guildId, windowMs).catch(() => null)
+        const merged = mergeRaidRecords(joinWindows.get(guildId) || [], persisted?.events || [], windowMs, currentTime)
+        joinWindows.set(guildId, merged)
+        if (persisted?.activeUntil > currentTime) activeRaids.set(guildId, persisted.activeUntil)
+        raidHydratedAt.set(guildId, currentTime)
+        return merged
+    })().finally(() => raidHydrationFlights.delete(guildId))
+    raidHydrationFlights.set(guildId, flight)
+    return flight
+}
+
+async function hasActiveBotApproval(guildId, botId) {
+    const approvals = await listBotApprovals(guildId, 50).catch(() => [])
+    return approvals.some(approval => String(approval.botId) === String(botId) && approval.active === true)
+}
+
+function shouldAnnounceRaidBurst(guildId) {
+    const currentTime = now()
+    const last = raidBurstCooldowns.get(guildId) || 0
+    if (currentTime - last < 30_000) return false
+    raidBurstCooldowns.set(guildId, currentTime)
+    pruneTimedMap(raidBurstCooldowns, 10 * 60_000, currentTime, 2000)
+    return true
+}
+
 async function processJoin(member) {
     const guild = member?.guild
-    if (!guild || member.user?.bot) return false
+    if (!guild || !member.user) return false
     const config = getSecurityPhase3Config(guild.id)
     if (!config.enabled || !config.antiRaid.enabled) return false
-    if (isTrustedForScope({ guildId: guild.id, member, userId: member.id, isBot: false, scope: "antiRaid" })) return false
+    if (!rememberJoinEvent(member)) return false
+    if (isTrustedForScope({ guildId: guild.id, member, userId: member.id, isBot: member.user.bot, scope: "antiRaid" })) return false
+    if (member.user.bot && config.botApprovals?.enabled && await hasActiveBotApproval(guild.id, member.id)) return false
 
     const raid = config.antiRaid
+    const mode = await getIncidentModeState(guild.id).catch(() => ({ active: false }))
     const windowMs = raid.windowSeconds * 1000
-    const times = pruneTimes(joinWindows.get(guild.id) || [], windowMs)
-    times.push(now())
-    joinWindows.set(guild.id, times)
+    let records = await hydrateRaidWindow(guild.id, windowMs)
+    const risk = assessRaidJoinRisk(member, raid, mode)
+    const record = {
+        at: now(),
+        userId: member.id,
+        joinedTimestamp: Number(member.joinedTimestamp || now()),
+        isBot: risk.isBot,
+        isYoung: risk.isYoung,
+        riskScore: risk.score,
+    }
+    records = mergeRaidRecords(records, [record], windowMs)
+    joinWindows.set(guild.id, records)
 
-    const accountAgeHours = Math.floor((now() - member.user.createdTimestamp) / 3600000)
-    const suspiciousAccount = accountAgeHours < raid.minAccountAgeHours
-    const activeUntil = activeRaids.get(guild.id) || 0
-    const thresholdReached = times.length >= raid.joinThreshold
-    const raidActive = thresholdReached || activeUntil > now()
-    if (!raidActive) return false
+    let activeUntil = activeRaids.get(guild.id) || 0
+    let decision = raidDecision(records, raid, risk, { incidentModeActive: mode.active, activeUntil })
+    if (decision.highConfidenceBurst) {
+        activeUntil = Math.max(activeUntil, now() + raid.activeRaidSeconds * 1000)
+        activeRaids.set(guild.id, activeUntil)
+        decision = raidDecision(records, raid, risk, { incidentModeActive: mode.active, activeUntil })
+        setRaidActiveUntil(guild.id, activeUntil, Math.max(windowMs, raid.activeRaidSeconds * 1000)).catch(() => {})
+    }
+    appendRaidJoin(guild.id, record, Math.max(windowMs, raid.activeRaidSeconds * 1000), activeUntil || null).catch(() => {})
 
-    if (thresholdReached) activeRaids.set(guild.id, now() + raid.activeRaidSeconds * 1000)
-    if (!suspiciousAccount && !thresholdReached) return false
+    const summary = `Anti-raid observed ${decision.total} joins in ${raid.windowSeconds}s: ${decision.young} young account(s), ${decision.bots} bot(s), ${decision.risky} high-risk join(s). Current account risk ${risk.score}/${raid.riskScoreThreshold}.`
 
-    const summary = `Detected ${times.length} joins within ${raid.windowSeconds} seconds. ${member.user.tag} account age: ${accountAgeHours} hour(s).`
-    const response = await executeSecurityResponse(guild, config, raid.action, {
-        member,
-        reason: `Anti-raid: ${summary}`,
-        actor: { id: guild.members.me?.id, tag: "CURSED Anti-Raid" },
-    })
+    if (decision.highConfidenceBurst && shouldAnnounceRaidBurst(guild.id)) {
+        await recordAndAlert(guild, config, {
+            type: "ANTI_RAID_BURST",
+            severity: "critical",
+            executorId: null,
+            executorTag: "Automated raid detection",
+            targetId: guild.id,
+            targetTag: guild.name,
+            actionTaken: "raid window activated",
+            details: { summary, ...decision, activeUntil },
+        })
+        await maybeActivateIncidentMode(guild, config, summary, "critical")
+    }
+
+    if (!decision.shouldAct) return decision.highConfidenceBurst
+
+    let response
+    if (member.user.bot) {
+        const removal = await removeUnauthorizedAddedBot(member, `CURSED anti-raid bot flood: ${summary}`)
+        response = removal.action || (removal.ok ? "bot removed" : "alert")
+    } else {
+        response = await executeSecurityResponse(guild, config, raid.action, {
+            member,
+            reason: `Anti-raid: ${summary}`,
+            actor: { id: guild.members.me?.id, tag: "CURSED Anti-Raid" },
+        })
+    }
+
     await recordAndAlert(guild, config, {
-        type: "ANTI_RAID",
-        severity: thresholdReached ? "critical" : "high",
+        type: member.user.bot ? "ANTI_RAID_BOT" : "ANTI_RAID",
+        severity: decision.highConfidenceBurst || mode.active ? "critical" : "high",
         executorId: null,
         executorTag: "Automated raid detection",
         targetId: member.id,
         targetTag: userTag(member.user),
         actionTaken: response,
-        details: { summary, joins: times.length, windowSeconds: raid.windowSeconds, accountAgeHours },
+        details: { summary, ...decision, ...risk, activeUntil },
     })
-    if (thresholdReached) await maybeActivateIncidentMode(guild, config, summary, "critical")
     return true
 }
 
-async function fetchMatchingAuditEntryOnce(guild, auditTypes, targetId = null) {
-    const types = Array.isArray(auditTypes) ? auditTypes : [auditTypes]
-    const candidates = []
+async function fetchAuditCandidatesOnce(guild, auditTypes, targetId = null, options = {}) {
+    const types = (Array.isArray(auditTypes) ? auditTypes : [auditTypes]).filter(type => type !== undefined && type !== null)
+    const candidatesById = new Map()
     for (const type of types) {
         try {
             const logs = await guild.fetchAuditLogs({ type, limit: 8 })
-            for (const entry of logs.entries.values()) candidates.push(entry)
+            for (const entry of logs.entries.values()) {
+                const id = String(entry.id || `${type}:${entry.createdTimestamp}`)
+                candidatesById.set(id, entry)
+            }
         } catch { /* missing View Audit Log or unsupported audit event */ }
     }
-    return candidates
-        .filter(entry => now() - entry.createdTimestamp < 20000)
+
+    const observedAt = Number(options.observedAt) || now()
+    const maxPastMs = Math.max(1000, Number(options.maxPastMs) || AUDIT_PAST_TOLERANCE_MS)
+    const maxFutureMs = Math.max(0, Number(options.maxFutureMs) || AUDIT_FUTURE_TOLERANCE_MS)
+    const lowerBound = observedAt - maxPastMs
+    const upperBound = now() + maxFutureMs
+
+    return [...candidatesById.values()]
+        .filter(entry => Number(entry.createdTimestamp) >= lowerBound && Number(entry.createdTimestamp) <= upperBound)
         .filter(entry => !targetId || String(entry.targetId || entry.target?.id || "") === String(targetId))
-        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)[0] || null
+        .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
 }
 
-async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null, retryDelays = AUDIT_LOOKUP_DELAYS_MS) {
+async function fetchMatchingAuditEntry(guild, auditTypes, targetId = null, retryDelays = AUDIT_LOOKUP_DELAYS_MS, options = {}) {
     const delays = Array.isArray(retryDelays) && retryDelays.length ? retryDelays : AUDIT_LOOKUP_DELAYS_MS
+    const observedAt = Number(options.observedAt) || now()
     for (let attempt = 0; attempt < delays.length; attempt += 1) {
         const delay = Math.max(0, Number(delays[attempt]) || 0)
         if (delay > 0) await sleep(delay)
-        const entry = await fetchMatchingAuditEntryOnce(guild, auditTypes, targetId)
-        if (entry) return entry
+        const candidates = await fetchAuditCandidatesOnce(guild, auditTypes, targetId, { ...options, observedAt })
+        if (candidates.length) return candidates[0]
+    }
+    return null
+}
+
+async function claimMatchingAuditEntry(guild, eventType, auditTypes, targetId = null, retryDelays = AUDIT_LOOKUP_DELAYS_MS, options = {}) {
+    const delays = Array.isArray(retryDelays) && retryDelays.length ? retryDelays : AUDIT_LOOKUP_DELAYS_MS
+    const observedAt = Number(options.observedAt) || now()
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+        const delay = Math.max(0, Number(delays[attempt]) || 0)
+        if (delay > 0) await sleep(delay)
+        const candidates = await fetchAuditCandidatesOnce(guild, auditTypes, targetId, { ...options, observedAt })
+        for (const entry of candidates) {
+            if (claimAuditEntry(entry, eventType)) return entry
+        }
     }
     return null
 }
@@ -289,11 +611,12 @@ async function processUnauthorizedBotAdd(member) {
         const config = getSecurityPhase3Config(guild.id)
         if (!config.enabled || !config.antiNuke.enabled) return false
 
-        const entry = await fetchMatchingAuditEntry(guild, AuditLogEvent.BotAdd, member.id)
-        if (!entry || !rememberAuditId(entry.id)) return false
+        const observedAt = now()
+        const entry = await claimMatchingAuditEntry(guild, "botAdds", AuditLogEvent.BotAdd, member.id, AUDIT_LOOKUP_DELAYS_MS, { observedAt })
+        if (!entry) return false
 
         const inviterId = String(entry.executorId || entry.executor?.id || "")
-        if (!inviterId || inviterId === guild.members.me?.id) return false
+        if (!inviterId || inviterId === guild.members.me?.id || inviterId === guild.ownerId) return false
         const inviterMember = guild.members.cache.get(inviterId) || await guild.members.fetch(inviterId).catch(() => null)
 
         if (config.botApprovals?.enabled) {
@@ -324,7 +647,9 @@ async function processUnauthorizedBotAdd(member) {
 
         const antiNuke = config.antiNuke
         const windowMs = antiNuke.windowSeconds * 1000
-        const count = addActionCount(guild.id, inviterId, "botAdds", windowMs)
+        const history = await addExecutorAction(guild.id, inviterId, "botAdds", entry.id, config)
+        const count = countEventActions(history, "botAdds", windowMs)
+        const mixed = compositeActionRisk(history, windowMs)
         const summary = `Unauthorized bot addition: ${userTag(entry.executor)} added ${userTag(member.user)} (${member.id}).`
 
         const botRemoval = await removeUnauthorizedAddedBot(member, `CURSED anti-nuke: ${summary}`)
@@ -337,11 +662,12 @@ async function processUnauthorizedBotAdd(member) {
             targetTag: userTag(member.user),
             actionTaken: botRemoval.action,
             auditLogEntryId: entry.id,
-            details: { summary, botRemoval },
+            details: { summary, botRemoval, mixed },
         })
 
         const threshold = antiNuke.thresholds.botAdds
-        if (count < threshold || !shouldTrigger(guild.id, inviterId, "botAdds", windowMs)) return botRemoval.ok
+        const thresholdTriggered = count >= threshold
+        if ((!thresholdTriggered && !mixed.triggered) || !shouldTrigger(guild.id, inviterId, mixed.triggered ? "mixed" : "botAdds", windowMs)) return botRemoval.ok
 
         const inviterResponse = inviterMember
             ? await executeSecurityResponse(guild, config, antiNuke.action, {
@@ -352,18 +678,20 @@ async function processUnauthorizedBotAdd(member) {
             : "alert (inviter no longer in server)"
 
         await recordAndAlert(guild, config, {
-            type: "ANTI_NUKE_BOTADDS",
+            type: mixed.triggered && !thresholdTriggered ? "ANTI_NUKE_MIXED_ACTIVITY" : "ANTI_NUKE_BOTADDS",
             severity: "critical",
             executorId: inviterId,
             executorTag: userTag(entry.executor),
             targetId: member.id,
             targetTag: userTag(member.user),
             actionTaken: inviterResponse,
+            auditLogEntryId: entry.id,
             details: {
                 summary: `${summary} Added bot response: ${botRemoval.action}. Inviter response: ${inviterResponse}.`,
                 count,
                 threshold,
                 windowSeconds: antiNuke.windowSeconds,
+                mixed,
                 botRemoval,
             },
         })
@@ -400,8 +728,15 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     if (!guild || !definition || eventType === "botAdds") return false
     const config = getSecurityPhase3Config(guild.id)
     if (!config.enabled || !config.antiNuke.enabled) return false
-    const entry = await fetchMatchingAuditEntry(guild, auditTypes, target?.id || null)
-    if (!entry || !rememberAuditId(entry.id)) return false
+
+    const { auditEntry: providedEntry = null, observedAt = now(), ...incidentExtra } = extra || {}
+    let entry = providedEntry
+    if (entry) {
+        if (!claimAuditEntry(entry, eventType)) return false
+    } else {
+        entry = await claimMatchingAuditEntry(guild, eventType, auditTypes, target?.id || null, AUDIT_LOOKUP_DELAYS_MS, { observedAt })
+    }
+    if (!entry) return false
 
     const executorId = String(entry.executorId || entry.executor?.id || "")
     if (!executorId || executorId === guild.ownerId || executorId === guild.members.me?.id) return false
@@ -417,7 +752,9 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
     const antiNuke = config.antiNuke
     const threshold = antiNuke.thresholds[definition.thresholdKey]
     const windowMs = antiNuke.windowSeconds * 1000
-    const count = addActionCount(guild.id, executorId, eventType, windowMs)
+    const history = await addExecutorAction(guild.id, executorId, eventType, entry.id, config)
+    const count = countEventActions(history, eventType, windowMs)
+    const mixed = compositeActionRisk(history, windowMs)
 
     let staff = null
     if (!entry.executor?.bot && !isTrustedForScope({
@@ -430,19 +767,22 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
         const definitionForStaff = staffLimitDefinition(eventType, config)
         if (definitionForStaff) {
             const staffWindowMs = config.staffLimits.windowSeconds * 1000
-            const staffCount = addActionCount(guild.id, executorId, `staff:${definitionForStaff.key}`, staffWindowMs)
+            const staffCount = countStaffActions(history, definitionForStaff.key, staffWindowMs)
             staff = { ...definitionForStaff, count: staffCount, windowSeconds: config.staffLimits.windowSeconds }
         }
     }
 
     const staffTriggered = Boolean(staff && staff.count >= staff.threshold)
-    const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds} seconds (threshold ${threshold}).${staff ? ` Staff limit: ${staff.count}/${staff.threshold} ${staff.key} in ${staff.windowSeconds}s.` : ""}`
-    const recovery = await recoveryForEvent(guild, config, eventType, target, summary)
     const antiNukeTriggered = count >= threshold
+    const mixedTriggered = mixed.triggered
+    const summary = `${definition.label}: ${count} action(s) by ${userTag(entry.executor)} within ${antiNuke.windowSeconds} seconds (threshold ${threshold}).${staff ? ` Staff limit: ${staff.count}/${staff.threshold} ${staff.key} in ${staff.windowSeconds}s.` : ""}${mixedTriggered ? ` Mixed-action risk: ${mixed.score} across ${mixed.actions} audit action(s) and ${mixed.eventTypes.length} event type(s).` : ""}`
+    const recovery = await recoveryForEvent(guild, config, eventType, target, summary)
 
-    if ((!antiNukeTriggered && !staffTriggered) || !shouldTrigger(guild.id, executorId, staffTriggered ? `staff:${eventType}` : eventType, staffTriggered ? config.staffLimits.windowSeconds * 1000 : windowMs)) {
-        return Boolean(recovery?.ok)
-    }
+    if (!antiNukeTriggered && !staffTriggered && !mixedTriggered) return Boolean(recovery?.ok)
+
+    const triggerType = staffTriggered ? `staff:${eventType}` : mixedTriggered && !antiNukeTriggered ? "mixed" : eventType
+    const triggerWindowMs = staffTriggered ? config.staffLimits.windowSeconds * 1000 : windowMs
+    if (!shouldTrigger(guild.id, executorId, triggerType, triggerWindowMs)) return Boolean(recovery?.ok)
 
     const responseAction = staffTriggered ? config.staffLimits.action : antiNuke.action
     const response = await executeSecurityResponse(guild, config, responseAction, {
@@ -450,8 +790,12 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
         reason: `${staffTriggered ? "Staff safety limit" : "Anti-nuke"}: ${summary}`,
         actor: { id: guild.members.me?.id, tag: staffTriggered ? "CURSED Staff Safety" : "CURSED Anti-Nuke" },
     })
-    const incidentType = staffTriggered ? `STAFF_LIMIT_${eventType.toUpperCase()}` : `ANTI_NUKE_${eventType.toUpperCase()}`
-    const severity = staffTriggered ? "critical" : definition.severity
+    const incidentType = staffTriggered
+        ? `STAFF_LIMIT_${eventType.toUpperCase()}`
+        : mixedTriggered && !antiNukeTriggered
+            ? "ANTI_NUKE_MIXED_ACTIVITY"
+            : `ANTI_NUKE_${eventType.toUpperCase()}`
+    const severity = staffTriggered || mixedTriggered ? "critical" : definition.severity
     await recordAndAlert(guild, config, {
         type: incidentType,
         severity,
@@ -461,7 +805,7 @@ async function processAuditEvent(guild, eventType, auditTypes, target = null, ex
         targetTag: target?.name || target?.tag || entry.target?.name || userTag(entry.target) || null,
         actionTaken: response,
         auditLogEntryId: entry.id,
-        details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, staff, recovery, ...extra },
+        details: { summary, count, threshold, windowSeconds: antiNuke.windowSeconds, staff, mixed, recovery, ...incidentExtra },
     })
     await maybeActivateIncidentMode(guild, config, summary, severity)
     return true
@@ -479,6 +823,23 @@ function dangerousPermissionsAdded(oldRole, newRole) {
         PermissionFlagsBits.MentionEveryone,
     ]
     return dangerous.some(permission => !oldRole.permissions.has(permission) && newRole.permissions.has(permission))
+}
+
+function dangerousRoleChange(oldRole, newRole) {
+    if (dangerousPermissionsAdded(oldRole, newRole)) return true
+    const guild = newRole?.guild
+    const me = guild?.members?.me
+    if (!guild || !me || newRole.id === me.roles.highest?.id) return false
+    const dangerous = [
+        PermissionFlagsBits.Administrator,
+        PermissionFlagsBits.ManageGuild,
+        PermissionFlagsBits.ManageRoles,
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.BanMembers,
+    ].some(permission => newRole.permissions.has(permission))
+    if (!dangerous) return false
+    const botPosition = me.roles.highest?.position || 0
+    return oldRole.position < botPosition && newRole.position >= botPosition
 }
 
 function safeListener(label, handler) {
@@ -503,16 +864,20 @@ function attachSecurityProtection(client) {
     client.on(Events.GuildRoleDelete, safeListener("role-delete", role => processAuditEvent(role.guild, "roleDeletes", AuditLogEvent.RoleDelete, role)))
     client.on(Events.GuildRoleCreate, safeListener("role-create", role => processAuditEvent(role.guild, "roleCreates", AuditLogEvent.RoleCreate, role)))
     client.on(Events.GuildRoleUpdate, safeListener("role-update", async (oldRole, newRole) => {
-        await processAuditEvent(newRole.guild, "roleUpdates", AuditLogEvent.RoleUpdate, newRole, {
+        const observedAt = now()
+        const entry = await fetchMatchingAuditEntry(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id, AUDIT_LOOKUP_DELAYS_MS, { observedAt })
+        const details = {
             oldPermissions: oldRole.permissions.bitfield.toString(),
             newPermissions: newRole.permissions.bitfield.toString(),
-        })
-        if (dangerousPermissionsAdded(oldRole, newRole)) {
-            await processAuditEvent(newRole.guild, "dangerousRoleChanges", AuditLogEvent.RoleUpdate, newRole, {
-                oldPermissions: oldRole.permissions.bitfield.toString(),
-                newPermissions: newRole.permissions.bitfield.toString(),
-            })
+            oldPosition: oldRole.position,
+            newPosition: newRole.position,
+            auditEntry: entry,
+            observedAt,
         }
+        if (dangerousRoleChange(oldRole, newRole)) {
+            await processAuditEvent(newRole.guild, "dangerousRoleChanges", AuditLogEvent.RoleUpdate, newRole, details)
+        }
+        await processAuditEvent(newRole.guild, "roleUpdates", AuditLogEvent.RoleUpdate, newRole, details)
     }))
     client.on(Events.WebhooksUpdate, safeListener("webhook-update", channel => processAuditEvent(
         channel.guild,
@@ -534,6 +899,12 @@ module.exports = {
     processUnauthorizedBotAdd,
     removeUnauthorizedAddedBot,
     fetchMatchingAuditEntry,
+    claimMatchingAuditEntry,
+    claimAuditEntry,
+    compositeActionRisk,
+    raidDecision,
+    assessRaidJoinRisk,
     dangerousPermissionsAdded,
+    dangerousRoleChange,
     staffLimitDefinition,
 }
