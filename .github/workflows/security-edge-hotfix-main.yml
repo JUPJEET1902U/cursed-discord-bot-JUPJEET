@@ -34,129 +34,107 @@ jobs:
               text = p.read_text()
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f"{path}: expected exactly one match, found {count}")
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}: {old[:90]!r}")
               p.write_text(text.replace(old, new, 1))
 
-          # securityProtection.js: keep audit attribution anchored to the gateway event,
-          # and retry Mongo hydration quickly after a failed load instead of caching failure for 60s.
+          protection = "utils/securityProtection.js"
+          response = "utils/securityResponse.js"
+          listeners = "utils/securityRecoveryListeners.js"
+          tests = "test/security-resilience-hardening.test.js"
+
+          # 1) Audit attribution must stay anchored to the gateway observation time.
           replace_once(
-              "utils/securityProtection.js",
+              protection,
               'const MAX_COORDINATED_WINDOW_MS = 60_000\n',
               'const MAX_COORDINATED_WINDOW_MS = 60_000\nconst HYDRATION_FAILED = Symbol("hydration-failed")\nconst HYDRATION_FAILURE_RETRY_MS = 5000\n'
           )
-
           replace_once(
-              "utils/securityProtection.js",
-              '''        const local = executorActionWindows.get(key) || []
-              const persisted = await loadExecutorSecurityWindow(guildId, executorId, retentionMs).catch(() => null)
-              const merged = mergeActionHistory(local, persisted || [], retentionMs, currentTime)
-              executorActionWindows.set(key, merged)
-              executorHydratedAt.set(key, currentTime)
-              return merged
-          ''',
-              '''        const local = executorActionWindows.get(key) || []
-              const persisted = await loadExecutorSecurityWindow(guildId, executorId, retentionMs).catch(() => HYDRATION_FAILED)
-              const persistedHistory = persisted === HYDRATION_FAILED ? [] : (persisted || [])
-              const merged = mergeActionHistory(local, persistedHistory, retentionMs, currentTime)
-              executorActionWindows.set(key, merged)
-              executorHydratedAt.set(
-                  key,
-                  persisted === HYDRATION_FAILED
-                      ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)
-                      : currentTime
-              )
-              return merged
-          '''
-          )
-
-          replace_once(
-              "utils/securityProtection.js",
-              '''        const local = guildActionWindows.get(guildId) || []
-              const persisted = await loadGuildSecurityWindow(guildId, windowMs).catch(() => null)
-              const merged = mergeGuildActionHistory(local, persisted || [], windowMs, currentTime)
-              guildActionWindows.set(guildId, merged)
-              guildHydratedAt.set(guildId, currentTime)
-              return merged
-          ''',
-              '''        const local = guildActionWindows.get(guildId) || []
-              const persisted = await loadGuildSecurityWindow(guildId, windowMs).catch(() => HYDRATION_FAILED)
-              const persistedHistory = persisted === HYDRATION_FAILED ? [] : (persisted || [])
-              const merged = mergeGuildActionHistory(local, persistedHistory, windowMs, currentTime)
-              guildActionWindows.set(guildId, merged)
-              guildHydratedAt.set(
-                  guildId,
-                  persisted === HYDRATION_FAILED
-                      ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)
-                      : currentTime
-              )
-              return merged
-          '''
-          )
-
-          replace_once(
-              "utils/securityProtection.js",
-              '''        const persisted = await loadRaidWindow(guildId, windowMs).catch(() => null)
-              const merged = mergeRaidRecords(joinWindows.get(guildId) || [], persisted?.events || [], windowMs, currentTime)
-              joinWindows.set(guildId, merged)
-              if (persisted?.activeUntil > currentTime) activeRaids.set(guildId, persisted.activeUntil)
-              raidHydratedAt.set(guildId, currentTime)
-              return merged
-          ''',
-              '''        const persisted = await loadRaidWindow(guildId, windowMs).catch(() => HYDRATION_FAILED)
-              const persistedEvents = persisted === HYDRATION_FAILED ? [] : (persisted?.events || [])
-              const merged = mergeRaidRecords(joinWindows.get(guildId) || [], persistedEvents, windowMs, currentTime)
-              joinWindows.set(guildId, merged)
-              if (persisted !== HYDRATION_FAILED && persisted?.activeUntil > currentTime) activeRaids.set(guildId, persisted.activeUntil)
-              raidHydratedAt.set(
-                  guildId,
-                  persisted === HYDRATION_FAILED
-                      ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)
-                      : currentTime
-              )
-              return merged
-          '''
-          )
-
-          replace_once(
-              "utils/securityProtection.js",
+              protection,
               '    const upperBound = now() + maxFutureMs\n',
               '    const upperBound = observedAt + maxFutureMs\n'
           )
 
-          # securityResponse.js: do not reuse a weaker/different neutralization policy,
-          # and allow a short dependency-registration grace period during mass recovery.
+          # 2) Failed Mongo hydration must retry quickly instead of being cached for 60 seconds.
           replace_once(
-              "utils/securityResponse.js",
+              protection,
+              '        const persisted = await loadExecutorSecurityWindow(guildId, executorId, retentionMs).catch(() => null)\n'
+              '        const merged = mergeActionHistory(local, persisted || [], retentionMs, currentTime)\n'
+              '        executorActionWindows.set(key, merged)\n'
+              '        executorHydratedAt.set(key, currentTime)\n',
+              '        const persisted = await loadExecutorSecurityWindow(guildId, executorId, retentionMs).catch(() => HYDRATION_FAILED)\n'
+              '        const persistedHistory = persisted === HYDRATION_FAILED ? [] : (persisted || [])\n'
+              '        const merged = mergeActionHistory(local, persistedHistory, retentionMs, currentTime)\n'
+              '        executorActionWindows.set(key, merged)\n'
+              '        executorHydratedAt.set(\n'
+              '            key,\n'
+              '            persisted === HYDRATION_FAILED\n'
+              '                ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)\n'
+              '                : currentTime\n'
+              '        )\n'
+          )
+          replace_once(
+              protection,
+              '        const persisted = await loadGuildSecurityWindow(guildId, windowMs).catch(() => null)\n'
+              '        const merged = mergeGuildActionHistory(local, persisted || [], windowMs, currentTime)\n'
+              '        guildActionWindows.set(guildId, merged)\n'
+              '        guildHydratedAt.set(guildId, currentTime)\n',
+              '        const persisted = await loadGuildSecurityWindow(guildId, windowMs).catch(() => HYDRATION_FAILED)\n'
+              '        const persistedHistory = persisted === HYDRATION_FAILED ? [] : (persisted || [])\n'
+              '        const merged = mergeGuildActionHistory(local, persistedHistory, windowMs, currentTime)\n'
+              '        guildActionWindows.set(guildId, merged)\n'
+              '        guildHydratedAt.set(\n'
+              '            guildId,\n'
+              '            persisted === HYDRATION_FAILED\n'
+              '                ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)\n'
+              '                : currentTime\n'
+              '        )\n'
+          )
+          replace_once(
+              protection,
+              '        const persisted = await loadRaidWindow(guildId, windowMs).catch(() => null)\n'
+              '        const merged = mergeRaidRecords(joinWindows.get(guildId) || [], persisted?.events || [], windowMs, currentTime)\n'
+              '        joinWindows.set(guildId, merged)\n'
+              '        if (persisted?.activeUntil > currentTime) activeRaids.set(guildId, persisted.activeUntil)\n'
+              '        raidHydratedAt.set(guildId, currentTime)\n',
+              '        const persisted = await loadRaidWindow(guildId, windowMs).catch(() => HYDRATION_FAILED)\n'
+              '        const persistedEvents = persisted === HYDRATION_FAILED ? [] : (persisted?.events || [])\n'
+              '        const merged = mergeRaidRecords(joinWindows.get(guildId) || [], persistedEvents, windowMs, currentTime)\n'
+              '        joinWindows.set(guildId, merged)\n'
+              '        if (persisted !== HYDRATION_FAILED && persisted?.activeUntil > currentTime) activeRaids.set(guildId, persisted.activeUntil)\n'
+              '        raidHydratedAt.set(\n'
+              '            guildId,\n'
+              '            persisted === HYDRATION_FAILED\n'
+              '                ? currentTime - (60_000 - HYDRATION_FAILURE_RETRY_MS)\n'
+              '                : currentTime\n'
+              '        )\n'
+          )
+
+          # 3) Reuse neutralization only for the exact same successful policy.
+          replace_once(
+              response,
               'const RECOVERY_MAPPING_TTL_MS = 10 * 60_000\n',
               'const RECOVERY_MAPPING_TTL_MS = 10 * 60_000\nconst RECOVERY_DEPENDENCY_GRACE_MS = 750\n'
           )
-
           replace_once(
-              "utils/securityResponse.js",
-              '''function neutralizationKey(guild, member) {
-              return `${guild.id}:${member.id}`
-          }
-          ''',
-              '''function neutralizationKey(guild, member) {
-              return `${guild.id}:${member.id}`
-          }
-
-          function neutralizationPolicyKey(config) {
-              const timeoutMinutes = Math.max(1, Math.min(40320, Number(config?.antiNuke?.neutralizeTimeoutMinutes) || 10080))
-              return JSON.stringify({
-                  removeDangerousRoles: config?.antiNuke?.removeDangerousRoles !== false,
-                  banMaliciousBots: config?.antiNuke?.banMaliciousBots !== false,
-                  timeoutMinutes,
-                  autoLockdown: config?.antiNuke?.autoLockdown === true,
-                  lockdownEnabled: config?.lockdown?.enabled !== false,
-              })
-          }
-          '''
+              response,
+              'function neutralizationKey(guild, member) {\n'
+              '    return `${guild.id}:${member.id}`\n'
+              '}\n',
+              'function neutralizationKey(guild, member) {\n'
+              '    return `${guild.id}:${member.id}`\n'
+              '}\n\n'
+              'function neutralizationPolicyKey(config) {\n'
+              '    const timeoutMinutes = Math.max(1, Math.min(40320, Number(config?.antiNuke?.neutralizeTimeoutMinutes) || 10080))\n'
+              '    return JSON.stringify({\n'
+              '        removeDangerousRoles: config?.antiNuke?.removeDangerousRoles !== false,\n'
+              '        banMaliciousBots: config?.antiNuke?.banMaliciousBots !== false,\n'
+              '        timeoutMinutes,\n'
+              '        autoLockdown: config?.antiNuke?.autoLockdown === true,\n'
+              '        lockdownEnabled: config?.lockdown?.enabled !== false,\n'
+              '    })\n'
+              '}\n'
           )
-
-          replace_once(
-              "utils/securityResponse.js",
-              '''async function neutralizeExecutor(guild, member, config, options = {}) {
+          old_neutralize = '''async function neutralizeExecutor(guild, member, config, options = {}) {
               if (!guild || !member) return neutralizeExecutorInternal(guild, member, config, options)
               const key = neutralizationKey(guild, member)
               const currentTime = Date.now()
@@ -175,9 +153,8 @@ jobs:
                   .finally(() => neutralizationFlights.delete(key))
               neutralizationFlights.set(key, flight)
               return flight
-          }
-          ''',
-              '''async function neutralizeExecutor(guild, member, config, options = {}) {
+          }'''.replace('\n              ', '\n')
+          new_neutralize = '''async function neutralizeExecutor(guild, member, config, options = {}) {
               if (!guild || !member) return neutralizeExecutorInternal(guild, member, config, options)
               const key = neutralizationKey(guild, member)
               const policyKey = neutralizationPolicyKey(config)
@@ -213,13 +190,11 @@ jobs:
               holder.promise = flight
               neutralizationFlights.set(key, holder)
               return flight
-          }
-          '''
-          )
+          }'''.replace('\n              ', '\n')
+          replace_once(response, old_neutralize, new_neutralize)
 
-          replace_once(
-              "utils/securityResponse.js",
-              '''async function waitForRecoveryDependencies(guild, channel) {
+          # 4) Briefly wait for late parent/role recovery registration during a mass delete.
+          old_wait = '''async function waitForRecoveryDependencies(guild, channel) {
               const dependencies = []
               if (channel.parentId && !guild.channels.cache.has(channel.parentId)) {
                   const parentFlight = recoveryFlights.get(recoveryKey("channel", guild.id, channel.parentId))
@@ -233,9 +208,8 @@ jobs:
                   }
               }
               if (dependencies.length) await Promise.allSettled(dependencies)
-          }
-          ''',
-              '''async function waitForRecoveryDependency(kind, guild, originalId) {
+          }'''.replace('\n              ', '\n')
+          new_wait = '''async function waitForRecoveryDependency(kind, guild, originalId) {
               const deadline = Date.now() + RECOVERY_DEPENDENCY_GRACE_MS
               const key = recoveryKey(kind, guild.id, originalId)
               while (Date.now() <= deadline) {
@@ -270,141 +244,106 @@ jobs:
                   }
               }
               if (dependencies.length) await Promise.allSettled(dependencies)
-          }
-          '''
-          )
+          }'''.replace('\n              ', '\n')
+          replace_once(response, old_wait, new_wait)
 
-          # securityRecoveryListeners.js: protect only roles that actually carry
-          # CURSED's security permissions, not decorative/secondary roles.
+          # 5) Tamper protection should cover roles carrying CURSED's critical security permissions, not decorative roles.
           replace_once(
-              "utils/securityRecoveryListeners.js",
-              '''const {
-              AuditLogEvent,
-              Events,
-          } = require("discord.js")
-          ''',
-              '''const {
-              AuditLogEvent,
-              Events,
-              PermissionFlagsBits,
-          } = require("discord.js")
-          '''
+              listeners,
+              'const {\n    AuditLogEvent,\n    Events,\n} = require("discord.js")\n',
+              'const {\n    AuditLogEvent,\n    Events,\n    PermissionFlagsBits,\n} = require("discord.js")\n'
           )
-
           replace_once(
-              "utils/securityRecoveryListeners.js",
+              listeners,
               'const ROLE_RECOVERY_EXPECTATION_TTL_MS = 10_000\n',
-              '''const ROLE_RECOVERY_EXPECTATION_TTL_MS = 10_000
-          const BOT_PROTECTION_PERMISSIONS = Object.freeze([
-              PermissionFlagsBits.ViewAuditLog,
-              PermissionFlagsBits.ManageRoles,
-              PermissionFlagsBits.ManageChannels,
-              PermissionFlagsBits.ManageWebhooks,
-              PermissionFlagsBits.ModerateMembers,
-              PermissionFlagsBits.KickMembers,
-              PermissionFlagsBits.BanMembers,
-          ])
-          '''
+              'const ROLE_RECOVERY_EXPECTATION_TTL_MS = 10_000\n'
+              'const BOT_PROTECTION_PERMISSIONS = Object.freeze([\n'
+              '    PermissionFlagsBits.ViewAuditLog,\n'
+              '    PermissionFlagsBits.ManageRoles,\n'
+              '    PermissionFlagsBits.ManageChannels,\n'
+              '    PermissionFlagsBits.ManageWebhooks,\n'
+              '    PermissionFlagsBits.ModerateMembers,\n'
+              '    PermissionFlagsBits.KickMembers,\n'
+              '    PermissionFlagsBits.BanMembers,\n'
+              '])\n'
           )
-
           replace_once(
-              "utils/securityRecoveryListeners.js",
-              '''async function restoreRemovedBotRoles(oldMember, newMember) {
-              const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
-              const restorable = [...removed.values()].filter(role => role.id !== newMember.guild.id && !role.managed && role.editable)
-          ''',
-              '''function isBotProtectionRole(member, role) {
-              if (!member || !role || role.id === member.guild?.id || !member.roles?.cache?.has(role.id)) return false
-              return BOT_PROTECTION_PERMISSIONS.some(permission => role.permissions?.has(permission))
-          }
-
-          async function restoreRemovedBotRoles(oldMember, newMember, rolesToRestore = null) {
-              const removed = rolesToRestore || oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
-              const restorable = [...removed.values()].filter(role => role.id !== newMember.guild.id && !role.managed && role.editable)
-          '''
+              listeners,
+              'async function restoreRemovedBotRoles(oldMember, newMember) {\n'
+              '    const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))\n'
+              '    const restorable = [...removed.values()].filter(role => role.id !== newMember.guild.id && !role.managed && role.editable)\n',
+              'function isBotProtectionRole(member, role) {\n'
+              '    if (!member || !role || role.id === member.guild?.id || !member.roles?.cache?.has(role.id)) return false\n'
+              '    return BOT_PROTECTION_PERMISSIONS.some(permission => role.permissions?.has(permission))\n'
+              '}\n\n'
+              'async function restoreRemovedBotRoles(oldMember, newMember, rolesToRestore = null) {\n'
+              '    const removed = rolesToRestore || oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))\n'
+              '    const restorable = [...removed.values()].filter(role => role.id !== newMember.guild.id && !role.managed && role.editable)\n'
           )
-
           replace_once(
-              "utils/securityRecoveryListeners.js",
-              '''        const botRoleProtected = config.tamperProtection.protectBotRole
-                  && newRole.id !== guild.id
-                  && me?.roles?.cache?.has(newRole.id) === true
-          ''',
-              '''        const botRoleProtected = config.tamperProtection.protectBotRole
-                  && (isBotProtectionRole(me, oldRole) || isBotProtectionRole(me, newRole))
-          '''
+              listeners,
+              '        const botRoleProtected = config.tamperProtection.protectBotRole\n'
+              '            && newRole.id !== guild.id\n'
+              '            && me?.roles?.cache?.has(newRole.id) === true\n',
+              '        const botRoleProtected = config.tamperProtection.protectBotRole\n'
+              '            && (isBotProtectionRole(me, oldRole) || isBotProtectionRole(me, newRole))\n'
           )
-
           replace_once(
-              "utils/securityRecoveryListeners.js",
-              '''        const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
-              if (!removed.size) return
-
-              const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id, observedAt)
-              if (await isTamperExecutorExempt(guild, executor)) return
-
-              const recovery = await restoreRemovedBotRoles(oldMember, newMember)
-              const restoredText = recovery.restoredRoleIds.length
-                  ? ` Restored ${recovery.restoredRoleIds.length} manageable role(s).`
-                  : ""
-              await recordTamper(
-                  guild,
-                  config,
-                  "CURSED_ROLE_REMOVED",
-                  `CURSED lost ${removed.size} role(s).${restoredText} Protection permissions may have been reduced.`,
-                  executor,
-                  { recovery }
-              )
-          ''',
-              '''        const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))
-              const protectedRemoved = removed.filter(role => isBotProtectionRole(oldMember, role))
-              if (!protectedRemoved.size) return
-
-              const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id, observedAt)
-              if (await isTamperExecutorExempt(guild, executor)) return
-
-              const recovery = await restoreRemovedBotRoles(oldMember, newMember, protectedRemoved)
-              const restoredText = recovery.restoredRoleIds.length
-                  ? ` Restored ${recovery.restoredRoleIds.length} critical protection role(s).`
-                  : ""
-              await recordTamper(
-                  guild,
-                  config,
-                  "CURSED_ROLE_REMOVED",
-                  `CURSED lost ${protectedRemoved.size} critical protection role(s).${restoredText} Protection permissions may have been reduced.`,
-                  executor,
-                  { recovery }
-              )
-          '''
+              listeners,
+              '        const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))\n'
+              '        if (!removed.size) return\n\n'
+              '        const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id, observedAt)\n'
+              '        if (await isTamperExecutorExempt(guild, executor)) return\n\n'
+              '        const recovery = await restoreRemovedBotRoles(oldMember, newMember)\n'
+              '        const restoredText = recovery.restoredRoleIds.length\n'
+              '            ? ` Restored ${recovery.restoredRoleIds.length} manageable role(s).`\n'
+              '            : ""\n'
+              '        await recordTamper(\n'
+              '            guild,\n'
+              '            config,\n'
+              '            "CURSED_ROLE_REMOVED",\n'
+              '            `CURSED lost ${removed.size} role(s).${restoredText} Protection permissions may have been reduced.`,\n'
+              '            executor,\n'
+              '            { recovery }\n'
+              '        )\n',
+              '        const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id))\n'
+              '        const protectedRemoved = removed.filter(role => isBotProtectionRole(oldMember, role))\n'
+              '        if (!protectedRemoved.size) return\n\n'
+              '        const executor = await latestAuditExecutor(guild, AuditLogEvent.MemberRoleUpdate, newMember.id, observedAt)\n'
+              '        if (await isTamperExecutorExempt(guild, executor)) return\n\n'
+              '        const recovery = await restoreRemovedBotRoles(oldMember, newMember, protectedRemoved)\n'
+              '        const restoredText = recovery.restoredRoleIds.length\n'
+              '            ? ` Restored ${recovery.restoredRoleIds.length} critical protection role(s).`\n'
+              '            : ""\n'
+              '        await recordTamper(\n'
+              '            guild,\n'
+              '            config,\n'
+              '            "CURSED_ROLE_REMOVED",\n'
+              '            `CURSED lost ${protectedRemoved.size} critical protection role(s).${restoredText} Protection permissions may have been reduced.`,\n'
+              '            executor,\n'
+              '            { recovery }\n'
+              '        )\n'
           )
-
           replace_once(
-              "utils/securityRecoveryListeners.js",
-              '''    restoreRemovedBotRoles,
-          }
-          ''',
-              '''    restoreRemovedBotRoles,
-              isBotProtectionRole,
-          }
-          '''
+              listeners,
+              '    restoreRemovedBotRoles,\n}\n',
+              '    restoreRemovedBotRoles,\n    isBotProtectionRole,\n}\n'
           )
 
-          # Persist regression tests for the exact missed edge cases.
-          test_path = Path("test/security-resilience-hardening.test.js")
-          test_text = test_path.read_text()
+          # Regression tests for each missed edge case.
+          p = Path(tests)
+          text = p.read_text()
           marker = 'async function run() {\n'
-          if test_text.count(marker) != 1:
-              raise SystemExit("security resilience test: run() marker mismatch")
-          new_tests = r'''
+          if text.count(marker) != 1:
+              raise SystemExit("test insertion marker mismatch")
+          extra = r'''
           async function testAuditFutureWindowDoesNotDriftDuringRetry() {
               const targetId = "future-window-target"
               const observedAt = Date.now()
               const future = makeAuditEntry("audit-future", targetId, "future-executor", observedAt + 2500)
-              const guild = {
-                  fetchAuditLogs: async () => ({ entries: new Map([[future.id, future]]) }),
-              }
+              const guild = { fetchAuditLogs: async () => ({ entries: new Map([[future.id, future]]) }) }
               const found = await protection.fetchMatchingAuditEntry(guild, "CHANNEL_UPDATE", targetId, [1000], { observedAt })
-              assert.equal(found, null, "retry delay must not expand the audit future window beyond the original gateway observation time")
+              assert.equal(found, null, "retry delay must not expand the audit future window")
           }
 
           async function testDifferentNeutralizationPolicyIsNotReused() {
@@ -422,68 +361,25 @@ jobs:
                   ownerId: "owner-id",
                   members: { me: { id: "cursed-id", permissions: { has: () => false } } },
               }
-              const base = {
-                  antiNuke: { removeDangerousRoles: true, neutralizeTimeoutMinutes: 1, autoLockdown: false },
-                  lockdown: { enabled: false },
-              }
-              const stronger = {
-                  antiNuke: { removeDangerousRoles: true, neutralizeTimeoutMinutes: 60, autoLockdown: false },
-                  lockdown: { enabled: false },
-              }
-              await response.neutralizeExecutor(guild, member, base, { reason: "first policy" })
+              const first = { antiNuke: { removeDangerousRoles: true, neutralizeTimeoutMinutes: 1, autoLockdown: false }, lockdown: { enabled: false } }
+              const stronger = { antiNuke: { removeDangerousRoles: true, neutralizeTimeoutMinutes: 60, autoLockdown: false }, lockdown: { enabled: false } }
+              await response.neutralizeExecutor(guild, member, first, { reason: "first policy" })
               await response.neutralizeExecutor(guild, member, stronger, { reason: "stronger policy" })
-              assert.equal(timeoutCalls, 2, "a different/stronger neutralization policy must not reuse a previous 5-second result")
+              assert.equal(timeoutCalls, 2, "a different neutralization policy must not reuse a previous result")
           }
 
           async function testLateRecoveryDependencyRegistration() {
               let capturedOptions = null
               const guild = {
                   id: "late-dependency-guild",
-                  members: {
-                      me: {
-                          roles: { highest: { position: 20 } },
-                          permissions: { has: permission => permission === PermissionFlagsBits.ManageChannels || permission === PermissionFlagsBits.ManageRoles },
-                      },
-                  },
-                  roles: {
-                      cache: new Map(),
-                      create: async () => ({ id: "late-restored-role", setPosition: async () => {} }),
-                  },
-                  channels: {
-                      cache: new Map(),
-                      create: async options => {
-                          capturedOptions = options
-                          return { id: "late-restored-channel", setPosition: async () => {} }
-                      },
-                  },
+                  members: { me: { roles: { highest: { position: 20 } }, permissions: { has: p => p === PermissionFlagsBits.ManageChannels || p === PermissionFlagsBits.ManageRoles } } },
+                  roles: { cache: new Map(), create: async () => ({ id: "late-restored-role", setPosition: async () => {} }) },
+                  channels: { cache: new Map(), create: async options => { capturedOptions = options; return { id: "late-restored-channel", setPosition: async () => {} } } },
               }
-              const oldRole = {
-                  id: "late-old-role",
-                  name: "Late Role",
-                  color: 0,
-                  hoist: false,
-                  permissions: { bitfield: PermissionFlagsBits.ManageChannels },
-                  mentionable: false,
-                  unicodeEmoji: null,
-                  position: 5,
-              }
+              const oldRole = { id: "late-old-role", name: "Late Role", color: 0, hoist: false, permissions: { bitfield: PermissionFlagsBits.ManageChannels }, mentionable: false, unicodeEmoji: null, position: 5 }
               const oldChannel = {
-                  id: "late-old-channel",
-                  name: "late-channel",
-                  type: ChannelType.GuildText,
-                  parentId: null,
-                  topic: null,
-                  nsfw: false,
-                  rateLimitPerUser: 0,
-                  rawPosition: 1,
-                  permissionOverwrites: {
-                      cache: new Map([["late", {
-                          id: oldRole.id,
-                          type: 0,
-                          allow: { bitfield: 1n },
-                          deny: { bitfield: 0n },
-                      }]]),
-                  },
+                  id: "late-old-channel", name: "late-channel", type: ChannelType.GuildText, parentId: null, topic: null, nsfw: false, rateLimitPerUser: 0, rawPosition: 1,
+                  permissionOverwrites: { cache: new Map([["late", { id: oldRole.id, type: 0, allow: { bitfield: 1n }, deny: { bitfield: 0n } }]]) },
               }
               const channelPromise = response.restoreDeletedChannel(guild, oldChannel, "late dependency channel")
               await new Promise(resolve => setTimeout(resolve, 75))
@@ -491,65 +387,37 @@ jobs:
               const channelResult = await channelPromise
               assert.equal(roleResult.ok, true)
               assert.equal(channelResult.ok, true)
-              assert.equal(capturedOptions.permissionOverwrites[0].id, roleResult.restoredId, "channel recovery must wait briefly for a late role recovery flight")
+              assert.equal(capturedOptions.permissionOverwrites[0].id, roleResult.restoredId)
           }
 
           function testDecorativeBotRoleIsNotTamperProtected() {
               const guild = { id: "role-scope-guild" }
-              const decorative = {
-                  id: "decorative-role",
-                  guild,
-                  permissions: permissionSet([]),
-              }
-              const critical = {
-                  id: "critical-role",
-                  guild,
-                  permissions: permissionSet([PermissionFlagsBits.ManageRoles]),
-              }
-              const member = {
-                  guild,
-                  roles: { cache: new Map([[decorative.id, decorative], [critical.id, critical]]) },
-              }
-              assert.equal(recoveryListeners.isBotProtectionRole(member, decorative), false, "decorative roles assigned to CURSED must not be treated as critical tamper targets")
-              assert.equal(recoveryListeners.isBotProtectionRole(member, critical), true, "roles carrying CURSED protection permissions must remain tamper protected")
+              const decorative = { id: "decorative-role", guild, permissions: permissionSet([]) }
+              const critical = { id: "critical-role", guild, permissions: permissionSet([PermissionFlagsBits.ManageRoles]) }
+              const member = { guild, roles: { cache: new Map([[decorative.id, decorative], [critical.id, critical]]) } }
+              assert.equal(recoveryListeners.isBotProtectionRole(member, decorative), false)
+              assert.equal(recoveryListeners.isBotProtectionRole(member, critical), true)
           }
 
-          function testHydrationFailureUsesShortRetryBackoffContract() {
+          function testHydrationFailureShortRetryContract() {
               const source = require("node:fs").readFileSync(require("node:path").join(__dirname, "../utils/securityProtection.js"), "utf8")
               assert.match(source, /HYDRATION_FAILED = Symbol/)
               assert.match(source, /HYDRATION_FAILURE_RETRY_MS = 5000/)
               assert.match(source, /currentTime - \(60_000 - HYDRATION_FAILURE_RETRY_MS\)/)
           }
 
-          '''
-          test_text = test_text.replace(marker, new_tests + marker, 1)
-          run_old = '''    await testStaleAuditEntriesAreRejected()
-              testMixedAndSlowBurnActionRisk()
-          '''
-          run_new = '''    await testStaleAuditEntriesAreRejected()
-              await testAuditFutureWindowDoesNotDriftDuringRetry()
-              testMixedAndSlowBurnActionRisk()
-          '''
-          if test_text.count(run_old) != 1:
-              raise SystemExit("security resilience test: audit insertion mismatch")
-          test_text = test_text.replace(run_old, run_new, 1)
-          run_old2 = '''    await testNeutralizationSingleFlight()
-              await testRecoverySingleFlightAndRoleRemap()
-              testOnlyOneLiveAntiRaidJoinListener()
-              testWindowPruning()
-          '''
-          run_new2 = '''    await testNeutralizationSingleFlight()
-              await testDifferentNeutralizationPolicyIsNotReused()
-              await testRecoverySingleFlightAndRoleRemap()
-              await testLateRecoveryDependencyRegistration()
-              testDecorativeBotRoleIsNotTamperProtected()
-              testHydrationFailureUsesShortRetryBackoffContract()
-              testOnlyOneLiveAntiRaidJoinListener()
-              testWindowPruning()
-          '''
-          if test_text.count(run_old2) != 1:
-              raise SystemExit("security resilience test: final insertion mismatch")
-          test_path.write_text(test_text.replace(run_old2, run_new2, 1))
+          '''.replace('\n          ', '\n')
+          text = text.replace(marker, extra + marker, 1)
+          old = '    await testStaleAuditEntriesAreRejected()\n    testMixedAndSlowBurnActionRisk()\n'
+          new = '    await testStaleAuditEntriesAreRejected()\n    await testAuditFutureWindowDoesNotDriftDuringRetry()\n    testMixedAndSlowBurnActionRisk()\n'
+          if text.count(old) != 1:
+              raise SystemExit("test audit call insertion mismatch")
+          text = text.replace(old, new, 1)
+          old = '    await testNeutralizationSingleFlight()\n    await testRecoverySingleFlightAndRoleRemap()\n    testOnlyOneLiveAntiRaidJoinListener()\n'
+          new = '    await testNeutralizationSingleFlight()\n    await testDifferentNeutralizationPolicyIsNotReused()\n    await testRecoverySingleFlightAndRoleRemap()\n    await testLateRecoveryDependencyRegistration()\n    testDecorativeBotRoleIsNotTamperProtected()\n    testHydrationFailureShortRetryContract()\n    testOnlyOneLiveAntiRaidJoinListener()\n'
+          if text.count(old) != 1:
+              raise SystemExit("test final call insertion mismatch")
+          p.write_text(text.replace(old, new, 1))
           PY
 
       - name: Validate changed-file syntax
