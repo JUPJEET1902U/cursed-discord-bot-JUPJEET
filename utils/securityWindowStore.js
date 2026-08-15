@@ -226,6 +226,25 @@ async function loadExecutorSecurityWindow(guildId, executorId, windowMs) {
     }))
 }
 
+async function loadGuildSecurityWindow(guildId, windowMs) {
+    if (!mongoReady()) return null
+    const docs = await SecurityExecutorWindow.find({ guildId: String(guildId) }).lean().catch(() => null)
+    if (!docs) return null
+    const combined = []
+    for (const doc of docs) {
+        for (const event of pruneSecurityEvents(doc.events, windowMs)) {
+            combined.push({
+                at: safeTime(event.at),
+                executorId: String(doc.executorId || "unknown"),
+                eventType: String(event.eventType || "unknown"),
+                auditId: event.auditId ? String(event.auditId) : null,
+                weight: Number(event.weight) || 1,
+            })
+        }
+    }
+    return combined.sort((a, b) => a.at - b.at).slice(-500)
+}
+
 async function appendRaidJoin(guildId, event, retentionMs, activeUntil = null) {
     const write = { kind: "raid-join", guildId: String(guildId), event, retentionMs, activeUntil }
     if (!mongoReady()) {
@@ -289,6 +308,7 @@ module.exports = {
     runSecurityStateMutation,
     appendExecutorSecurityAction,
     loadExecutorSecurityWindow,
+    loadGuildSecurityWindow,
     appendRaidJoin,
     setRaidActiveUntil,
     loadRaidWindow,
