@@ -16,6 +16,7 @@ const { DM_SCOPE_ID, getDmAiControl } = require("./dmSupport")
 
 const log = logger.child("DMRuntime")
 const RAGE_TRIGGERS = ["randi"]
+const TRIVIA_ANSWERS = new Set(["a", "b", "c", "d"])
 
 function registerDmRuntime(client, commandModules) {
     client.on(Events.MessageCreate, async (message) => {
@@ -25,6 +26,27 @@ function registerDmRuntime(client, commandModules) {
         const userId = message.author.id
         const senderName = sanitizeName(message.author.username)
         const control = getDmAiControl()
+        const rawContent = String(message.content || "").trim()
+
+        // Trivia continuations are intentionally bare A/B/C/D messages, so they
+        // need one pass through the fun handler before the prefix-only dispatcher.
+        if (TRIVIA_ANSWERS.has(rawContent.toLowerCase())) {
+            const funModule = commandModules.find(entry => entry.name === "fun")?.module
+            if (funModule) {
+                try {
+                    const handledTrivia = await funModule.handle(message)
+                    if (handledTrivia) return
+                } catch (err) {
+                    log.error(`DM trivia continuation failed: ${err.message}`, {
+                        stack: err.stack,
+                        channelId,
+                        userId,
+                    })
+                    await replySafe(message, "⚠️ Something went wrong with that trivia answer. Try again!").catch(() => {})
+                    return
+                }
+            }
+        }
 
         try {
             const handled = await dispatchCommand(message, commandModules)
@@ -39,7 +61,7 @@ function registerDmRuntime(client, commandModules) {
             return
         }
 
-        const aiInput = String(message.content || "").trim()
+        const aiInput = rawContent
         if (!aiInput) return
 
         message.channel.sendTyping().catch(() => {})
