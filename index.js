@@ -454,7 +454,7 @@ process.on("unhandledRejection", (err) => {
 })
 
 process.on("uncaughtException", (err) => {
-    log.error(`Uncaught exception: ${err.message}`, { stack: err?.stack })
+    log.error(`Uncaught exception: ${err?.message || err}`, { stack: err?.stack })
 })
 
 startWebhookServer()
