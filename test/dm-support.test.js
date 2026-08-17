@@ -101,3 +101,10 @@ test("Discord client is wired for direct messages without replacing guild flow",
     assert.match(loaderSource, /isDmCommandAllowed/)
     assert.match(loaderSource, /isDmModuleAllowed/)
 })
+
+test("DM runtime does not log private message content", () => {
+    const runtimeSource = fs.readFileSync(path.join(__dirname, "..", "utils", "dmRuntime.js"), "utf8")
+    assert.match(runtimeSource, /log\.info\("DM AI request"/)
+    assert.doesNotMatch(runtimeSource, /aiInput\.slice/)
+    assert.doesNotMatch(runtimeSource, /rawContent\.slice/)
+})
