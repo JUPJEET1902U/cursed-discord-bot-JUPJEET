@@ -1,7 +1,7 @@
 const { normalizeControlConfig } = require("./dashboardControl")
 
 const DM_SCOPE_ID = "dm"
-const DM_SERVER_ONLY_MESSAGE = "⛔ This command can only be used inside a server."
+const DM_SERVER_ONLY_MESSAGE = "⛔ That command isn't available in DMs. Use `!help` to see DM-supported commands."
 
 // Keep DM access explicit and conservative. A command is only added here after
 // its handler has been checked for guild/member/role/channel dependencies.
