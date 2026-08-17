@@ -117,7 +117,8 @@ function registerDmRuntime(client, commandModules) {
             { role: "user", content: currentUserMsg },
         ]
 
-        log.info(`[DM] ${senderName}: ${aiInput.slice(0, 50)}`)
+        // Never write private DM message content to logs.
+        log.info("DM AI request", { userId, channelId, chars: aiInput.length })
 
         let safeOutput
         try {
