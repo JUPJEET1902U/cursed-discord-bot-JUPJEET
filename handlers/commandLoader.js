@@ -17,6 +17,11 @@ const {
     createCommandMessage,
     resolveCommandPrefix,
 } = require("../utils/prefix")
+const {
+    DM_SERVER_ONLY_MESSAGE,
+    isDmCommandAllowed,
+    isDmModuleAllowed,
+} = require("../utils/dmSupport")
 
 require("../commands/helpCatalog")
 require("../commands/prefixCommandCatalog")
@@ -62,6 +67,7 @@ function loadCommands() {
 }
 
 async function dispatchCommand(message, commandModules) {
+    const isDm = !message.guild
     const guildConfig = message.guild
         ? getServerConfig(message.guild.id).config
         : {}
@@ -71,7 +77,12 @@ async function dispatchCommand(message, commandModules) {
     const commandMessage = createCommandMessage(message, resolvedPrefix.canonicalContent)
     const commandName = extractCommandName(commandMessage.content)
 
-    if (commandName && !isCommandEnabled(guildConfig, commandName)) {
+    if (isDm && commandName && !isDmCommandAllowed(commandName)) {
+        await message.channel.send(DM_SERVER_ONLY_MESSAGE).catch(() => {})
+        return true
+    }
+
+    if (!isDm && commandName && !isCommandEnabled(guildConfig, commandName)) {
         await message.channel.send("⛔ That command is disabled in this server.").catch(() => {})
         return true
     }
@@ -82,12 +93,13 @@ async function dispatchCommand(message, commandModules) {
     }
 
     for (const { name, module } of commandModules) {
-        if (!isModuleEnabled(guildConfig, name)) continue
+        if (isDm && !isDmModuleAllowed(name)) continue
+        if (!isDm && !isModuleEnabled(guildConfig, name)) continue
 
         try {
             const handled = await module.handle(commandMessage)
             if (handled) {
-                log.debug(`Command handled by: ${name}`)
+                log.debug(`Command handled by: ${name}${isDm ? " (DM)" : ""}`)
                 if (message.guild && !message.author.bot) {
                     trackDetailedCommand(
                         message.guild.id,
