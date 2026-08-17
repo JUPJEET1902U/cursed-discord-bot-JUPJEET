@@ -7,6 +7,13 @@ const {
 const FUN_AI_COMMANDS = new Set(["roast", "trivia", "story", "roleplay", "challenge", "fortune"])
 const SAFE_MENTIONS = { parse: [], users: [], roles: [], repliedUser: false }
 
+function normalizePlanCommandName(commandName) {
+    return String(commandName || "")
+        .trim()
+        .toLowerCase()
+        .replace(/^[!/]/, "")
+}
+
 function quotaMessage(feature, result, plan) {
     const label = feature === "image"
         ? "image generations"
@@ -21,12 +28,13 @@ function quotaMessage(feature, result, plan) {
 }
 
 async function checkCommandPlan(message, commandName) {
+    const normalizedCommandName = normalizePlanCommandName(commandName)
     const userId = message.author.id
     const guildId = message.guild?.id || "dm"
     const plan = getUserPlan(userId)
     const limits = getPlanLimits(userId)
 
-    if (commandName === "imagine") {
+    if (normalizedCommandName === "imagine") {
         const content = String(message.content || "").toLowerCase()
         const asksForVariation = /^!imagine\s+(variation|variations)\b/i.test(message.content)
         const usesAvatar = Boolean(message.mentions?.users?.first?.())
@@ -52,7 +60,7 @@ async function checkCommandPlan(message, commandName) {
         }
     }
 
-    if (commandName === "meme") {
+    if (normalizedCommandName === "meme") {
         const usage = consumeFeatureUsage("meme", { userId, guildId })
         if (!usage.ok) {
             await message.channel.send({ content: quotaMessage("meme", usage, plan), allowedMentions: SAFE_MENTIONS })
@@ -60,7 +68,7 @@ async function checkCommandPlan(message, commandName) {
         }
     }
 
-    if (FUN_AI_COMMANDS.has(commandName)) {
+    if (FUN_AI_COMMANDS.has(normalizedCommandName)) {
         const usage = consumeFeatureUsage("fun", { userId, guildId })
         if (!usage.ok) {
             await message.channel.send({ content: quotaMessage("fun", usage, plan), allowedMentions: SAFE_MENTIONS })
@@ -71,4 +79,4 @@ async function checkCommandPlan(message, commandName) {
     return { ok: true }
 }
 
-module.exports = { FUN_AI_COMMANDS, checkCommandPlan }
+module.exports = { FUN_AI_COMMANDS, checkCommandPlan, normalizePlanCommandName }

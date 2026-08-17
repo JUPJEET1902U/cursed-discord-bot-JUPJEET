@@ -1,0 +1,42 @@
+name: DM Support CI
+
+on:
+  pull_request:
+    paths:
+      - "index.js"
+      - "handlers/commandLoader.js"
+      - "utils/dmSupport.js"
+      - "utils/dmRuntime.js"
+      - "utils/premiumCommandGate.js"
+      - "test/dm-support.test.js"
+      - ".github/workflows/dm-support.yml"
+  push:
+    paths:
+      - "index.js"
+      - "handlers/commandLoader.js"
+      - "utils/dmSupport.js"
+      - "utils/dmRuntime.js"
+      - "utils/premiumCommandGate.js"
+      - "test/dm-support.test.js"
+      - ".github/workflows/dm-support.yml"
+
+jobs:
+  syntax-and-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Validate JavaScript syntax
+        run: |
+          node --check index.js
+          node --check handlers/commandLoader.js
+          node --check utils/dmSupport.js
+          node --check utils/dmRuntime.js
+          node --check utils/premiumCommandGate.js
+          node --check test/dm-support.test.js
+      - name: Validate DM support contracts
+        run: node --test test/dm-support.test.js

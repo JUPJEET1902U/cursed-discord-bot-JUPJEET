@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType } = require("discord.js")
+const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType, Partials, InteractionContextType } = require("discord.js")
 require("dotenv/config")
 const mongoose = require("mongoose")
 
@@ -48,6 +48,7 @@ const { formatError } = require("./utils/errorFormatter")
 const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
+const { registerDmRuntime } = require("./utils/dmRuntime")
 const moderationCmd = require("./commands/moderation")
 const { sendWelcome, getWelcome } = require("./utils/welcome")
 const { getAutorole } = require("./utils/autorole")
@@ -66,14 +67,19 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.DirectMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildModeration,
         GatewayIntentBits.GuildInvites,
         GatewayIntentBits.GuildExpressions,
-    ]
+    ],
+    partials: [Partials.Channel],
 })
+
+// DM handling is intentionally isolated from the existing guild message flow.
+registerDmRuntime(client, commandModules)
 
 client.once(Events.ClientReady, async (clientUser) => {
     console.log(`Logged in as ${clientUser.user.tag}`)
@@ -97,7 +103,12 @@ client.once(Events.ClientReady, async (clientUser) => {
     // ── Register slash commands globally ──────────────────────────────────────
     try {
         const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN)
-        const commandData = moderationCmd.commands.map(c => c.toJSON())
+        // These are server-management slash commands. Explicitly pin them to
+        // the Guild context so they do not appear as dead commands in bot DMs.
+        const commandData = moderationCmd.commands.map(command => ({
+            ...command.toJSON(),
+            contexts: [InteractionContextType.Guild],
+        }))
         const existingCommands = await rest.get(Routes.applicationCommands(clientUser.user.id))
         const entryPoint = existingCommands.find(cmd => cmd.type === 4)
         const commandsToRegister = entryPoint ? [...commandData, entryPoint] : commandData
