@@ -7,6 +7,7 @@ on:
       - "handlers/commandLoader.js"
       - "utils/dmSupport.js"
       - "utils/dmRuntime.js"
+      - "utils/premiumCommandGate.js"
       - "test/dm-support.test.js"
       - ".github/workflows/dm-support.yml"
   push:
@@ -15,6 +16,7 @@ on:
       - "handlers/commandLoader.js"
       - "utils/dmSupport.js"
       - "utils/dmRuntime.js"
+      - "utils/premiumCommandGate.js"
       - "test/dm-support.test.js"
       - ".github/workflows/dm-support.yml"
 
@@ -34,6 +36,7 @@ jobs:
           node --check handlers/commandLoader.js
           node --check utils/dmSupport.js
           node --check utils/dmRuntime.js
+          node --check utils/premiumCommandGate.js
           node --check test/dm-support.test.js
       - name: Validate DM support contracts
         run: node --test test/dm-support.test.js
