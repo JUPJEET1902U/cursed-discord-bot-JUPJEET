@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType, Partials } = require("discord.js")
+const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType, Partials, InteractionContextType } = require("discord.js")
 require("dotenv/config")
 const mongoose = require("mongoose")
 
@@ -103,7 +103,12 @@ client.once(Events.ClientReady, async (clientUser) => {
     // ── Register slash commands globally ──────────────────────────────────────
     try {
         const rest = new REST({ version: "10" }).setToken(process.env.BOT_TOKEN)
-        const commandData = moderationCmd.commands.map(c => c.toJSON())
+        // These are server-management slash commands. Explicitly pin them to
+        // the Guild context so they do not appear as dead commands in bot DMs.
+        const commandData = moderationCmd.commands.map(command => ({
+            ...command.toJSON(),
+            contexts: [InteractionContextType.Guild],
+        }))
         const existingCommands = await rest.get(Routes.applicationCommands(clientUser.user.id))
         const entryPoint = existingCommands.find(cmd => cmd.type === 4)
         const commandsToRegister = entryPoint ? [...commandData, entryPoint] : commandData
@@ -449,7 +454,7 @@ process.on("unhandledRejection", (err) => {
 })
 
 process.on("uncaughtException", (err) => {
-    log.error(`Uncaught exception: ${err?.message || err}`, { stack: err?.stack })
+    log.error(`Uncaught exception: ${err.message}`, { stack: err?.stack })
 })
 
 startWebhookServer()
