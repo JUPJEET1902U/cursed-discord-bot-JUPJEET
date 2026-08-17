@@ -1,4 +1,4 @@
-const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType } = require("discord.js")
+const { Client, Events, GatewayIntentBits, REST, Routes, ChannelType, Partials } = require("discord.js")
 require("dotenv/config")
 const mongoose = require("mongoose")
 
@@ -48,6 +48,7 @@ const { formatError } = require("./utils/errorFormatter")
 const logger = require("./utils/logger")
 const log = logger.child("Index")
 const { loadCommands, dispatchCommand } = require("./handlers/commandLoader")
+const { registerDmRuntime } = require("./utils/dmRuntime")
 const moderationCmd = require("./commands/moderation")
 const { sendWelcome, getWelcome } = require("./utils/welcome")
 const { getAutorole } = require("./utils/autorole")
@@ -66,14 +67,19 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.DirectMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildModeration,
         GatewayIntentBits.GuildInvites,
         GatewayIntentBits.GuildExpressions,
-    ]
+    ],
+    partials: [Partials.Channel],
 })
+
+// DM handling is intentionally isolated from the existing guild message flow.
+registerDmRuntime(client, commandModules)
 
 client.once(Events.ClientReady, async (clientUser) => {
     console.log(`Logged in as ${clientUser.user.tag}`)
