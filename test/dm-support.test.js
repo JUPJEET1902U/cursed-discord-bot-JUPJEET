@@ -10,6 +10,7 @@ const {
     isDmModuleAllowed,
     getDmAiControl,
 } = require("../utils/dmSupport")
+const { normalizePlanCommandName } = require("../utils/premiumCommandGate")
 
 test("DM command policy allows verified private-safe commands", () => {
     for (const command of [
@@ -47,7 +48,8 @@ test("DM command policy blocks guild-dependent commands", () => {
     ]) {
         assert.equal(isDmCommandAllowed(command), false, `${command} must stay server-only`)
     }
-    assert.match(DM_SERVER_ONLY_MESSAGE, /inside a server/i)
+    assert.match(DM_SERVER_ONLY_MESSAGE, /isn't available in DMs/i)
+    assert.match(DM_SERVER_ONLY_MESSAGE, /!help/i)
 })
 
 test("DM dispatcher only invokes audited modules", () => {
@@ -69,6 +71,13 @@ test("DM AI uses isolated memory/rate-limit scope and disables passive legacy XP
     assert.equal(control.legacyEconomyXpEnabled, false)
 })
 
+test("Premium command gate normalizes prefix command names before quota checks", () => {
+    assert.equal(normalizePlanCommandName("!trivia"), "trivia")
+    assert.equal(normalizePlanCommandName("!meme"), "meme")
+    assert.equal(normalizePlanCommandName("/trivia"), "trivia")
+    assert.equal(normalizePlanCommandName("TRIVIA"), "trivia")
+})
+
 test("Discord client is wired for direct messages without replacing guild flow", () => {
     const indexSource = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8")
     const loaderSource = fs.readFileSync(path.join(__dirname, "..", "handlers", "commandLoader.js"), "utf8")
@@ -77,6 +86,11 @@ test("Discord client is wired for direct messages without replacing guild flow",
     assert.match(indexSource, /GatewayIntentBits\.DirectMessages/)
     assert.match(indexSource, /Partials\.Channel/)
     assert.match(indexSource, /registerDmRuntime\(client, commandModules\)/)
+
+    // Server-management application commands must not surface as dead commands
+    // in bot DMs.
+    assert.match(indexSource, /InteractionContextType/)
+    assert.match(indexSource, /contexts:\s*\[InteractionContextType\.Guild\]/)
 
     // Existing guild listener intentionally still ignores DMs; the dedicated
     // DM runtime handles them separately so server behavior is not rewritten.
